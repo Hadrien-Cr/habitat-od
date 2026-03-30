@@ -1,4 +1,3 @@
-import itertools 
 import numpy as np
 from dataclasses import dataclass
 from ai2thor.server import Event
@@ -77,149 +76,22 @@ class DiscretizedAgentPose:
             other.idx_pitch,
         )
 
-def get_scene_bounds(controller) -> tuple[float, float, float, float]:
-    scene_objects = controller.last_event.metadata["objects"]
-    min_x, max_x = float("inf"), float("-inf")
-    min_z, max_z = float("inf"), float("-inf")
-
-    for obj in scene_objects:
-        try:
-            o_min_x = min([v[0] for v in obj["axisAlignedBoundingBox"]["cornerPoints"]])
-            o_max_x = max([v[0] for v in obj["axisAlignedBoundingBox"]["cornerPoints"]])
-            o_min_z = min([v[2] for v in obj["axisAlignedBoundingBox"]["cornerPoints"]])
-            o_max_z = max([v[2] for v in obj["axisAlignedBoundingBox"]["cornerPoints"]])
-            min_x = min(min_x, o_min_x)
-            max_x = max(max_x, o_max_x)
-            min_z = min(min_z, o_min_z)
-            max_z = max(max_z, o_max_z)
-        except:
-            pass
-    return (min_x, max_x, min_z, max_z)
-
-
-def get_grid_bounds(controller, grid_size) -> tuple[float, float, float, float]:
-
-    (min_x, max_x, min_z, max_z) = get_scene_bounds(controller)
-    all_pos_reachable2d = list(
-        itertools.product(
-            np.arange(
-                int((grid_size + min_x) / grid_size) * grid_size,
-                max_x,
-                grid_size,
-            ),
-            np.arange(
-                int((grid_size + min_z) / grid_size) * grid_size,
-                max_z,
-                grid_size,
-            ),
-        )
-    )
-
-    grid_min_x, grid_max_x = min([c[0] for c in all_pos_reachable2d]), max(
-        [c[0] for c in all_pos_reachable2d]
-    )
-    grid_min_z, grid_max_z = min([c[1] for c in all_pos_reachable2d]), max(
-        [c[1] for c in all_pos_reachable2d]
-    )
-    return (grid_min_x, grid_max_x, grid_min_z, grid_max_z)
-
-
-def get_dimensions(controller, grid_size) -> tuple[
-    tuple[float, float, float, float],
-    tuple[float, float, float, float],
-    int,
-    int,
-    list[tuple[int, int]],
-    list[tuple[int, int]],
-]:
-
-    (min_x, max_x, min_z, max_z) = get_scene_bounds(controller)
-    (grid_min_x, grid_max_x, grid_min_z, grid_max_z) = get_grid_bounds(
-        controller, grid_size
-    )
-
-    all_pos_reachable2d = list(
-        itertools.product(
-            np.arange(
-                int((grid_size + min_x) / grid_size) * grid_size,
-                max_x,
-                grid_size,
-            ),
-            np.arange(
-                int((grid_size + min_z) / grid_size) * grid_size,
-                max_z,
-                grid_size,
-            ),
-        )
-    )
-
-    grid_cols = int((grid_max_x - grid_min_x) / grid_size) + 1
-    grid_rows = int((grid_max_z - grid_min_z) / grid_size) + 1
-
-    out = controller.step(
-        action="GetReachablePositions",
-        raise_for_failure=True,
-    ).metadata["actionReturn"]
-
-    reachable_positions = set(
-        (round(p["x"] / grid_size) * grid_size, round(p["z"] / grid_size) * grid_size)
-        for p in out
-    )
-
-    unreachable_positions = set(all_pos_reachable2d).difference(reachable_positions)
-
-    grid_reachable_positions = [
-        (
-            round((pos[0] - grid_min_x) / grid_size),
-            round((pos[1] - grid_min_z) / grid_size),
-        )
-        for pos in reachable_positions
-    ]
-    grid_unreachable_positions = [
-        (
-            round((pos[0] - grid_min_x) / grid_size),
-            round((pos[1] - grid_min_z) / grid_size),
-        )
-        for pos in unreachable_positions
-    ]
-
-    return (
-        (min_x, max_x, min_z, max_z),
-        (grid_min_x, grid_max_x, grid_min_z, grid_max_z),
-        grid_rows,
-        grid_cols,
-        grid_reachable_positions,
-        grid_unreachable_positions,
-    )
-
-
 def teleport_agent_pose(
     controller,
     target_pose: DiscretizedAgentPose,
-    grid_size: float,
-    grid_bounds: tuple[float, float, float, float],
-    min_pitch: float,
-    max_pitch: float
 ) -> None:
-    curr_pose = get_discrete_pose(
-        controller, 
-        grid_size, 
-        grid_bounds, 
-        yaw_bins=target_pose.yaw_bins, 
-        pitch_bins=target_pose.pitch_bins, 
-        min_pitch=min_pitch, 
-        max_pitch=max_pitch
-    )
-    y = controller.last_event.metadata["agent"]["position"]["y"]
-    (x,z,yaw,pitch) = from_discrete_pose(
-        target_pose,
-        grid_size,
-        grid_bounds,
-        min_pitch=min_pitch,
-        max_pitch=max_pitch        
-    ) 
+    curr_pose = get_discrete_pose(controller)
 
-    if curr_pose != target_pose:
+    if curr_pose != target_pose:    
+        y = controller.last_event.metadata["agent"]["position"]["y"]
+        (x,z,yaw,pitch) = from_discrete_pose(
+            target_pose,
+            controller.grid_size,
+            controller.grid_bounds,
+            min_pitch=controller.min_pitch,
+            max_pitch=controller.max_pitch        
+        ) 
+
         try:
             controller.step(
                 action="TeleportFull",
@@ -268,16 +140,8 @@ def from_discrete_pose(
     return x,z, yaw, pitch
 
 
-def get_discrete_pose(
-    controller, 
-    grid_size: float, 
-    grid_bounds: tuple[float, float, float, float],
-    yaw_bins: int,
-    pitch_bins: int,
-    min_pitch: float,
-    max_pitch: float
-) -> DiscretizedAgentPose:
-    grid_min_x, grid_max_x, grid_min_z, grid_max_z = grid_bounds
+def get_discrete_pose( controller, ) -> DiscretizedAgentPose:
+    grid_min_x, grid_max_x, grid_min_z, grid_max_z = controller.grid_bounds
     
     md = controller.last_event.metadata
     agent_x, _, agent_z = tuple(md["agent"]["position"].values())
@@ -285,20 +149,19 @@ def get_discrete_pose(
     pitch = md["agent"]["cameraHorizon"]
 
     return DiscretizedAgentPose(
-        idx_x=round((agent_x - grid_min_x) / grid_size),
-        idx_z=round((agent_z - grid_min_z) / grid_size),
-        idx_yaw=round(yaw_bins * (yaw % 360) / 360),
-        idx_pitch=round(pitch_bins * (pitch + min_pitch) / (max_pitch - min_pitch)),
-        yaw_bins=yaw_bins,
-        pitch_bins=pitch_bins
+        idx_x=round((agent_x - grid_min_x) / controller.grid_size),
+        idx_z=round((agent_z - grid_min_z) / controller.grid_size),
+        idx_yaw=round(controller.yaw_bins * (yaw % 360) / 360),
+        idx_pitch=round(controller.pitch_bins * (pitch + controller.min_pitch) / (controller.max_pitch - controller.min_pitch)),
+        yaw_bins=controller.yaw_bins,
+        pitch_bins=controller.pitch_bins
     )
 
 
 def get_ground_truth_bbx(
     event: Event, 
     class_names: list[str],
-    min_area: float,
-
+    min_pixel_area: int,
 ) -> list:
     
     def item_is_a_child(obj_id: str) -> bool:
@@ -315,6 +178,7 @@ def get_ground_truth_bbx(
     }
 
     assert event.instance_detections2D is not None
+
     for objid in event.instance_detections2D:
         if objid in seen_obj_ids:
             continue
@@ -333,7 +197,7 @@ def get_ground_truth_bbx(
             seen_obj_ids.add(objid)
             xmin, ymin, xmax, ymax = event.instance_detections2D[objid]
 
-            if (xmax - xmin) * (ymax - ymin) < min_area:
+            if (xmax - xmin) * (ymax - ymin) < min_pixel_area:
                 continue
 
             bounding_boxes.append(

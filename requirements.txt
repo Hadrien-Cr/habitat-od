@@ -1,4 +1,5 @@
 ai2thor==5.0.0
+datasets
 prior
 gymnasium==0.29.1
 imageio==2.33.1
@@ -16,7 +17,6 @@ torch>=2.2.0
 torchvision>=0.17.0
 tqdm
 gdown
-sciex
 Cython
 sb3_contrib
 tensorboard

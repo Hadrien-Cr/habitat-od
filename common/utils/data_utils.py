@@ -1,16 +1,10 @@
 import os
-import re
-import shutil
-import time
 import uuid
-from datetime import datetime
 from pathlib import Path
-
 import numpy as np
-import yaml
 from PIL import Image
 
-from utils.pose_utils import DiscretizedAgentPose
+from .pose_utils import DiscretizedAgentPose
 
 
 def xyxy_to_normalized_xywh(box: tuple[int, int, int, int], size: tuple[int,int], center=True) -> tuple[float, float, float, float]:
@@ -83,26 +77,26 @@ def make_colors(num, seed=1, ctype=1) -> list:
         ctype=5: yellow random
         """
         if ctype == 1:
-            color = "#%06x" % rng_gen.randint(0x444444, 0x999999)
+            color = "#%06x" % rng_gen.integers(0x444444, 0x999999)
             while color in colors:
-                color = "#%06x" % rng_gen.randint(0x444444, 0x999999)
+                color = "#%06x" % rng_gen.integers(0x444444, 0x999999)
         elif ctype == 2:
-            color = "#%02x0000" % rng_gen.randint(0xAA, 0xFF)
+            color = "#%02x0000" % rng_gen.integers(0xAA, 0xFF)
             while color in colors:
-                color = "#%02x0000" % rng_gen.randint(0xAA, 0xFF)
+                color = "#%02x0000" % rng_gen.integers(0xAA, 0xFF)
         elif ctype == 4:  # green
-            color = "#00%02x00" % rng_gen.randint(0xAA, 0xFF)
+            color = "#00%02x00" % rng_gen.integers(0xAA, 0xFF)
             while color in colors:
-                color = "#00%02x00" % rng_gen.randint(0xAA, 0xFF)
+                color = "#00%02x00" % rng_gen.integers(0xAA, 0xFF)
         elif ctype == 3:  # blue
-            color = "#0000%02x" % rng_gen.randint(0xAA, 0xFF)
+            color = "#0000%02x" % rng_gen.integers(0xAA, 0xFF)
             while color in colors:
-                color = "#0000%02x" % rng_gen.randint(0xAA, 0xFF)
+                color = "#0000%02x" % rng_gen.integers(0xAA, 0xFF)
         elif ctype == 5:  # yellow
-            h = rng_gen.randint(0xAA, 0xFF)
+            h = rng_gen.integers(0xAA, 0xFF)
             color = "#%02x%02x00" % (h, h)
             while color in colors:
-                h = rng_gen.randint(0xAA, 0xFF)
+                h = rng_gen.integers(0xAA, 0xFF)
                 color = "#%02x%02x00" % (h, h)
         else:
             raise ValueError("Unrecognized color type %s" % (str(ctype)))
@@ -113,34 +107,7 @@ def make_colors(num, seed=1, ctype=1) -> list:
     return colors
 
 
-def saveimg(img, path):
-    im = Image.fromarray(img)
-    im.save(path, format="PNG")
-
-
-def dataset_load_info(
-    data_dir: Path,
-) -> tuple[list[Path], list[str], list[tuple[int, int, int]]]:
-    dataset_yaml_path = None
-
-    for file in data_dir.parent.iterdir():
-        if file.suffix == ".yaml":
-            dataset_yaml_path = file
-            break
-
-    if dataset_yaml_path is None:
-        raise ValueError("No YAML configuration file found in the dataset directory.")
-
-    with open(dataset_yaml_path) as f:
-        config = yaml.safe_load(f)
-
-    class_names = list(config["names"])
-    colors = list(config["colors"])
-
-    return (enumerate_fnames(data_dir), class_names, colors)  # type: ignore
-
-
-def load_gt(
+def load_label(
     path: Path, fname: Path, class_names: list[str], img_size: tuple[int,int]
 ) -> list[dict]:
     w, h = img_size
@@ -198,26 +165,9 @@ def load_img(fname: Path) -> np.ndarray:
     return im
 
 
-def create_dataset_yaml(
-    data_dir, class_names, name
-):
-
-    content = dict(
-        path=data_dir,
-        train="train",  # training images relative to 'path'
-        val="val",  # validation images relative to path
-        nc=len(class_names),  # number of class_names
-        names=class_names,
-        colors=make_colors(len(class_names), seed=1),
-    )
-    os.makedirs(data_dir, exist_ok=True)
-    with open(os.path.join(data_dir, "{}-dataset.yaml".format(name)), "w") as f:
-        yaml.dump(content, f)
-
-
-def pose2fname(scene_name: str, pose: DiscretizedAgentPose) -> Path:
+def pose2fname(prefix: str, pose: DiscretizedAgentPose) -> Path:
     """Get the filename corresponding to the given pose."""
-    fname = Path(f"{scene_name}-x{pose.idx_x}-z{pose.idx_z}-y{pose.idx_yaw}-p{pose.idx_pitch}-by{pose.yaw_bins}-bp{pose.pitch_bins}")
+    fname = Path(f"{prefix}-x{pose.idx_x}-z{pose.idx_z}-y{pose.idx_yaw}-p{pose.idx_pitch}-by{pose.yaw_bins}-bp{pose.pitch_bins}")
     return fname
 
 
@@ -242,19 +192,18 @@ def fname2pose(fname: Path) -> DiscretizedAgentPose:
 
     return DiscretizedAgentPose(idx_x, idx_z, idx_yaw, idx_pitch, yaw_bins, pitch_bins)
 
-
-def store_label(
+def save_label(
     gt_bounding_boxes: list[dict],
-    fname: Path,
     data_dir: Path,
+    fname: Path,
     img_shape: tuple[int, int, int],
 ) -> None:
     label_dir = data_dir / "labels"
     os.makedirs(label_dir, exist_ok=True)
 
-    final_path = label_dir / (fname.stem + ".txt")
+    path = label_dir / (fname.stem + ".txt")
 
-    if final_path.exists():
+    if path.exists():
         return
 
     annotations = []
@@ -263,43 +212,32 @@ def store_label(
         x_center, y_center, w, h = xyxy_to_normalized_xywh(
             (bbx["xmin"], bbx["ymin"], bbx["xmax"], bbx["ymax"]), img_shape[:2], center=True
         )
-        annotations.append(f"{bbx["class_id"]} {x_center} {y_center} {w} {h}")
+        annotations.append(f"{bbx['class_id']} {x_center} {y_center} {w} {h}")
 
-    tmp_path = label_dir / f"{fname.stem}.{uuid.uuid4()}.tmp"
+    with open(path, "w") as f:
+        f.write("\n".join(annotations) + "\n")
 
-    try:
-        with open(tmp_path, "w") as f:
-            f.write("\n".join(annotations) + "\n")
-        os.replace(tmp_path, final_path)
-        os.sync()  # Ensure data is written to disk
-
-    except Exception as e:
-        if tmp_path.exists():
-            os.remove(tmp_path)
-        raise e
-
-
-def store_image(
+def save_img(
     img: np.ndarray,
     data_dir: Path,
     fname: Path,
-    max_wait: float = 0.1,
 ) -> Path:
     img_dir = data_dir / "images"
     os.makedirs(img_dir, exist_ok=True)
 
-    final_path = img_dir / f"{str(fname)}.jpg"
+    path = img_dir / f"{str(fname)}.jpg"
 
-    if final_path.exists():
-        return final_path
+    if path.exists():
+        return path
 
-    tmp_path = img_dir / f"{str(fname)}.{uuid.uuid4()}.tmp"
-    saveimg(img, tmp_path)
+    saveimg(img, path)
 
-    if not final_path.exists():
-        raise RuntimeError(f"Failed to store image: {final_path}")
+    return path
 
-    return final_path
+
+def saveimg(img, path):
+    im = Image.fromarray(img)
+    im.save(path, format="PNG")
 
 
 def enumerate_fnames(source_data_dir: Path) -> list[Path]:
