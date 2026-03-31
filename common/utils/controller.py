@@ -53,10 +53,6 @@ def get_grid_bounds(controller, grid_size) -> tuple[float, float, float, float]:
     return (grid_min_x, grid_max_x, grid_min_z, grid_max_z)
 
 
-
-
-
-
 def setup_controller(
     scene_name: str,
     img_shape: tuple[int, int],
@@ -71,12 +67,8 @@ def setup_controller(
     id: int = 0,
     quality: str = "Ultra",
 ):
-    scene_type = get_scene_type(scene_name)
-
-    if scene_type == "procthor-train" or scene_type == "procthor-test":
-        scene = scene_name_to_scene_spec(scene_name)
-    else:
-        scene = scene_name
+    scene = str(scene_name)
+    scene = scene_name_to_scene_spec(scene_name)
 
     if cloud_rendering:
         controller = Controller(

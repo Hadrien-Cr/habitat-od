@@ -1,6 +1,4 @@
-import numpy as np
 from dataclasses import dataclass
-from ai2thor.server import Event
 import math
 
 
@@ -156,62 +154,6 @@ def get_discrete_pose( controller, ) -> DiscretizedAgentPose:
         yaw_bins=controller.yaw_bins,
         pitch_bins=controller.pitch_bins
     )
-
-
-def get_ground_truth_bbx(
-    event: Event, 
-    class_names: list[str],
-    min_pixel_area: int,
-) -> list:
-    
-    def item_is_a_child(obj_id: str) -> bool:
-        return "___" in obj_id
-
-    seen_obj_ids = set()
-    bounding_boxes = []
-
-    class_names_inv = {name: idx for idx, name in enumerate(class_names)}
-    
-    visible_objects = {
-        obj["objectId"]: obj["visible"] or obj["parentReceptacles"] is None
-        for obj in event.metadata["objects"]
-    }
-
-    assert event.instance_detections2D is not None
-
-    for objid in event.instance_detections2D:
-        if objid in seen_obj_ids:
-            continue
-
-        if not visible_objects.get(objid, False):
-            continue
-
-        if item_is_a_child(objid):
-            continue
-
-        object_class: str = objid.split("|")[0]
-
-        if object_class in class_names_inv:
-            class_id = class_names_inv[object_class]
-
-            seen_obj_ids.add(objid)
-            xmin, ymin, xmax, ymax = event.instance_detections2D[objid]
-
-            if (xmax - xmin) * (ymax - ymin) < min_pixel_area:
-                continue
-
-            bounding_boxes.append(
-                dict(
-                    xmin=xmin,
-                    ymin=ymin,
-                    xmax=xmax,
-                    ymax=ymax,
-                    class_id=class_id,
-                    class_name=class_names[class_id],
-                    bbx_features=np.array([], dtype=float),
-                )
-            )
-    return bounding_boxes
 
 
 

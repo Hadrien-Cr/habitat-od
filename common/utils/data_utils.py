@@ -108,7 +108,7 @@ def make_colors(num, seed=1, ctype=1) -> list:
 
 
 def load_label(
-    path: Path, fname: Path, class_names: list[str], img_size: tuple[int,int]
+    path: Path, class_names: list[str], img_size: tuple[int,int]
 ) -> list[dict]:
     w, h = img_size
 
@@ -144,23 +144,23 @@ def load_label(
     return label_boxes
 
 
-def load_img(fname: Path) -> np.ndarray:
+def load_img(path: Path) -> np.ndarray:
     # Check image extension and try to load accordingly
-    img_path_jpg = (fname.with_suffix(".jpg"))
-    img_path_png = (fname.with_suffix(".png"))
+    img_path_jpg = (path.with_suffix(".jpg"))
+    img_path_png = (path.with_suffix(".png"))
 
     if img_path_jpg.exists():
         img_path = img_path_jpg
     elif img_path_png.exists():
         img_path = img_path_png
     else:
-        raise FileNotFoundError(f"No image file found for {fname}  with .jpg or .png extension.")
+        raise FileNotFoundError(f"No image file found for {path}  with .jpg or .png extension.")
 
     with open(img_path, "rb") as f:
         im = Image.open(f)
         im = np.array(im)
 
-    assert isinstance(im, np.ndarray), f"Image loading failed for {fname}"
+    assert isinstance(im, np.ndarray), f"Image loading failed for {path}"
 
     return im
 
@@ -197,9 +197,11 @@ def save_label(
     data_dir: Path,
     fname: Path,
     img_shape: tuple[int, int, int],
+    class_names: list[str]
 ) -> None:
     label_dir = data_dir / "labels"
     os.makedirs(label_dir, exist_ok=True)
+    class_names_inv = {name: i for i, name in enumerate(class_names)}
 
     path = label_dir / (fname.stem + ".txt")
 
@@ -208,11 +210,11 @@ def save_label(
 
     annotations = []
 
-    for bbx in sorted(gt_bounding_boxes, key=lambda x: x["class_id"]):
+    for bbx in sorted(gt_bounding_boxes, key=lambda bbx: class_names_inv[bbx['class_name']]):
         x_center, y_center, w, h = xyxy_to_normalized_xywh(
             (bbx["xmin"], bbx["ymin"], bbx["xmax"], bbx["ymax"]), img_shape[:2], center=True
         )
-        annotations.append(f"{bbx['class_id']} {x_center} {y_center} {w} {h}")
+        annotations.append(f"{class_names_inv[bbx['class_name']]} {x_center} {y_center} {w} {h}")
 
     with open(path, "w") as f:
         f.write("\n".join(annotations) + "\n")
