@@ -39,7 +39,7 @@ def scene_name_to_scene_spec(scene_name: str) -> dict:
     
     if get_scene_type(scene_name) == "procthor-val":
         i = int(int(scene_name.replace("procthor-val","")))
-        return PROCTHOR_DS["train"][-i]
+        return PROCTHOR_DS["train"][len(PROCTHOR_DS["train"]) - i - 1]
 
     if get_scene_type(scene_name) == "procthor-test":
         i = int(int(scene_name.replace("procthor-test","")))

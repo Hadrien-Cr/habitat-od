@@ -12,7 +12,6 @@ def rotate_vector(dx: float, dz: float, yaw: float) -> tuple[float, float]:
     return rotated_dx, rotated_dz
 
 
-
 @dataclass
 class DiscretizedAgentPose:
     idx_x: int
@@ -130,10 +129,10 @@ def from_discrete_pose(
 ) -> tuple[float, float, float, float]:
     grid_min_x, grid_max_x, grid_min_z, grid_max_z = grid_bounds
     
-    x = grid_min_x + pose.idx_x * grid_size
-    z = grid_min_z + pose.idx_z * grid_size
-    pitch = (pose.idx_pitch/pose.pitch_bins * (max_pitch - min_pitch) + min_pitch)
-    yaw  = 360 * pose.idx_yaw / pose.yaw_bins
+    x = round(grid_min_x + pose.idx_x * grid_size,3)
+    z = round(grid_min_z + pose.idx_z * grid_size,3)
+    pitch = round(pose.idx_pitch/pose.pitch_bins * (max_pitch - min_pitch) + min_pitch,3)
+    yaw  = round(360 * pose.idx_yaw / pose.yaw_bins,3)
 
     return x,z, yaw, pitch
 

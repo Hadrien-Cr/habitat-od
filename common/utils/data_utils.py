@@ -1,11 +1,24 @@
 import os
-import uuid
+import cv2
 from pathlib import Path
 import numpy as np
 from PIL import Image
 
 from .pose_utils import DiscretizedAgentPose
 
+def xy_to_normalized_xy(xy: tuple[int, int], size: tuple[int,int]) -> tuple[float, float]:
+    x, y = xy
+    img_width, img_height = size
+    x /= img_width
+    y /= img_height
+    return x, y
+
+def normalized_xy_to_xy(normalized_xy: tuple[float, float], size: tuple[int,int]) -> tuple[int, int]:
+    x, y = normalized_xy
+    img_width, img_height = size
+    x *= img_width
+    y *= img_height
+    return int(round(x)), int(round(y))
 
 def xyxy_to_normalized_xywh(box: tuple[int, int, int, int], size: tuple[int,int], center=True) -> tuple[float, float, float, float]:
     img_width, img_height = size
@@ -107,12 +120,12 @@ def make_colors(num, seed=1, ctype=1) -> list:
     return colors
 
 
-def load_label(
-    path: Path, class_names: list[str], img_size: tuple[int,int]
-) -> list[dict]:
+def load_bounding_boxes(
+    path: Path, img_size: tuple[int,int]
+) -> list:
     w, h = img_size
 
-    label_boxes: list[dict] = []
+    bounding_boxes = []
 
     with open(path) as fa:
         for line in fa.readlines():
@@ -124,24 +137,37 @@ def load_label(
             xyxy = normalized_xywh_to_xyxy(
                 (x,y,w,h), img_size, center=True
             )
+            bounding_boxes.append((class_id, xyxy))
+        
+    return bounding_boxes
 
-            label_boxes.append(
-                dict(
-                    xmin=xyxy[0],
-                    ymin=xyxy[1],
-                    xmax=xyxy[2],
-                    ymax=xyxy[3],
-                    confidence=1.0,  # GT dummy confidence
-                    bbx_confidence=1.0,
-                    class_wise_confidence=np.array(
-                        [i == class_id for i in range(len(class_names))], dtype=float
-                    ),
-                    class_id=class_id,
-                    class_name=class_names[class_id],
-                    bbx_features=np.array([], dtype=float),
-                )
-            )
-    return label_boxes
+def load_segmentation_masks(
+    path: Path, img_size: tuple[int,int]
+) -> list[np.ndarray]:
+    w, h = img_size
+
+    binary_masks = []
+
+    with open(path) as fa:
+        for line in fa.readlines():
+            annot = line.strip().split()
+
+            binary_mask = np.zeros((h, w), dtype=np.uint8)
+            class_id = int(annot[0])
+            _mask_polygon = list(map(float, annot[1:]))
+            
+            mask_polygon = []
+            
+            for i in range(0, len(_mask_polygon), 2):
+                x, y = _mask_polygon[i], _mask_polygon[i+1]
+                x, y = normalized_xy_to_xy((x, y), img_size)
+                mask_polygon.append(x)
+                mask_polygon.append(y)
+
+            cv2.fillPoly(binary_mask, pts=[np.array(mask_polygon, dtype=np.int32).reshape(-1, 1, 2)], color=(class_id, class_id, class_id))
+            binary_masks.append((class_id, binary_mask))
+
+    return binary_masks
 
 
 def load_img(path: Path) -> np.ndarray:
@@ -192,32 +218,58 @@ def fname2pose(fname: Path) -> DiscretizedAgentPose:
 
     return DiscretizedAgentPose(idx_x, idx_z, idx_yaw, idx_pitch, yaw_bins, pitch_bins)
 
-def save_label(
-    gt_bounding_boxes: list[dict],
+
+def save_ground_truth(
+    ground_truth: dict[str, dict],
     data_dir: Path,
     fname: Path,
     img_shape: tuple[int, int, int],
-    class_names: list[str]
+    class_mapping: dict[str, int],
+    save_bounding_boxes: bool,
+    save_segmentations_masks: bool
 ) -> None:
     label_dir = data_dir / "labels"
     os.makedirs(label_dir, exist_ok=True)
-    class_names_inv = {name: i for i, name in enumerate(class_names)}
 
-    path = label_dir / (fname.stem + ".txt")
+    bounding_box_path = label_dir / (fname.stem + ".txt")
+    segmentation_masks_path = label_dir / (fname.stem + ".txt")
 
-    if path.exists():
+    if bounding_box_path.exists():
         return
 
-    annotations = []
+    bounding_box_annotations = []
+    segmentation_mask_annotations = []
 
-    for bbx in sorted(gt_bounding_boxes, key=lambda bbx: class_names_inv[bbx['class_name']]):
-        x_center, y_center, w, h = xyxy_to_normalized_xywh(
-            (bbx["xmin"], bbx["ymin"], bbx["xmax"], bbx["ymax"]), img_shape[:2], center=True
-        )
-        annotations.append(f"{class_names_inv[bbx['class_name']]} {x_center} {y_center} {w} {h}")
+    for object_id, object_detection_info in ground_truth.items():
+        class_name = object_detection_info['class_name']
 
-    with open(path, "w") as f:
-        f.write("\n".join(annotations) + "\n")
+        if class_name not in class_mapping:
+            continue
+
+        class_id = class_mapping[class_name]
+
+        if save_bounding_boxes:
+            xmin, ymin, xmax, ymax = object_detection_info["bounding_box"]
+            x_center, y_center, w, h = xyxy_to_normalized_xywh(
+                (xmin, ymin, xmax, ymax), img_shape[:2], center=True
+            )
+            bounding_box_annotations.append(f"{class_id} {x_center} {y_center} {w} {h}")
+
+        if save_segmentations_masks:
+            mask_polygon = object_detection_info["mask_polygon"]
+            mask_polygon_str = ""
+            for x, y in mask_polygon:
+                normx, normy = xy_to_normalized_xy((x, y), img_shape[:2])
+                mask_polygon_str += f" {normx} {normy}"
+            segmentation_mask_annotations.append(f"{class_id}{mask_polygon_str}")
+
+    if save_bounding_boxes:
+        with open(bounding_box_path, "w") as f:
+            f.write("\n".join(bounding_box_annotations) + "\n")
+
+    if save_segmentations_masks:
+        with open(segmentation_masks_path, "w") as f:
+            f.write("\n".join(segmentation_mask_annotations) + "\n")
 
 def save_img(
     img: np.ndarray,

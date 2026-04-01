@@ -13,9 +13,10 @@ opencv-python-headless==4.11.0.86
 pandas
 pillow
 seaborn
-torch>=2.2.0
-torchvision>=0.17.0
+torch==2.0.1
+torchvision==0.15.2
 tqdm
+ultralytics==8.2.40
 gdown
 Cython
 sb3_contrib

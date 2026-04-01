@@ -5,6 +5,8 @@ from .controller import setup_controller
 from tqdm import tqdm
 from collections import Counter
 from ai2thor.server import Event
+
+import cv2
 import numpy as np
 
 
@@ -67,59 +69,56 @@ def get_object_class_position(object_custom_id: str) -> tuple[str, float, float,
     return parts[0], float(parts[1]), float(parts[2]), float(parts[3])
 
 
-def get_ground_truth_bbx(
+def get_object_custom_id(object_info: dict) -> str:
+    object_class = object_info["objectType"]
+    object_center = object_info["axisAlignedBoundingBox"]["center"]
+    x, y, z = object_center["x"], object_center["y"], object_center["z"]
+    return object_class+'_'+str(round(x, 3))+'_'+str(round(y, 3))+'_'+str(round(z, 3))
+
+
+def get_ground_truth(
     event: Event, 
     min_pixel_area: int,
-) -> list:
-    
-    def item_is_a_child(obj_id: str) -> bool:
-        return "___" in obj_id
+) -> dict[str, dict]:
+    """
+    For all objects in event.instance_masks, generate a mask and a bounding box.
+    """
+    assert event.instance_detections2D is not None, "Instance detections are not available"
 
-    seen_obj_ids = set()
-    bounding_boxes = []
-    
-    visible_objects = {
-        obj["objectId"]: obj["visible"] or obj["parentReceptacles"] is None
-        for obj in event.metadata["objects"]
-    }
+    detection_info = {} # dictionnary of {objiid: {mask: np.ndarray, bbx: tuple}}
+    object_ids = [object["objectId"] for object in event.metadata["objects"]]
 
-    assert event.instance_detections2D is not None
-
-    for objid in event.instance_detections2D:
-        if objid in seen_obj_ids or not visible_objects.get(objid, False) or item_is_a_child(objid):
+    for id in event.instance_masks:
+        if id not in object_ids:
             continue
 
-        xmin, ymin, xmax, ymax = event.instance_detections2D[objid]
+        mask = event.instance_masks[id].astype(np.uint8)
+        _mask_polygon, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        mask_polygon = np.reshape(_mask_polygon[0], (-1, 2))
+        xmin, ymin, xmax, ymax = cv2.boundingRect(mask)
+
         if (xmax - xmin) * (ymax - ymin) < min_pixel_area:
             continue
         
-        seen_obj_ids.add(objid)
-
         object_info = None
 
         for obj in event.metadata["objects"]:
-            if obj["objectId"] == objid:
+            if obj["objectId"] == id:
                 object_info = obj
                 break
-        
-        assert isinstance(object_info, dict)
-        object_class = object_info["objectType"]
-        object_center = object_info ["axisAlignedBoundingBox"]["center"]
 
-        x, y, z = object_center["x"], object_center["y"], object_center["z"]
-        object_custom_id = object_class+'_'+str(round(x, 3))+'_'+str(round(y, 3))+'_'+str(round(z, 3))
-        
-        bounding_boxes.append(
+        assert isinstance(object_info, dict)
+
+        object_custom_id = get_object_custom_id(object_info)
+        detection_info[object_custom_id] = dict(
             dict(
-                xmin=xmin,
-                ymin=ymin,
-                xmax=xmax,
-                ymax=ymax,
-                class_name=object_class,
-                object_id=object_custom_id
+                mask_polygon=mask_polygon,
+                bounding_box=(xmin, ymin, xmax, ymax),
+                class_name=object_info["objectType"],
             )
         )
-    return bounding_boxes
+
+    return detection_info
 
 if __name__ == "__main__":
     get_objects(["procthor-train"], "procthor-train")

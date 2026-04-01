@@ -28,15 +28,15 @@ def kmeans(inputs: list, k: int, rng_gen) -> list[list[int]]:
     return clusters
 
 
-def balanced_supsampling(samples: list[tuple[Path, np.ndarray, list[dict]]], num_samples: int, rng_gen) -> list[int]:
+def balanced_supsampling(samples: list[tuple[Path, np.ndarray, dict]], num_samples: int, rng_gen) -> list[int]:
     """
     Uses balanced class sampling to select a diverse set of samples. https://proceedings.mlr.press/v143/olivier21a/olivier21a.pdf
     """
     from scipy.optimize import minimize
 
     def get_objects(sample):
-        _, _, labels = sample
-        return [label['object_id'] for label in labels] 
+        _, _, label = sample
+        return list(label.keys())
 
     all_objects = set()
 
@@ -77,7 +77,7 @@ def balanced_supsampling(samples: list[tuple[Path, np.ndarray, list[dict]]], num
     return rng_gen.choice(N, num_samples, p=sampling_probs, replace=False)
 
 
-def coverage_subsampling(samples: list[tuple[Path, np.ndarray, list[dict]]], num_samples: int, rng_gen) ->  list[int]:
+def coverage_subsampling(samples: list[tuple[Path, np.ndarray, dict]], num_samples: int, rng_gen) ->  list[int]:
     """
     Subsamples by covering multiple (x,z) positions as most
     """
@@ -102,20 +102,19 @@ def covisibility_subsampling(samples: list[tuple[Path, np.ndarray, list[dict]]],
     Repeats multiple times covisibility filtering steps, until the amount of samples is reached. 
     At each step, selects and remove a set of samples that covers the set of objects
     """
+    N = len(samples)
+    out = []
 
-    out_idx = []
-    remaining_idx = list(range(len(samples)))
-
-    while len(out_idx) < num_samples:
-        selected_idx = covisibility_subset(
+    while len(out) < num_samples:
+        remaining_idx = [sample_id for sample_id in list(range(N)) if sample_id not in out]
+        selected = covisibility_subset(
             [samples[i] for i in remaining_idx],
             rng_gen
         )
-        out_idx.extend([remaining_idx[i] for i in selected_idx])
-        remaining_idx = [i for i in remaining_idx if i not in selected_idx]
+        assert not any([remaining_idx[x] in out for x in selected])
+        out.extend([remaining_idx[x] for x in selected])
 
-    return out_idx[:num_samples]
-
+    return out[:num_samples]
 
 def covisibility_subset(samples: list[tuple[Path, np.ndarray, list[dict]]], rng_gen) ->  list[int]:
     """
@@ -123,9 +122,9 @@ def covisibility_subset(samples: list[tuple[Path, np.ndarray, list[dict]]], rng_
     Follow Co-Visibility Clustering algorithm from https://arxiv.org/pdf/2411.17735
     """
     def get_objects(sample):
-        _, _, labels = sample
-        return [label['object_id'] for label in labels]
-    
+        _, _, label = sample
+        return list(label.keys())
+
     def cover(sample, object_cluster: list[str]):
         objects = get_objects(sample)
         return all(obj in objects for obj in object_cluster)
