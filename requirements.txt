@@ -1,24 +1,25 @@
-ai2thor==5.0.0
-datasets
-prior
-gymnasium==0.29.1
-imageio==2.33.1
-scikit-learn==1.6.1
-imageio-ffmpeg==0.4.9
-matplotlib
-matplotlib-inline
-numpy==1.21.2
-opencv-python==4.11.0.86
-opencv-python-headless==4.11.0.86
-pandas
-pillow
-seaborn
-torch==2.0.1
-torchvision==0.15.2
-tqdm
-ultralytics==8.2.40
-gdown
-Cython
-sb3_contrib
-tensorboard
-jupyter
+numpy==1.21.0
+
+# ai2thor==5.0.0
+# datasets
+# prior
+# gymnasium==0.29.1
+# imageio==2.33.1
+# scikit-learn==1.6.1
+# imageio-ffmpeg==0.4.9
+# matplotlib
+# matplotlib-inline
+# opencv-python==4.11.0.86
+# opencv-python-headless==4.11.0.86
+# pandas
+# pillow
+# seaborn
+# torch==2.0.1
+# torchvision==0.15.2
+# tqdm
+# ultralytics==8.2.40
+# gdown
+# Cython
+# sb3_contrib
+# tensorboard
+# jupyter

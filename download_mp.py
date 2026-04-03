@@ -136,40 +136,40 @@ def main():
     file_types = FILETYPES
 
     # download task data
-    # if args.task_data:
-    #     if set(args.task_data) & set(TASK_FILES.keys()):  # download task data
-    #         out_dir = os.path.join(args.out_dir, RELEASE_TASKS)
-    #         download_task_data(args.task_data, out_dir)
-    #     else:
-    #         print('ERROR: Unrecognized task data id: ' + args.task_data)
-    #     print('Done downloading task_data for ' + str(args.task_data))
-    #     key = input('Press any key to continue on to main dataset download, or CTRL-C to exit.')
+    if args.task_data:
+        if set(args.task_data) & set(TASK_FILES.keys()):  # download task data
+            out_dir = os.path.join(args.out_dir, RELEASE_TASKS)
+            download_task_data(args.task_data, out_dir)
+        else:
+            print('ERROR: Unrecognized task data id: ' + args.task_data)
+        print('Done downloading task_data for ' + str(args.task_data))
+        key = input('Press any key to continue on to main dataset download, or CTRL-C to exit.')
 
     # download specific file types?
-    if args.type:
-        if not set(args.type) & set(FILETYPES):
-            print('ERROR: Invalid file type: ' + file_type)
-            return
-        file_types = args.type
+    # if args.type:
+    #     if not set(args.type) & set(FILETYPES):
+    #         print('ERROR: Invalid file type: ' + file_type)
+    #         return
+    #     file_types = args.type
 
-    if args.id and args.id != 'ALL':  # download single scan
-        scan_id = args.id
-        if scan_id not in release_scans:
-            print('ERROR: Invalid scan id: ' + scan_id)
-        else:
-            out_dir = os.path.join(args.out_dir, RELEASE, scan_id)
-            download_scan(scan_id, out_dir, file_types)
-    elif 'minos' not in args.task_data and args.id == 'ALL' or args.id == 'all':  # download entire release
-        if len(file_types) == len(FILETYPES):
-            print('WARNING: You are downloading the entire MP release which requires ' + RELEASE_SIZE + ' of space.')
-        else:
-            print('WARNING: You are downloading all MP scans of type ' + file_types[0])
-        print('Note that existing scan directories will be skipped. Delete partially downloaded directories to re-download.')
-        print('***')
-        print('Press any key to continue, or CTRL-C to exit.')
-        key = input('')
-        out_dir = os.path.join(args.out_dir, RELEASE)
-        download_release(release_scans, out_dir, file_types)
+    # if args.id and args.id != 'ALL':  # download single scan
+    #     scan_id = args.id
+    #     if scan_id not in release_scans:
+    #         print('ERROR: Invalid scan id: ' + scan_id)
+    #     else:
+    #         out_dir = os.path.join(args.out_dir, RELEASE, scan_id)
+    #         download_scan(scan_id, out_dir, file_types)
+    # elif 'minos' not in args.task_data and args.id == 'ALL' or args.id == 'all':  # download entire release
+    #     if len(file_types) == len(FILETYPES):
+    #         print('WARNING: You are downloading the entire MP release which requires ' + RELEASE_SIZE + ' of space.')
+    #     else:
+    #         print('WARNING: You are downloading all MP scans of type ' + file_types[0])
+    #     print('Note that existing scan directories will be skipped. Delete partially downloaded directories to re-download.')
+    #     print('***')
+    #     print('Press any key to continue, or CTRL-C to exit.')
+    #     key = input('')
+    #     out_dir = os.path.join(args.out_dir, RELEASE)
+    #     download_release(release_scans, out_dir, file_types)
 
 if __name__ == "__main__": main()
 
