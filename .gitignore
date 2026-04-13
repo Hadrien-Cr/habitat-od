@@ -1,6 +1,6 @@
 __pycache__/
 .venv/
+data
 data/
-datasets/
 third_party/
 *.pt
