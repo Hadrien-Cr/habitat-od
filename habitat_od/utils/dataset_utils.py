@@ -1,65 +1,13 @@
 from pathlib import Path
 import os
 import yaml
-from common.utils.data_utils import fname2pose, pose2fname, enumerate_fnames, make_colors, save_img, save_ground_truth, load_img, load_bounding_boxes, load_segmentation_masks
+from common.utils.data_utils import pose2fname, enumerate_fnames, make_colors, save_img, save_ground_truth, load_img, load_bounding_boxes, load_segmentation_masks
 import numpy as np
 from torch.utils.data import Dataset
 from datasets import DatasetDict
 from tqdm import tqdm
-from torchvision.io import decode_image
+from omegaconf import DictConfig, OmegaConf
 
-from dataclasses import dataclass
-
-@dataclass
-class DatasetGenerationConfig:
-    """Configuration for generating the dataset."""
-    env: str
-    """The environment for the dataset."""
-    scenes: list[str]
-    """The scenes used for generation."""
-    num_samples: int
-    """The number of samples to generate."""
-    seed: int
-    """The random seed for reproducibility."""
-    segmentation: bool
-    """Whether to include segmentation masks."""
-
-    min_pixel_area: int
-    """The minimum area (in pixels) of objects to be included in the dataset."""
-    class_mapping: dict[str, int]
-    """A mapping from class names (AI2THOR object types) to class IDs (integers). Objects not in this mapping will be ignored."""
-    img_height: int
-    img_width: int
-    grid_size: float
-    """The size of the grid cells."""
-    visibility_distance: float
-    """The maximum distance at which objects are visible."""
-    yaw_bins: int
-    """The number of yaw bins for discretizing the agent's orientation."""
-
-    downsampling: str
-    """The downsampling method to use."""
-    downsampling_factor: float
-    """The factor by which to downsample the dataset. If det to 4, 1 on 4 images will be saved."""
-
-
-    def to_dict(self):
-        return {
-            "env": self.env,
-            "scenes": self.scenes,
-            "num_samples": self.num_samples,
-            "seed": self.seed,
-            "segmentation": self.segmentation,
-            "min_pixel_area": self.min_pixel_area,
-            "img_height": self.img_height,
-            "img_width": self.img_width,
-            "grid_size": self.grid_size,
-            "visibility_distance": self.visibility_distance,
-            "yaw_bins": self.yaw_bins,
-            "downsampling": self.downsampling,
-            "downsampling_factor": self.downsampling_factor
-        }
-    
 
 class ObjectDetectionDataset(Dataset):
     def __init__(self, data_dir: Path, class_mapping: dict[str, int], transform=None, target_transform=None):
@@ -109,41 +57,41 @@ class SegmentationDataset(Dataset):
         return image, label
 
 
-def save_data(data: list[tuple[Path, np.ndarray, dict]], class_mapping: dict[str, int], data_dir: Path, segmentation: bool):
+def save_data(data: list[tuple[Path, np.ndarray, list]], class_mapping: dict[str, int], data_dir: Path, segmentation: bool):
     """
     data: list of (fname, image, labels) to store
     """
-    for (fname, img, label) in tqdm(data, desc = "Saving data"):
+    for (fname, img, object_detection_info) in tqdm(data, desc = "Saving data"):
         save_img(img, data_dir, fname)
-        
         if segmentation:
-            save_ground_truth(label, data_dir, fname, img.shape, class_mapping, save_bounding_boxes=False, save_segmentations_masks=True)
+            save_ground_truth(object_detection_info, data_dir, fname, img.shape, class_mapping, save_bounding_boxes=False, save_segmentations_masks=True)
         else:
-            save_ground_truth(label, data_dir, fname, img.shape, class_mapping, save_bounding_boxes=True, save_segmentations_masks=False)
+            save_ground_truth(object_detection_info, data_dir, fname, img.shape, class_mapping, save_bounding_boxes=True, save_segmentations_masks=False)
 
 
-def save_dataset(
-    data_root: Path, dataset_name: Path, class_mapping: dict[str, int], splits: dict[str, tuple[DatasetGenerationConfig, list]]
-) -> None:
-    
-    os.makedirs(data_root / dataset_name, exist_ok=True)
+def save_dataset(config, splits: dict[DictConfig, list], class_mapping: dict[str, int]) -> None:
+    os.makedirs(Path(config.DATASET.data_root) / config.DATASET.dataset_name, exist_ok=True)
 
     content = dict(
-        path=str(data_root / dataset_name),
+        path= Path(config.DATASET.data_root) / config.DATASET.dataset_name,
         names={i: name for i, name in enumerate(class_mapping.keys())},
-        splits=list(splits.keys())
     )
 
-    with open(data_root / dataset_name / f"{dataset_name}.yaml", "w") as f:
+    with open(Path(config.DATASET.data_root) / config.DATASET.dataset_name / f"{config.DATASET.dataset_name}.yaml", "w") as f:
         yaml.dump(content, f)
 
-    for split_name, (config,data) in splits.items():
-        save_data(data, class_mapping, data_root / dataset_name / split_name, config.segmentation)
+    for split_config, data in splits.items():
+        save_data(
+            data, 
+            class_mapping, 
+            Path(config.DATASET.data_root) / config.DATASET.dataset_name / split_config.name, 
+            split_config.segmentation
+        )
 
-        content = config.to_dict()
-        content["path"] = str(data_root / dataset_name / split_name)
+        content: dict = OmegaConf.to_container(split_config)
+        content["path"] = str(Path(config.DATASET.data_root) / config.DATASET.dataset_name / split_config.name)
 
-        with open(data_root / dataset_name / split_name /f"{dataset_name}-{split_name}.yaml", "w") as f:
+        with open(Path(config.DATASET.data_root) / config.DATASET.dataset_name / split_config.name /f"{config.DATASET.dataset_name}-{split_config.name}.yaml", "w") as f:
             yaml.dump(content, f)
 
 

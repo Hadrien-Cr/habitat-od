@@ -4,8 +4,6 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from .pose_utils import DiscretizedAgentPose
-
 def xy_to_normalized_xy(xy: tuple[int, int], size: tuple[int,int]) -> tuple[float, float]:
     x, y = xy
     img_width, img_height = size
@@ -191,36 +189,16 @@ def load_img(path: Path) -> np.ndarray:
     return im
 
 
-def pose2fname(prefix: str, pose: DiscretizedAgentPose) -> Path:
+def pose2fname(prefix: str, pose: tuple) -> Path:
     """Get the filename corresponding to the given pose."""
-    fname = Path(f"{prefix}-x{pose.idx_x}-z{pose.idx_z}-y{pose.idx_yaw}-p{pose.idx_pitch}-by{pose.yaw_bins}-bp{pose.pitch_bins}")
+    (x,y,z), (r,p,yaw) = pose
+    fname = Path(f"{prefix}_x_{x:.2f}_z_{z:.2f}_yaw_{yaw:.2f}")
     return fname
 
 
-def fname2pose(fname: Path) -> DiscretizedAgentPose:
-    fname_str = str(fname.stem)
-
-    def extract_numerical_value(string: str, prefix: str):
-        where_start = fname_str.find(prefix) + len(prefix)
-        where_end = where_start + (
-            fname_str[where_start:].find("-")
-            if fname_str[where_start:].find("-") != -1
-            else len(fname_str[where_start:])
-        )
-        return float(fname_str[where_start:where_end])
-
-    idx_x = int(extract_numerical_value(fname_str, "-x"))
-    idx_z = int(extract_numerical_value(fname_str, "-z"))
-    idx_yaw = int(extract_numerical_value(fname_str, "-y"))
-    idx_pitch = int(extract_numerical_value(fname_str, "-p"))
-    yaw_bins = int(extract_numerical_value(fname_str, "-by"))
-    pitch_bins = int(extract_numerical_value(fname_str, "-bp"))
-
-    return DiscretizedAgentPose(idx_x, idx_z, idx_yaw, idx_pitch, yaw_bins, pitch_bins)
-
 
 def save_ground_truth(
-    ground_truth: dict[str, dict],
+    ground_truth: list[tuple[str, dict]],
     data_dir: Path,
     fname: Path,
     img_shape: tuple[int, int, int],
@@ -234,17 +212,16 @@ def save_ground_truth(
     bounding_box_path = label_dir / (fname.stem + ".txt")
     segmentation_masks_path = label_dir / (fname.stem + ".txt")
 
-    if bounding_box_path.exists():
-        return
+    # if bounding_box_path.exists():
+    #     return
 
     bounding_box_annotations = []
     segmentation_mask_annotations = []
 
-    for object_id, object_detection_info in ground_truth.items():
-        class_name = object_detection_info['class_name']
+    for class_name, object_detection_info in ground_truth:
 
         if class_name not in class_mapping:
-            continue
+            raise ValueError
 
         class_id = class_mapping[class_name]
 
@@ -281,8 +258,8 @@ def save_img(
 
     path = img_dir / f"{str(fname)}.jpg"
 
-    if path.exists():
-        return path
+    # if path.exists():
+    #     return path
 
     saveimg(img, path)
 

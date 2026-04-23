@@ -1,0 +1,6 @@
+[submodule "third_party/Detic"]
+	path = third_party/Detic
+	url = https://github.com/facebookresearch/Detic.git
+[submodule "third_party/Grounded-Segment-Anything"]
+	path = third_party/Grounded-Segment-Anything
+	url = https://github.com/IDEA-Research/Grounded-Segment-Anything.git

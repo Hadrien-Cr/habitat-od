@@ -1,0 +1,31 @@
+# @package _global_
+defaults:
+  - /benchmark/nav/objectnav/objectnav_hssd-hab.yaml
+  - _self_
+
+habitat:
+  dataset:
+    type: ObjectNav-v1
+    split: val
+    data_path: data/datasets/objectnav/hssd-hab/{split}/{split}.json.gz
+    scenes_dir: data/scene_datasets/hssd-hab/scenes
+    content_scenes: ["*"]
+
+
+DATASET:
+  data_root: data_od/
+  dataset_name: default
+  splits:
+    test:
+      name: test
+      segmentation: True
+      num_samples: 100
+
+  seed: 0
+  min_pixel_area: 20
+  frame_height: 640
+  frame_width: 480
+  visibility_distance: 10
+  downsampling_factor: 4
+  meters_per_grid_pixel: 0.2
+  turn_angle: 30

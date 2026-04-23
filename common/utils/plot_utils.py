@@ -96,7 +96,7 @@ def plot_label_bounding_box(img, xyxy, label, color, line_thickness=1, alpha=0.3
     )
     return img
 
-def plot_pred_mask(img, mask, label, color, line_thickness=1, alpha=0.3) -> np.ndarray:
+def plot_pred_mask(img, mask, label, color, line_thickness=1, alpha=0.3, draw_dotted_bbx:  bool =  False) -> np.ndarray:
     tl = line_thickness or round(
         0.002 * (img.shape[0] + img.shape[1]) / 2
     )  # line/font thickness
@@ -125,7 +125,8 @@ def plot_pred_mask(img, mask, label, color, line_thickness=1, alpha=0.3) -> np.n
         cv2.LINE_AA,
     )  # filled
 
-    draw_dotted_rect(img, x, y, x + w, y + h, color, thickness=tl)
+    if draw_dotted_bbx: draw_dotted_rect(img, x, y, x + w, y + h, color, thickness=tl)
+    
     cv2.putText(
         img,
         label,
@@ -140,7 +141,27 @@ def plot_pred_mask(img, mask, label, color, line_thickness=1, alpha=0.3) -> np.n
     return img
 
 
-def plot_label_mask(img, mask, label, color, line_thickness=1, alpha=0.3) -> np.ndarray:
+def plot_semantic_2d_map(sem, colors) -> Image.Image:
+    # sem: (w, h, 1 + nc) obstacle channel + sem channels 
+    num_classes = sem.shape[-1]
+
+    colored = np.zeros((*sem.shape[:2], 3), dtype=np.uint8)
+    white_mask = (sem[:, :, 0] == 0)
+    colored[white_mask] = [255, 255, 255]
+    colored[~white_mask] = [0, 0, 0]
+    
+    for c in range(num_classes):
+        object_mask = (sem[:,:,c+1] == 1)
+        colored[object_mask] = colors[c]
+
+    return Image.fromarray(colored)
+
+def plot_mask(mask) -> Image.Image:
+    colored = np.zeros((*mask.shape[:2], 3), dtype=np.uint8)
+    colored[mask] = [255, 255, 255]
+    return Image.fromarray(colored)
+
+def plot_label_mask(img, mask, label, color, line_thickness=1, alpha=0.3, draw_dotted_bbx: bool = False) -> np.ndarray:
     tl = line_thickness or round(
         0.002 * (img.shape[0] + img.shape[1]) / 2
     )  # line/font thickness
@@ -161,7 +182,8 @@ def plot_label_mask(img, mask, label, color, line_thickness=1, alpha=0.3) -> np.
     tf = 1
     t_size = cv2.getTextSize("GT: " + label, 0, fontScale=tl / 4, thickness=tf)[0]
 
-    draw_dotted_rect(img, x, y, x + w, y + h, color, thickness=tl)
+    if draw_dotted_bbx: draw_dotted_rect(img, x, y, x + w, y + h, color, thickness=tl)
+    
     cv2.rectangle(
         img,
         (x, y + h),
@@ -187,7 +209,6 @@ def plot_segmentation(
     img,
     prediction: list,
     labels: list,
-    classes,
     colors,
     line_thickness=2,
 ):
@@ -196,22 +217,22 @@ def plot_segmentation(
         _img = np.array(img)
 
     # Draw prediction
-    for class_id, mask, confidence in prediction:
+    for class_name, pred in prediction:
         _img = plot_pred_mask(
             _img,
-            mask,
-            classes[class_id],
-            colors[class_id],
+            pred["mask"],
+            class_name,
+            colors[class_name],
             line_thickness=line_thickness,
         )
 
     # Draw labels
-    for class_id, mask in labels:
+    for class_name, gt in labels:
         _img = plot_label_mask(
             _img,
-            mask,
-            classes[class_id],
-            colors[class_id],
+            gt["mask"],
+            class_name,
+            colors[class_name],
             line_thickness=line_thickness,
         )
 
@@ -222,7 +243,6 @@ def plot_object_detection(
     img,
     prediction: list,
     labels: list,
-    classes,
     colors,
     line_thickness=2,
 ):
@@ -232,26 +252,88 @@ def plot_object_detection(
         _img = np.array(img)
 
     # Draw prediction
-    for class_id, (xmin, ymin, xmax, ymax), confidence in prediction:
+    for class_name, (xmin, ymin, xmax, ymax), confidence in prediction:
         xyxy = (xmin, ymin, xmax, ymax)
         _img = plot_pred_bounding_box(
             _img,
             xyxy,
             confidence,
-            classes[class_id],
-            colors[class_id],
+            class_name,
+            colors[class_name],
             line_thickness=line_thickness,
         )
 
     # Draw labels
-    for class_id, (xmin, ymin, xmax, ymax) in labels:
+    for class_name, (xmin, ymin, xmax, ymax) in labels:
         xyxy = (xmin, ymin, xmax, ymax)
         _img = plot_label_bounding_box(
             _img,
             xyxy,
-            classes[class_id],
-            colors[class_id],
+            class_name,
+            colors[class_name],
             line_thickness=line_thickness,
         )
 
     return _img
+
+
+def make_mosaic(
+    list_fnames_images: list[tuple[str, np.ndarray]],
+    target_height: int = 2000,
+    sort: bool = False,
+    N_cols: int = 4
+) -> np.ndarray:
+    n =  len(list_fnames_images)
+    processed_images = []
+
+    for i, (filename, img) in enumerate(list_fnames_images):
+        # add text overlay with filename
+        cv2.putText(
+            img,
+            filename,
+            (5, 25),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.9,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+        processed_images.append(img)
+
+    # 2. Resize all images to the smallest dimension found for uniform tiles
+    # This step is crucial for np.hstack/np.vstack to work.
+    min_h = min(img.shape[0] for img in processed_images)
+    min_w = min(img.shape[1] for img in processed_images)
+    tile_size = (min_w, min_h)  # (width, height) for cv2.resize
+
+    resized_images = [cv2.resize(img, tile_size) for img in processed_images]
+
+    # 3. Create the nx4 mosaic
+    rows = []
+    for i in range((n + N_cols - 1) // N_cols):
+        # Stack 4 images horizontally (cols)
+        start_idx = i * N_cols
+        end_idx = (i + 1) * N_cols
+        row_of_images = resized_images[start_idx:end_idx]
+        if len(row_of_images) == 0:
+            continue
+        elif len(row_of_images) == N_cols:
+            rows.append(np.hstack(row_of_images))
+        else:
+            # If not enough images to fill the last row, pad with black images
+            n_missing = N_cols - len(row_of_images)
+            black_image = np.zeros_like(resized_images[0])
+            row_of_images.extend([black_image] * n_missing)
+            rows.append(np.hstack(row_of_images))
+
+    final_mosaic = np.vstack(rows)
+
+    downscale_factor = target_height / final_mosaic.shape[0]
+    final_mosaic = cv2.resize(
+        final_mosaic,
+        (
+            int(final_mosaic.shape[1] * downscale_factor),
+            int(final_mosaic.shape[0] * downscale_factor),
+        ),
+    )
+    return final_mosaic
