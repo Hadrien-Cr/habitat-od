@@ -17,7 +17,7 @@ DATASET:
   dataset_name: open_voc_hssd
   segmentation: True
   seed: 0
-  min_pixel_area: 20
+  min_pixel_area: 5000
   frame_height: 640
   frame_width: 480
   meters_per_grid_pixel: 0.1

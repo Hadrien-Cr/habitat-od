@@ -4,28 +4,53 @@ import numpy as np
 from habitat_sim.agent.agent import AgentState
 
 
-def kmeans(inputs: list, k: int, rng_gen) -> list[list[int]]:
+def kmeans(inputs: list, k: int, rng_gen, max_iter: int = 20) -> tuple[list[int], list[list[int]]]:
     n = len(inputs)
 
+    if k <= 0 or k > n:
+        raise ValueError("k must satisfy 1 <= k <= number of inputs")
+
     if k == n:
-        return [[i] for i in range(n)]
+        return list(range(n)), [[i] for i in range(n)]
 
-    centers = [inputs[i] for i in rng_gen.choice(range(n), size=k, replace=False)]
-    
-    converged = False
+    X = np.vstack(inputs)
 
-    while not converged:
-        clusters: list[list[int]] = [[] for _ in range(k)]
+    init_idx = rng_gen.choice(n, size=k, replace=False)
+    centers = X[init_idx].copy()
 
-        for i in range(n):
-            closest_center = np.argmin([np.linalg.norm(inputs[i] - centers[j]) for j in range(k)])
-            clusters[closest_center].append(i)
+    assignments = np.zeros(n, dtype=int)
 
-        old_centers = centers
-        centers = [np.mean([inputs[i] for i in cluster], axis=0) for cluster in clusters]
-        converged = all(np.allclose(old, new) for old, new in zip(old_centers, centers))
-        
-    return clusters
+    for _ in range(max_iter):
+        old_centers = centers.copy()
+
+        distances = np.linalg.norm(
+            X[:, None, :] - centers[None, :, :],
+            axis=2
+        )
+
+        assignments = np.argmin(distances, axis=1)
+
+        partition = [[] for _ in range(k)]
+        for i, c in enumerate(assignments):
+            partition[c].append(i)
+
+        for j in range(k):
+            if partition[j]:
+                centers[j] = X[partition[j]].mean(axis=0)
+            else:
+                idx = rng_gen.integers(n)
+                centers[j] = X[idx]
+
+        # Convergence check
+        if np.allclose(old_centers, centers):
+            break
+
+    center_indices = list(set([
+        int(np.argmin(np.linalg.norm(X - center, axis=1)))
+        for center in centers
+    ]))
+
+    return center_indices, partition
 
 
 def balanced_supsampling(samples: list[tuple[AgentState, dict, list[dict]]], num_samples: int, rng_gen) -> list[int]:
@@ -86,14 +111,14 @@ def coverage_subsampling(samples: list[tuple[AgentState, dict, list[dict]]], num
         agent_state, _, _ = sample
         return agent_state.position
     
-    partitionned_indices = kmeans(
+    centers_indices, partitionned_indices = kmeans(
         inputs=[projection_fn(sample) for sample in samples],
         k=num_samples,
         rng_gen=rng_gen
     )
     assert len(partitionned_indices) == num_samples
     
-    return [cluster[0] for cluster in partitionned_indices]
+    return centers_indices
 
 
 def covisibility_subsampling(samples: list[tuple[AgentState, np.ndarray, list[dict]]], num_samples: int, rng_gen) ->  list[int]:
@@ -152,7 +177,7 @@ def covisibility_subset(samples: list[tuple[AgentState, dict, list[dict]]], rng_
 
         else:
             assert len(largest_cluster) > 1, (clusters, [cover(s, largest_cluster) for s in samples])
-            partitionned_indices = kmeans(
+            centers_indices, partitionned_indices = kmeans(
                 inputs=[projection_fn(o) for o in largest_cluster],
                 k=2,
                 rng_gen=rng_gen
@@ -181,13 +206,13 @@ def area_bin_sampling(
     rng_gen,
     num_samples = 20,
     num_bins = 10,
-    min_area = 50,
-    keep_top_k_bins = 5,
+    min_area = 500,
+    keep_top_k_bins = 3,
 )-> list[int]:
     """Sample from the data to evenly spread the largest_mask area values accross bins values"""
     
     def get_area(obs: dict, masks: list[dict]) -> int:
-        largest_mask_area = max([mask["mask_area"]  for mask in masks])
+        largest_mask_area = max([mask["mask_area"] for mask in masks])
         return largest_mask_area
     
     areas = [get_area(obs, masks) for agent_state,obs,masks in list_of_samples]
@@ -205,7 +230,7 @@ def area_bin_sampling(
     bin_edges = np.unique(bin_edges)
 
     if len(bin_edges) <= 2:
-        return rng_gen.sample(valid_indices, num_samples)
+        return rng_gen.choice(valid_indices, num_samples)
 
     K = len(bin_edges) - 1
 
@@ -229,7 +254,7 @@ def area_bin_sampling(
     for b in bins[keep_top_k_bins:]:
         if len(b) >= per_bin:
             sampled.extend(
-                rng_gen.sample(b, per_bin)
+                rng_gen.choice(b, per_bin)
             )
             leftovers.extend(
                 [x for x in b if x not in sampled]
@@ -249,7 +274,7 @@ def area_bin_sampling(
 
         if len(pool) >= remaining:
             sampled.extend(
-                rng_gen.sample(pool, remaining)
+                rng_gen.choice(pool, remaining)
             )
         else:
             sampled.extend(pool)

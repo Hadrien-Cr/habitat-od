@@ -1,1 +1,21 @@
-numpy==1.21.0
+tqdm
+datasets
+tensorboard
+cloudpickle
+pycocotools
+ipykernel
+hydra-core
+numpy <1.24 # certain deprecated operations were used in other deps
+scipy
+opencv-python
+pybullet
+pytest
+open3d
+scikit-image
+scikit-fmm
+scikit-learn
+numpy-quaternion
+natsort
+pandas
+mss
+matplotlib

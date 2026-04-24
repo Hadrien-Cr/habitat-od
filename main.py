@@ -1,9 +1,9 @@
 import numpy as np
+import os
 from pathlib import Path
 from omegaconf import OmegaConf
 from PIL import Image
 from collections import defaultdict
-import random
 from tqdm import tqdm
 
 import habitat
@@ -18,6 +18,7 @@ from habitat_od.utils.data_utils import agent_state2fname
 from habitat_od.utils.dataset_utils import save_dataset
 from habitat_od.utils.plot_utils import plot_object_detection, plot_segmentation, plot_semantic_2d_map, make_mosaic
 from habitat_od.utils.sampling_utils import area_bin_sampling
+
 
 def edit(config):
     with read_write(config):
@@ -39,8 +40,9 @@ if __name__ == "__main__":
     config = habitat.get_config(config_path="config/dataset.yaml")
     edit(config)
 
+    os.system("rm -rf data_od")
     print(OmegaConf.to_yaml(config))
-    rng_gen = random.Random(0)
+    rng_gen = np.random.default_rng(0)
 
     habitat_env = HSSD_OpenVoc_Env(config=config)
 
@@ -65,9 +67,16 @@ if __name__ == "__main__":
         # img.save(f"semantic_{scene}.png")
 
         for class_name in sorted(set(habitat_env.get_scene_annotations().values())):
-            candidate_agent_states = query_collection(habitat_env,habitat_grid=habitat_grid, config=config, target_class=class_name)
+            if class_name != "bed":
+                continue
+        
+            candidate_agent_states = query_collection(
+                habitat_grid=habitat_grid, 
+                target_class=class_name,
+                num_samples=200,
+                rng_gen=rng_gen
+            )
             rng_gen.shuffle(candidate_agent_states)
-            candidate_agent_states = candidate_agent_states[0:200]
             
             candidate_samples = []
             
