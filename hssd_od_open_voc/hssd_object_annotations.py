@@ -5,7 +5,7 @@ import pandas as pd
 from dataclasses import dataclass
 
 @dataclass
-class ClassMappingHSSD:
+class ObjectAnnotationHSSD:
     mapping_obj_name_category: dict[str, str]
     mapping_obj_name_wnsynsetkey: dict[str, str]
     mapping_obj_name_fullname: dict[str, str]

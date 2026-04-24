@@ -14,18 +14,12 @@ habitat:
 
 DATASET:
   data_root: data_od/
-  dataset_name: default
-  splits:
-    test:
-      name: test
-      segmentation: True
-      num_samples: 100
-
+  dataset_name: open_voc_hssd
+  segmentation: True
   seed: 0
   min_pixel_area: 20
   frame_height: 640
   frame_width: 480
-  visibility_distance: 10
-  downsampling_factor: 4
-  meters_per_grid_pixel: 0.2
+  meters_per_grid_pixel: 0.1
   turn_angle: 30
+  num_samples: 100

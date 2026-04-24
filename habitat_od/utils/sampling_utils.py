@@ -1,8 +1,8 @@
 from collections import Counter
 from pathlib import Path
-from common.utils.data_utils import fname2pose
-from common.utils.object_utils import get_object_class_position
 import numpy as np
+from habitat_sim.agent.agent import AgentState
+
 
 def kmeans(inputs: list, k: int, rng_gen) -> list[list[int]]:
     n = len(inputs)
@@ -28,7 +28,7 @@ def kmeans(inputs: list, k: int, rng_gen) -> list[list[int]]:
     return clusters
 
 
-def balanced_supsampling(samples: list[tuple[Path, np.ndarray, dict]], num_samples: int, rng_gen) -> list[int]:
+def balanced_supsampling(samples: list[tuple[AgentState, dict, list[dict]]], num_samples: int, rng_gen) -> list[int]:
     """
     Uses balanced class sampling to select a diverse set of samples. https://proceedings.mlr.press/v143/olivier21a/olivier21a.pdf
     """
@@ -77,15 +77,14 @@ def balanced_supsampling(samples: list[tuple[Path, np.ndarray, dict]], num_sampl
     return rng_gen.choice(N, num_samples, p=sampling_probs, replace=False)
 
 
-def coverage_subsampling(samples: list[tuple[Path, np.ndarray, dict]], num_samples: int, rng_gen) ->  list[int]:
+def coverage_subsampling(samples: list[tuple[AgentState, dict, list[dict]]], num_samples: int, rng_gen) ->  list[int]:
     """
     Subsamples by covering multiple (x,z) positions as most
     """
 
     def projection_fn(sample):
-        fname, _, _ = sample
-        pose = fname2pose(fname)
-        return np.array([pose.idx_x, pose.idx_z, pose.idx_yaw / pose.yaw_bins, 0.1 * pose.idx_pitch / pose.pitch_bins])
+        agent_state, _, _ = sample
+        return agent_state.position
     
     partitionned_indices = kmeans(
         inputs=[projection_fn(sample) for sample in samples],
@@ -97,7 +96,7 @@ def coverage_subsampling(samples: list[tuple[Path, np.ndarray, dict]], num_sampl
     return [cluster[0] for cluster in partitionned_indices]
 
 
-def covisibility_subsampling(samples: list[tuple[Path, np.ndarray, list[dict]]], num_samples: int, rng_gen) ->  list[int]:
+def covisibility_subsampling(samples: list[tuple[AgentState, np.ndarray, list[dict]]], num_samples: int, rng_gen) ->  list[int]:
     """
     Repeats multiple times covisibility filtering steps, until the amount of samples is reached. 
     At each step, selects and remove a set of samples that covers the set of objects
@@ -116,7 +115,8 @@ def covisibility_subsampling(samples: list[tuple[Path, np.ndarray, list[dict]]],
 
     return out[:num_samples]
 
-def covisibility_subset(samples: list[tuple[Path, np.ndarray, list[dict]]], rng_gen) ->  list[int]:
+
+def covisibility_subset(samples: list[tuple[AgentState, dict, list[dict]]], rng_gen) ->  list[int]:
     """
     samples : list of tuples (fname, image, labels)
     Follow Co-Visibility Clustering algorithm from https://arxiv.org/pdf/2411.17735
@@ -173,3 +173,85 @@ def covisibility_subset(samples: list[tuple[Path, np.ndarray, list[dict]]], rng_
     
     assert len(all_snapshoted_objects) == len(all_objects)
     return samples_idx
+
+
+
+def area_bin_sampling(
+    list_of_samples: list[tuple[AgentState,dict, list[dict]]],
+    rng_gen,
+    num_samples = 20,
+    num_bins = 10,
+    min_area = 50,
+    keep_top_k_bins = 5,
+)-> list[int]:
+    """Sample from the data to evenly spread the largest_mask area values accross bins values"""
+    
+    def get_area(obs: dict, masks: list[dict]) -> int:
+        largest_mask_area = max([mask["mask_area"]  for mask in masks])
+        return largest_mask_area
+    
+    areas = [get_area(obs, masks) for agent_state,obs,masks in list_of_samples]
+    valid_indices = [i for i in range(len(areas)) if areas[i] > min_area]
+    valid_areas = [areas[i] for i in range(len(areas)) if areas[i] > min_area]
+
+    if len(valid_indices) <= num_samples:
+        return valid_indices
+    
+    # construct bin edges
+    bin_edges = np.quantile(
+        valid_areas,
+        np.linspace(0, 1, num_bins + 1)
+    )
+    bin_edges = np.unique(bin_edges)
+
+    if len(bin_edges) <= 2:
+        return rng_gen.sample(valid_indices, num_samples)
+
+    K = len(bin_edges) - 1
+
+    # fill bin 
+    bins = [[] for _ in range(K)]
+
+    for i in valid_indices:
+        idx = np.searchsorted(
+            bin_edges,
+            areas[i],
+            side="right"
+        ) - 1
+        idx = min(max(idx, 0), K - 1)
+        bins[idx].append(i)
+    
+
+    per_bin = num_samples // keep_top_k_bins
+    sampled = []
+    leftovers = []
+
+    for b in bins[keep_top_k_bins:]:
+        if len(b) >= per_bin:
+            sampled.extend(
+                rng_gen.sample(b, per_bin)
+            )
+            leftovers.extend(
+                [x for x in b if x not in sampled]
+            )
+        else:
+            sampled.extend(b)
+
+    # Fill remaining slots from leftovers
+    remaining = num_samples - len(sampled)
+
+    if remaining > 0:
+        pool = [
+            x for b in bins[keep_top_k_bins:]
+            for x in b
+            if x not in sampled
+        ]
+
+        if len(pool) >= remaining:
+            sampled.extend(
+                rng_gen.sample(pool, remaining)
+            )
+        else:
+            sampled.extend(pool)
+
+    return sampled

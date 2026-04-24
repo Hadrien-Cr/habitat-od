@@ -1,10 +1,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import cv2
-
-import cv2
-import numpy as np
-from PIL import Image
+from scipy import ndimage
+from PIL import Image, ImageDraw
 
 def draw_dotted_line(img,pt1,pt2,color,thickness=1,gap=20):
     dist =((pt1[0]-pt2[0])**2+(pt1[1]-pt2[1])**2)**.5
@@ -141,25 +139,72 @@ def plot_pred_mask(img, mask, label, color, line_thickness=1, alpha=0.3, draw_do
     return img
 
 
-def plot_semantic_2d_map(sem, colors) -> Image.Image:
-    # sem: (w, h, 1 + nc) obstacle channel + sem channels 
-    num_classes = sem.shape[-1]
+from PIL import Image, ImageDraw, ImageFont
+import numpy as np
+from scipy import ndimage
+
+
+def plot_semantic_2d_map(
+    sem,
+    colors: dict[int, str],
+    class_mapping: dict[str, int],
+    scale=8
+) -> Image.Image:
+    # sem: (w, h, 1 + nc)
+    num_sem_classes = sem.shape[-1] - 1
 
     colored = np.zeros((*sem.shape[:2], 3), dtype=np.uint8)
+
     white_mask = (sem[:, :, 0] == 0)
     colored[white_mask] = [255, 255, 255]
     colored[~white_mask] = [0, 0, 0]
-    
-    for c in range(num_classes):
-        object_mask = (sem[:,:,c+1] == 1)
+
+    for c in range(num_sem_classes):
+        object_mask = (sem[:, :, c+1] == 1)
         colored[object_mask] = colors[c]
 
-    return Image.fromarray(colored)
+    # Convert to image and upscale x4
+    img = Image.fromarray(colored)
+    img = img.resize(
+        (img.width * scale, img.height * scale),
+        resample=Image.NEAREST  # keeps grid cells crisp
+    )
+
+    draw = ImageDraw.Draw(img)
+
+    inv_class_mapping = {i: c for c, i in class_mapping.items()}
+
+    for c in range(num_sem_classes):
+        object_mask = (sem[:, :, c+1] == 1)
+
+        labeled_mask, num = ndimage.label(object_mask)
+
+        for i in range(1, num + 1):
+            region = labeled_mask == i
+            coords = np.column_stack(np.where(region))
+
+            if len(coords) < 30:
+                continue
+
+            y, x = coords.mean(axis=0)
+
+            x *= scale
+            y *= scale
+
+            draw.text(
+                (x, y),
+                inv_class_mapping[c],
+                fill=(255,255,255),
+                font_size=20,
+                anchor="mm"  # center text on region centroid
+            )
+    return img
 
 def plot_mask(mask) -> Image.Image:
     colored = np.zeros((*mask.shape[:2], 3), dtype=np.uint8)
     colored[mask] = [255, 255, 255]
     return Image.fromarray(colored)
+
 
 def plot_label_mask(img, mask, label, color, line_thickness=1, alpha=0.3, draw_dotted_bbx: bool = False) -> np.ndarray:
     tl = line_thickness or round(
@@ -207,8 +252,8 @@ def plot_label_mask(img, mask, label, color, line_thickness=1, alpha=0.3, draw_d
 
 def plot_segmentation(
     img,
-    prediction: list,
-    labels: list,
+    prediction: list[dict],
+    labels: list[dict],
     colors,
     line_thickness=2,
 ):
@@ -217,22 +262,22 @@ def plot_segmentation(
         _img = np.array(img)
 
     # Draw prediction
-    for class_name, pred in prediction:
+    for pred in prediction:
         _img = plot_pred_mask(
             _img,
             pred["mask"],
-            class_name,
-            colors[class_name],
+            pred["class_name"],
+            colors[pred["class_name"]],
             line_thickness=line_thickness,
         )
 
     # Draw labels
-    for class_name, gt in labels:
+    for gt in labels:
         _img = plot_label_mask(
             _img,
             gt["mask"],
-            class_name,
-            colors[class_name],
+            gt["class_name"],
+            colors[gt["class_name"]],
             line_thickness=line_thickness,
         )
 
@@ -241,8 +286,8 @@ def plot_segmentation(
 
 def plot_object_detection(
     img,
-    prediction: list,
-    labels: list,
+    prediction: list[dict],
+    labels: list[dict],
     colors,
     line_thickness=2,
 ):
@@ -252,25 +297,25 @@ def plot_object_detection(
         _img = np.array(img)
 
     # Draw prediction
-    for class_name, (xmin, ymin, xmax, ymax), confidence in prediction:
-        xyxy = (xmin, ymin, xmax, ymax)
+    for pred in prediction:
+        xyxy = pred["bounding_box"]
         _img = plot_pred_bounding_box(
             _img,
             xyxy,
-            confidence,
-            class_name,
-            colors[class_name],
+            pred["confidence"],
+            pred["class_name"],
+            colors[pred["class_name"]],
             line_thickness=line_thickness,
         )
 
     # Draw labels
-    for class_name, (xmin, ymin, xmax, ymax) in labels:
-        xyxy = (xmin, ymin, xmax, ymax)
+    for gt in labels:
+        xyxy = gt["bounding_box"]
         _img = plot_label_bounding_box(
             _img,
             xyxy,
-            class_name,
-            colors[class_name],
+            gt["class_name"],
+            colors[gt["class_name"]],
             line_thickness=line_thickness,
         )
 

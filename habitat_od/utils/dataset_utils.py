@@ -1,12 +1,13 @@
 from pathlib import Path
 import os
 import yaml
-from common.utils.data_utils import pose2fname, enumerate_fnames, make_colors, save_img, save_ground_truth, load_img, load_bounding_boxes, load_segmentation_masks
+from habitat_od.utils.data_utils import agent_state2fname, enumerate_fnames, make_colors, save_img, save_ground_truth, load_img, load_bounding_boxes, load_segmentation_masks
 import numpy as np
 from torch.utils.data import Dataset
 from datasets import DatasetDict
 from tqdm import tqdm
 from omegaconf import DictConfig, OmegaConf
+from habitat_sim.agent.agent import AgentState
 
 
 class ObjectDetectionDataset(Dataset):
@@ -57,11 +58,11 @@ class SegmentationDataset(Dataset):
         return image, label
 
 
-def save_data(data: list[tuple[Path, np.ndarray, list]], class_mapping: dict[str, int], data_dir: Path, segmentation: bool):
+def save_data(list_fname_images_masks: list[tuple[Path, np.ndarray, list]], class_mapping: dict[str, int], data_dir: Path, segmentation: bool):
     """
     data: list of (fname, image, labels) to store
     """
-    for (fname, img, object_detection_info) in tqdm(data, desc = "Saving data"):
+    for (fname, img, object_detection_info) in tqdm(list_fname_images_masks, desc = "Saving data"):
         save_img(img, data_dir, fname)
         if segmentation:
             save_ground_truth(object_detection_info, data_dir, fname, img.shape, class_mapping, save_bounding_boxes=False, save_segmentations_masks=True)
@@ -69,29 +70,32 @@ def save_data(data: list[tuple[Path, np.ndarray, list]], class_mapping: dict[str
             save_ground_truth(object_detection_info, data_dir, fname, img.shape, class_mapping, save_bounding_boxes=True, save_segmentations_masks=False)
 
 
-def save_dataset(config, splits: dict[DictConfig, list], class_mapping: dict[str, int]) -> None:
+def save_dataset(config, splits: dict[str, list], class_mapping: dict[str, int]) -> None:
     os.makedirs(Path(config.DATASET.data_root) / config.DATASET.dataset_name, exist_ok=True)
 
+    ds_path = Path(config.DATASET.data_root) / config.DATASET.dataset_name
     content = dict(
-        path= Path(config.DATASET.data_root) / config.DATASET.dataset_name,
+        path= ds_path,
         names={i: name for i, name in enumerate(class_mapping.keys())},
     )
 
-    with open(Path(config.DATASET.data_root) / config.DATASET.dataset_name / f"{config.DATASET.dataset_name}.yaml", "w") as f:
+    with open( ds_path / f"{config.DATASET.dataset_name}.yaml", "w") as f:
         yaml.dump(content, f)
 
-    for split_config, data in splits.items():
+    for split_name, list_fname_images_masks in splits.items():
         save_data(
-            data, 
+            list_fname_images_masks, 
             class_mapping, 
-            Path(config.DATASET.data_root) / config.DATASET.dataset_name / split_config.name, 
-            split_config.segmentation
+            ds_path / split_name, 
+            config.DATASET.segmentation
         )
 
-        content: dict = OmegaConf.to_container(split_config)
-        content["path"] = str(Path(config.DATASET.data_root) / config.DATASET.dataset_name / split_config.name)
+        content = {
+            "name": split_name,
+            "path": ds_path / split_name
+        }
 
-        with open(Path(config.DATASET.data_root) / config.DATASET.dataset_name / split_config.name /f"{config.DATASET.dataset_name}-{split_config.name}.yaml", "w") as f:
+        with open(ds_path / split_name / f"{config.DATASET.dataset_name}-{split_name}.yaml", "w") as f:
             yaml.dump(content, f)
 
 

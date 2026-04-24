@@ -2,8 +2,10 @@ import numpy as np
 import habitat_sim
 import math
 
-from common.utils.plot_utils import plot_mask
-
+import cv2
+from habitat_sim.agent.agent import AgentState
+from habitat_od.utils.plot_utils import plot_mask
+from habitat_od.utils.pose_utils import quaternion_from_rpy
 
 def array_visibility(
     occupancy_array: np.ndarray,
@@ -59,6 +61,9 @@ class HabitatSemGrid:
         self.ref_y = sim.agents[0].state.position[1]
         self.turn_angle = 30
 
+        navmesh_verts = sim.pathfinder.build_navmesh_vertices(-1)
+        height = min(x[1] for x in navmesh_verts)
+
         self.world_bounds = sim.pathfinder.get_bounds()
         (b1, b2) = self.world_bounds
 
@@ -70,7 +75,7 @@ class HabitatSemGrid:
 
         # Topdown occupancy (H, W)
         self.topdown_view = sim.pathfinder.get_topdown_view(
-            meters_per_grid_pixel, height=self.ref_y
+            meters_per_grid_pixel, height=height
         ).astype(np.float64)
 
         self.class_mapping = class_mapping
@@ -92,18 +97,14 @@ class HabitatSemGrid:
 
         # Add objects
         for obj_info in list_object_info:
-            corners = obj_info["global_corners"]
-            xmin, _, zmin = corners[0]
-            xmax, _, zmax = corners[7]
-
-            self.add_object((xmin, zmin, xmax, zmax), obj_info["class_name"])
-
-    # ----------------------------
-    # Grid / World conversions
-    # ----------------------------
+            corners_3d = obj_info["corners"]
+            corners_2d = [
+                (corners_3d[i][0], corners_3d[i][2]) for i in [0,1,6,7]
+            ]
+            self.add_object(corners_2d, obj_info["class_name"])
 
     def world_to_grid(
-        self, point: tuple[float, float], round_up: bool
+        self, point: tuple[float, float], do_round: bool
     ) -> tuple[int, int]:
         x, z = point
         startx, _, startz = self.ref_point
@@ -111,8 +112,8 @@ class HabitatSemGrid:
         col = (x - startx) / self.meters_per_grid_pixel
         row = (z - startz) / self.meters_per_grid_pixel
 
-        if round_up:
-            return math.ceil(row), math.ceil(col)
+        if do_round:
+            return round(row), round(col)
         else:
             return math.floor(row), math.floor(col)
 
@@ -125,9 +126,6 @@ class HabitatSemGrid:
 
         return x, z
 
-    # ----------------------------
-    # Core utilities
-    # ----------------------------
 
     def is_navigable(self, point: tuple[int, int]) -> bool:
         row, col = point
@@ -135,45 +133,66 @@ class HabitatSemGrid:
 
     def add_object(
         self,
-        obj_2d_bb: tuple[float, float, float, float],
+        obj_corners: list[tuple[float, float]],  # [(x1,z1), (x2,z2), (x3,z3), (x4,z4)]
         obj_class: str,
     ):
-        xmin, zmin, xmax, zmax = obj_2d_bb
+        """
+        Fills the quadrilateral formed by the 4 world-space corners
+        into the semantic top-down grid.
+        """
 
-        row_min, col_min = self.world_to_grid((xmin, zmin), round_up=False)
-        row_max, col_max = self.world_to_grid((xmax, zmax), round_up=True)
+        def order_polygon_points(pts):
+            center = pts.mean(axis=0)
+            angles = np.arctan2(
+                pts[:,1] - center[1],   # y - cy
+                pts[:,0] - center[0]    # x - cx
+            )
+            return pts[np.argsort(angles)]
+        
+        if len(obj_corners) != 4:
+            raise ValueError("obj_corners must contain exactly 4 corners")
 
         H, W = self.topdown_view.shape
         class_id = self.class_mapping[obj_class]
 
-        for row in range(max(0, row_min), min(H, row_max + 1)):
-            for col in range(max(0, col_min), min(W, col_max + 1)):
-                self.sem_td_view[row, col, 1 + class_id] = 1
+        grid_pts = []
+        for (x,y) in obj_corners:
+            row, col = self.world_to_grid((x,y), do_round=True)
+            grid_pts.append([col, row])
 
-    # ----------------------------
-    # Pose generation
-    # ----------------------------
+        pts = np.array(grid_pts, dtype=np.int32)
+        pts[:, 0] = np.clip(pts[:, 0], 0, W - 1)
+        pts[:, 1] = np.clip(pts[:, 1], 0, H - 1)
+        pts = order_polygon_points(pts)
 
-    def get_all_poses(self) -> list:
-        poses = []
+        mask = np.zeros((H, W), dtype=np.uint8)
+        cv2.fillPoly(mask, [pts], 1) # type: ignore
 
-        for (row, col) in self.gridpoints[0:10]:
+        self.sem_td_view[:, :, 1 + class_id][mask == 1] = 1
+
+
+    def get_all_agent_states(self) -> list[AgentState]:
+        agent_states = []
+
+        for (row, col) in self.gridpoints:
             x, z = self.grid_to_world((row, col))
 
             for k in range(int(360 / self.turn_angle)):
                 yaw = 2 * np.pi * (k * self.turn_angle / 360)
-                poses.append(((x, self.ref_y, z), (0.0, 0.0, yaw)))
-                break
 
-        return poses
+                new_state = AgentState()
+                new_state.position = np.array([x,self.ref_y,z], dtype = np.float32)
+                new_state.rotation = quaternion_from_rpy(0, 0,  yaw - np.pi / 2)
+                agent_states.append(new_state)
 
-    def get_all_poses_viewing_class(self, obj_class: str) -> list:
-        poses = []
+        return agent_states
+
+    def get_all_agent_states_viewing_class(self, obj_class: str, visibility_range: tuple[float, float] = (0.5, 2.0)) -> list[AgentState]:
+        agent_states = []
 
         class_id = self.class_mapping[obj_class]
         occupancy = self.sem_td_view[:, :, 1 + class_id] == 1
         
-
         for yaw_deg in range(0, 360, self.turn_angle):
             yaw = 2 * np.pi * (yaw_deg / 360)
             
@@ -181,8 +200,8 @@ class HabitatSemGrid:
                 occupancy_array=occupancy,
                 rpy=(0, 0, yaw),
                 fov_deg=10,
-                min_range=int(1.0 / self.meters_per_grid_pixel),
-                max_range=int(1.0 / self.meters_per_grid_pixel) + 1,
+                min_range=int(visibility_range[0] / self.meters_per_grid_pixel),
+                max_range=int(visibility_range[1] / self.meters_per_grid_pixel),
             )
 
             rows, cols = np.where(visibility)
@@ -190,6 +209,10 @@ class HabitatSemGrid:
             for row, col in zip(rows, cols):
                 if self.is_navigable((row, col)):
                     x, z = self.grid_to_world((row, col))
-                    poses.append(((x, self.ref_y, z), (0.0, 0.0, yaw - np.pi / 2)))
 
-        return poses
+                    new_state = AgentState()
+                    new_state.position = np.array([x,self.ref_y,z], dtype = np.float32)
+                    new_state.rotation = quaternion_from_rpy(0, 0,  yaw - np.pi / 2)
+                    agent_states.append(new_state)
+
+        return agent_states

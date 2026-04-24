@@ -4,6 +4,9 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from habitat_sim.agent.agent import AgentState
+from habitat_od.utils.pose_utils import quaternion_from_rpy, rpy_from_quaternion
+
 def xy_to_normalized_xy(xy: tuple[int, int], size: tuple[int,int]) -> tuple[float, float]:
     x, y = xy
     img_width, img_height = size
@@ -139,6 +142,7 @@ def load_bounding_boxes(
         
     return bounding_boxes
 
+
 def load_segmentation_masks(
     path: Path, img_size: tuple[int,int]
 ) -> list[np.ndarray]:
@@ -189,16 +193,40 @@ def load_img(path: Path) -> np.ndarray:
     return im
 
 
-def pose2fname(prefix: str, pose: tuple) -> Path:
+def agent_state2fname(prefix: str, pose: AgentState) -> Path:
     """Get the filename corresponding to the given pose."""
-    (x,y,z), (r,p,yaw) = pose
-    fname = Path(f"{prefix}_x_{x:.2f}_z_{z:.2f}_yaw_{yaw:.2f}")
+    (x,y,z) = pose.position
+    (_,_,yaw) = rpy_from_quaternion(pose.rotation)
+    fname = Path(f"{prefix}_x_{x:.2f}_y_{x:.2f}_z_{z:.2f}_yaw_{yaw:.2f}")
     return fname
 
 
+def fname2agent_state(fname: Path) -> AgentState:
+    fname_str = str(fname.stem)
+
+    def extract_numerical_value(string: str, prefix: str):
+        where_start = fname_str.find(prefix) + len(prefix)
+        where_end = where_start + (
+            fname_str[where_start:].find("_")
+            if fname_str[where_start:].find("_") != -1
+            else len(fname_str[where_start:])
+        )
+        return float(fname_str[where_start:where_end])
+    
+    new_state = AgentState()
+
+    x = extract_numerical_value(fname_str, "_x_")
+    y = extract_numerical_value(fname_str, "_y_")
+    z = extract_numerical_value(fname_str, "_z_")
+    yaw = int(extract_numerical_value(fname_str, "_yaw_"))
+
+    new_state.position = np.array([x,y,z], dtype = np.float32)
+    new_state.rotation = quaternion_from_rpy(0, 0,  yaw)
+    return new_state
+
 
 def save_ground_truth(
-    ground_truth: list[tuple[str, dict]],
+    ground_truth: list[dict],
     data_dir: Path,
     fname: Path,
     img_shape: tuple[int, int, int],
@@ -218,8 +246,9 @@ def save_ground_truth(
     bounding_box_annotations = []
     segmentation_mask_annotations = []
 
-    for class_name, object_detection_info in ground_truth:
-
+    for object_detection_info in ground_truth:
+        
+        class_name = object_detection_info["class_name"]
         if class_name not in class_mapping:
             raise ValueError
 
@@ -247,6 +276,7 @@ def save_ground_truth(
     if save_segmentations_masks:
         with open(segmentation_masks_path, "w") as f:
             f.write("\n".join(segmentation_mask_annotations) + "\n")
+
 
 def save_img(
     img: np.ndarray,
