@@ -12,14 +12,14 @@ habitat:
     content_scenes: ["*"]
 
 
-DATASET:
+HABITAT_OD:
   data_root: data_od/
-  dataset_name: open_voc_hssd
-  segmentation: True
+  dataset_name: hssd_od_openvoc
   seed: 0
-  min_pixel_area: 5000
-  frame_height: 640
-  frame_width: 480
-  meters_per_grid_pixel: 0.1
+  min_pixel_area: 1000
+  frame_height: 480
+  frame_width: 640
+  meters_per_grid_pixel: 0.25
   turn_angle: 30
   num_samples: 100
+  num_scenes: 1

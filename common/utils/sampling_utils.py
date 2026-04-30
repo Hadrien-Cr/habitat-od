@@ -7,10 +7,7 @@ from habitat_sim.agent.agent import AgentState
 def kmeans(inputs: list, k: int, rng_gen, max_iter: int = 20) -> tuple[list[int], list[list[int]]]:
     n = len(inputs)
 
-    if k <= 0 or k > n:
-        raise ValueError("k must satisfy 1 <= k <= number of inputs")
-
-    if k == n:
+    if k >= n:
         return list(range(n)), [[i] for i in range(n)]
 
     X = np.vstack(inputs)
@@ -200,83 +197,86 @@ def covisibility_subset(samples: list[tuple[AgentState, dict, list[dict]]], rng_
     return samples_idx
 
 
-
 def area_bin_sampling(
-    list_of_samples: list[tuple[AgentState,dict, list[dict]]],
+    list_of_samples,
     rng_gen,
-    num_samples = 20,
-    num_bins = 10,
-    min_area = 500,
-    keep_top_k_bins = 3,
+    mask_filtering_fn,
+    num_samples=20,
+    num_bins=10,
+    keep_top_k_bins=5,
 )-> list[int]:
-    """Sample from the data to evenly spread the largest_mask area values accross bins values"""
-    
-    def get_area(obs: dict, masks: list[dict]) -> int:
-        largest_mask_area = max([mask["mask_area"] for mask in masks])
-        return largest_mask_area
-    
-    areas = [get_area(obs, masks) for agent_state,obs,masks in list_of_samples]
-    valid_indices = [i for i in range(len(areas)) if areas[i] > min_area]
-    valid_areas = [areas[i] for i in range(len(areas)) if areas[i] > min_area]
+    """
+    Stratified sampling over largest mask area, focusing on top-k largest bins.
+    """
+    indices = np.array(list(range(len(list_of_samples))))
 
-    if len(valid_indices) <= num_samples:
-        return valid_indices
+    if len(indices) < num_samples:
+        return indices.tolist()
     
-    # construct bin edges
-    bin_edges = np.quantile(
-        valid_areas,
-        np.linspace(0, 1, num_bins + 1)
+    areas = np.array([
+        max([inst["mask_area"] for inst in instances if mask_filtering_fn(inst)], default=0)
+        for _, instances in list_of_samples
+    ])
+
+
+    edges = np.unique(
+        np.quantile(
+            areas,
+            np.linspace(0, 1, num_bins + 1)
+        )
     )
-    bin_edges = np.unique(bin_edges)
 
-    if len(bin_edges) <= 2:
-        return rng_gen.choice(valid_indices, num_samples)
+    # Degenerate case
+    if len(edges) < 3:
+        return list(
+            rng_gen.choice(
+                indices,
+                num_samples,
+                replace=False
+            )
+        )
 
-    K = len(bin_edges) - 1
+    bin_ids = np.digitize(areas, edges[1:-1])
+    n_bins = len(edges) - 1
 
-    # fill bin 
-    bins = [[] for _ in range(K)]
+    # Keep top-k largest bins
+    selected_bins = range(
+        max(0, n_bins - keep_top_k_bins),
+        n_bins
+    )
 
-    for i in valid_indices:
-        idx = np.searchsorted(
-            bin_edges,
-            areas[i],
-            side="right"
-        ) - 1
-        idx = min(max(idx, 0), K - 1)
-        bins[idx].append(i)
-    
-
-    per_bin = num_samples // keep_top_k_bins
     sampled = []
     leftovers = []
 
-    for b in bins[keep_top_k_bins:]:
-        if len(b) >= per_bin:
-            sampled.extend(
-                rng_gen.choice(b, per_bin)
-            )
-            leftovers.extend(
-                [x for x in b if x not in sampled]
-            )
-        else:
-            sampled.extend(b)
+    per_bin = max(1, num_samples // len(selected_bins))
 
-    # Fill remaining slots from leftovers
+    for b in selected_bins:
+        members = indices[bin_ids == b]
+
+        if len(members) <= per_bin:
+            sampled.extend(members.tolist())
+        else:
+            chosen = rng_gen.choice(
+                members,
+                per_bin,
+                replace=False
+            )
+            sampled.extend(chosen.tolist())
+
+            leftovers.extend(
+                x for x in members
+                if x not in chosen
+            )
+
+    # Fill any remaining slots
     remaining = num_samples - len(sampled)
 
-    if remaining > 0:
-        pool = [
-            x for b in bins[keep_top_k_bins:]
-            for x in b
-            if x not in sampled
-        ]
+    if remaining > 0 and leftovers:
+        extra = rng_gen.choice(
+            leftovers,
+            min(remaining, len(leftovers)),
+            replace=False
+        )
+        sampled.extend(extra.tolist())
 
-        if len(pool) >= remaining:
-            sampled.extend(
-                rng_gen.choice(pool, remaining)
-            )
-        else:
-            sampled.extend(pool)
-
-    return sampled
+    return sampled[:num_samples]

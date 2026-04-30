@@ -6,138 +6,118 @@ from PIL import Image
 from collections import defaultdict
 from tqdm import tqdm
 
-import habitat
-from habitat.config import read_write
-from habitat.config.default import get_agent_config
-from habitat.config.default_structured_configs import HabitatSimSemanticSensorConfig
+import habitat # type: ignore
+from habitat_sim.agent.agent import AgentState
+from habitat.datasets.pointnav.pointnav_dataset import PointNavDatasetV1, NavigationEpisode, NavigationGoal # type: ignore
+from detectron2.utils.visualizer import Visualizer
+from detectron2.data import build_detection_test_loader, MetadataCatalog, DatasetCatalog
+from detectron2.utils.visualizer import ColorMode
 
-from hssd_od_open_voc.hssd_open_voc_env import HSSD_OpenVoc_Env
-from habitat_od.data_gen import query_collection
-from habitat_od.utils.grid_utils import HabitatSemGrid
-from habitat_od.utils.data_utils import agent_state2fname
-from habitat_od.utils.dataset_utils import save_dataset
-from habitat_od.utils.plot_utils import plot_object_detection, plot_segmentation, plot_semantic_2d_map, make_mosaic
-from habitat_od.utils.sampling_utils import area_bin_sampling
+from common.hssd_od_open_voc.hssd_open_voc_env import HSSD_OpenVoc_Env
+from common.utils.plot_utils import plot_semantic_2d_map, make_mosaic
+from common.utils.data_utils import save_img
+from common.vision.detic import build_detic_predictor
 
+import habitat_od.od_dataset_registry
 
-def edit(config):
-    with read_write(config):
-        config.habitat.dataset.split = "val"
-        config.habitat.simulator.habitat_sim_v0.enable_physics = True # needed to interact with rigid object manager
-        agent_config = get_agent_config(sim_config=config.habitat.simulator)
-        agent_config.sim_sensors.update(
-            {"semantic_sensor": HabitatSimSemanticSensorConfig(
-                height=480, 
-                width=640, 
-                position=[0.0,0.88,0.0],
-                hfov=79
-            ),
-            }
-        )
+def overlap(mask1: np.ndarray,mask2:np.ndarray):
+    return np.logical_and(mask1, mask2).any()
 
-
-if __name__ == "__main__": 
-    config = habitat.get_config(config_path="config/dataset.yaml")
-    edit(config)
-
-    os.system("rm -rf data_od")
-    print(OmegaConf.to_yaml(config))
+if __name__ == "__main__":
+    config = habitat.get_config(config_path="config/habitat_active_od_config.yaml")
+    
     rng_gen = np.random.default_rng(0)
 
     habitat_env = HSSD_OpenVoc_Env(config=config)
+    viewpoint_dataset = PointNavDatasetV1(config.HABITAT_ACTIVE_OD.viewpoint_dataset.dataset)
 
     scene_names = habitat_env.get_scenes_names()
-    per_class_candidate_samples = defaultdict(list)
+    metadata = MetadataCatalog.get("hssd_od_openvoc_test")
 
-    for scene in scene_names:
-        print("-----------------")
-        print("Scene = ", scene)
-        habitat_env.change_scene(scene)
-        habitat_env.update_scene()
+    detic_config = OmegaConf.load("config/detic_config.yaml")
+    detic_predictor = build_detic_predictor(detic_config, habitat_env.get_classes()) # type: ignore
 
-        habitat_grid = HabitatSemGrid(
-            habitat_env.sim, 
-            config.DATASET.meters_per_grid_pixel, 
-            habitat_env.get_class_mapping(),
-            habitat_env.get_objects()
-        )
-        # sem_grid = habitat_env.get_oracle_semantic_grid(meters_per_grid_pixel=0.1).sem_td_view
+    per_class_object_occurences = defaultdict(int)
+    class_mapping = habitat_env.get_class_mapping()
 
-        # img = plot_semantic_2d_map(sem_grid, habitat_env.get_int2color(), habitat_env.get_class_mapping())
-        # img.save(f"semantic_{scene}.png")
+    scene_id = None
 
-        for class_name in sorted(set(habitat_env.get_scene_annotations().values())):
-            if class_name != "bed":
-                continue
-        
-            candidate_agent_states = query_collection(
-                habitat_grid=habitat_grid, 
-                target_class=class_name,
-                num_samples=200,
-                rng_gen=rng_gen
-            )
-            rng_gen.shuffle(candidate_agent_states)
-            
-            candidate_samples = []
-            
-            for agent_state in tqdm(candidate_agent_states, desc=class_name):
-                habitat_env.sim.agents[0].set_state(agent_state)
-                obs = habitat_env.sim.get_sensor_observations()
-                obs = {
-                    key: obs[key]
-                    for key in ["rgb", "depth", "semantic"]
-                }
-                masks = habitat_env.decompose_frame(obs["semantic"])
-                subset_of_mask = [mask for mask in masks if mask["class_name"] == class_name]
+    for episode in tqdm(viewpoint_dataset.episodes):
+        ep_scene_id = episode.scene_id.split('/')[-1]
 
-                if not subset_of_mask:
-                    continue
-
-                candidate_samples.append((agent_state, obs, subset_of_mask))
-
-
-            per_class_candidate_samples[class_name].extend(candidate_samples)
-            
-        break
-
-    splits = {}
-
-    for class_name in per_class_candidate_samples:
-        candidate_samples = per_class_candidate_samples[class_name]
-        
-        selected_indices = area_bin_sampling(
-            candidate_samples,
-            rng_gen,
-            num_samples=config.DATASET.num_samples,
-            min_area=config.DATASET.min_pixel_area
-        ) 
-        rng_gen.shuffle(selected_indices)
-        
-        selected_samples = [candidate_samples[i] for i in selected_indices]
-        
-        list_fname_images_masks = [
-            (agent_state2fname(scene, agent_state), obs["rgb"][:,:,0:3], masks) for (agent_state, obs, masks) in selected_samples
-        ]
-
-        if list_fname_images_masks:
-            splits[class_name] = list_fname_images_masks
-
-
-    save_dataset(config, splits, habitat_env.get_class_mapping())
-
-    list_fname_images = [
-        (
-            str(fname), 
-            plot_segmentation(
-                image, 
-                [], 
-                masks, 
-                habitat_env.get_name2color()
-            ) 
-        ) for class_name, list_fname_images_masks  in splits.items() for (fname, image, masks) in list_fname_images_masks[0:4] 
-    ]
-    mosaic = make_mosaic(list_fname_images[0:4*len(splits)], target_height = 200 * len(splits) )
-
-    img = Image.fromarray(mosaic)
-    img.save("mosaic.png")
+        if len(episode.info["viewpoints"])<8:
+            continue
     
+        if ep_scene_id != scene_id:
+            scene_id = ep_scene_id
+            habitat_env.change_scene(scene_id)
+            object2class = habitat_env.get_scene_annotations()
+
+        object_id = int(episode.episode_id.split("_obj_id_")[-1])
+        class_name = object2class[object_id]
+        
+        list_fnames_images = [] 
+
+        
+        agent_state = AgentState(
+            position=episode.start_position,
+            rotation=episode.start_rotation
+        )
+
+        obs, instances = habitat_env.get_obs_gt(agent_state)
+
+  
+
+        vis = Visualizer(
+            obs,
+            metadata=metadata,
+            scale=0.5,
+            instance_mode=ColorMode.SEGMENTATION
+        )
+
+        target_masks = [inst["mask"] for inst in instances if inst["object_id"] == object_id]
+        
+        for target_mask in target_masks:
+            vis.draw_binary_mask(target_mask)
+
+        gt_image = vis.get_output().get_image()
+
+        for v in episode.info["viewpoints"][0:8]:
+            agent_state = AgentState(
+                position=v["position"],
+                rotation=v["rotation"]
+            )
+
+            obs, instances = habitat_env.get_obs_gt(agent_state)
+            target_masks = [inst["mask"] for inst in instances if inst["object_id"] == object_id]
+
+            if not target_masks:
+                continue
+
+            outputs = detic_predictor(obs)
+            class_id = metadata.thing_classes.index(class_name)
+            vis = Visualizer(
+                obs,
+                metadata=metadata,
+                scale=0.5,
+                instance_mode=ColorMode.SEGMENTATION
+            )
+        
+            pred_instances = outputs["instances"].to("cpu")
+            keep = np.zeros(len(pred_instances))
+
+            for i, pred_mask in enumerate(pred_instances.pred_masks):
+                pred_mask_np = pred_mask.numpy()
+                if any([overlap(pred_mask_np,target_mask) for target_mask in target_masks]):
+                    keep[i] = 1
+
+            pred_instances = pred_instances[keep == 1]
+
+            vis.draw_instance_predictions(pred_instances)
+            result = vis.get_output().get_image()
+
+            list_fnames_images.append((class_name, result))
+
+        list_fnames_images.append(("gt" + class_name, gt_image))
+
+        make_mosaic(list_fnames_images).save(f"datadump/cls_{class_name}_{object_id}.png")

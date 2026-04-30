@@ -5,12 +5,17 @@ import magnum as mn
 import itertools
 
 import habitat_sim
-from habitat.core.env import Env
-from habitat.config import read_write
-import habitat.sims.habitat_simulator.sim_utilities as sutils
-from hssd_od_open_voc.hssd_object_annotations import ObjectAnnotationHSSD
-from habitat_od.utils.data_utils import make_colors
-from habitat_od.utils.grid_utils import HabitatSemGrid
+from habitat.core.env import Env # type: ignore
+from habitat.config import read_write # type: ignore
+from habitat.config.default import get_agent_config # type: ignore
+from habitat.config.default_structured_configs import HabitatSimSemanticSensorConfig # type: ignore
+
+import habitat.sims.habitat_simulator.sim_utilities as sutils # type: ignore
+from habitat_sim.agent.agent import AgentState
+
+from common.hssd_od_open_voc.hssd_object_annotations import ObjectAnnotationHSSD
+from common.utils.data_utils import make_colors
+from common.utils.grid_utils import HabitatObjOccupancyGrid
 
 def get_obj_from_id(
     sim: habitat_sim.Simulator,
@@ -33,8 +38,21 @@ class HSSD_OpenVoc_Env(Env):
     obj_id_to_obj_shortname: dict[int, str]
     vocab: str = "wnsynsetkey" # which key to use to refer object class
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, config):
+        with read_write(config):
+            config.habitat.simulator.habitat_sim_v0.enable_physics = True # needed to interact with rigid object manager
+            agent_config = get_agent_config(sim_config=config.habitat.simulator)
+            agent_config.sim_sensors.update(
+                {"semantic_sensor": HabitatSimSemanticSensorConfig(
+                    height=480, 
+                    width=640, 
+                    position=[0.0,0.88,0.0],
+                    hfov=79
+                ),
+                }
+            )
+
+        super().__init__(config)
         self.object_annotations = HSSD_object_annot
 
     def get_scene_name(self,) -> str:
@@ -57,6 +75,18 @@ class HSSD_OpenVoc_Env(Env):
             self._config.simulator.scene = scenes_dir + "/" +  scene
 
         self._sim.reconfigure(self._config.simulator)
+        self.update_scene()
+
+    def get_obs_gt(self, agent_state: AgentState)-> tuple[np.ndarray, list[dict]]:
+        self.sim.agents[0].set_state(agent_state)
+        obs = self.sim.get_sensor_observations()
+        obs = {
+            key: obs[key]
+            for key in ["rgb", "depth", "semantic"]
+        }
+        instances = self.decompose_frame(obs["semantic"])
+
+        return obs["rgb"][:,:,:3], instances
 
 
     def get_scenes_names(self,) -> list[str]:
@@ -69,8 +99,8 @@ class HSSD_OpenVoc_Env(Env):
         return content_scenes
 
 
-    def get_oracle_semantic_grid(self, meters_per_grid_pixel) -> HabitatSemGrid:
-        return HabitatSemGrid(
+    def get_oracle_object_occupancy_grid(self, meters_per_grid_pixel) -> HabitatObjOccupancyGrid:
+        return HabitatObjOccupancyGrid(
             self.sim,
             meters_per_grid_pixel=meters_per_grid_pixel,
             class_mapping=self.get_class_mapping(),
@@ -179,32 +209,58 @@ class HSSD_OpenVoc_Env(Env):
 
         annotations = self.get_scene_annotations()
 
+        def flatten_contour(countour_of_pairs):
+            out = []
+            for i in range(len(countour_of_pairs)):
+                out.append(countour_of_pairs[i,0])
+                out.append(countour_of_pairs[i,1])
+            return out
+        
         for label in values:
-            if label == 0:  # optional: skip background
+            if label == 0:
                 continue
 
             mask = (semantic_obs == label).astype("uint8")
-            
+
             obj_id = label - 100
             class_name = annotations[obj_id]
 
-            _mask_polygon, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            mask_polygon = np.reshape(_mask_polygon[0], (-1, 2))
-            xmin, ymin, xmax, ymax = cv2.boundingRect(mask)
-
-            bbx_area = (xmax - xmin) * (ymax -ymin)
-            mask_area = np.sum(mask)
-
-            out.append( 
-                {
-                    "class_name": class_name,
-                    "mask": mask, 
-                    "mask_polygon": mask_polygon, 
-                    "bounding_box": (xmin, ymin, xmax, ymax),
-                    "bbx_area": bbx_area,
-                    "mask_area": mask_area
-                }
+            contours, _ = cv2.findContours(
+                mask,
+                cv2.RETR_EXTERNAL,
+                cv2.CHAIN_APPROX_SIMPLE
             )
+
+            if not contours:
+                continue
+
+            # list of polygons (one per contour)
+            list_mask_polygons = [
+                flatten_contour(contour.reshape(-1, 2))
+                for contour in contours
+                if len(contour) >= 3  # valid polygon
+            ]
+
+            if not list_mask_polygons:
+                continue
+
+            # bounding box over all contours / full object
+            x, y, w, h = cv2.boundingRect(
+                np.vstack(contours)
+            )
+
+            bbx_area = w * h
+            mask_area = int(np.sum(mask))
+
+            out.append({
+                "object_id": obj_id,
+                "class_name": class_name,
+                "mask": mask,
+                "mask_polygons": list_mask_polygons,
+                "bounding_box": (x, y, w, h),
+                "bbx_area": bbx_area,
+                "mask_area": mask_area
+            })
 
         return out
 
