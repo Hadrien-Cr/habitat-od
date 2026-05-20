@@ -7,6 +7,11 @@ channels:
   - aihabitat
 dependencies:
   - ninja
+  - gcc=11.2.0
+  - gxx=11.2.0
+  - sysroot_linux-64==2.17
+  - binutils>=2.36
+  - cudatoolkit-dev=11.7
   - python=3.9
   - cmake
   - pybind11
@@ -17,7 +22,8 @@ dependencies:
   - torchvision
   - torchaudio
   - mkl=2024.0
-  - pyg
   - pip
   - habitat-sim=0.2.5
   - withbullet
+  - pip: 
+    - setuptools <70
