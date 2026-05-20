@@ -1,7 +1,7 @@
 import sys
 import torch
-from torch.nn import functional as F
 from pathlib import Path
+import numpy as np
 
 DETIC_ROOT = str(Path(__file__).parent / "../../third_party/Detic/")
 
@@ -23,22 +23,8 @@ def get_clip_embeddings(vocabulary: list[str], prompt: str = "a ") -> torch.Tens
     emb = text_encoder(texts).detach().permute(1, 0).contiguous().cpu()
     return emb
 
+def save_clip_embeddings(embeddings: torch.Tensor, path: Path):
+    np.save(path, embeddings.cpu().numpy().astype(np.float32))
 
-def reset_cls_test(model, cls_path, num_classes):
-    model.roi_heads.num_classes = num_classes
-    if type(cls_path) == str:
-        print('Resetting zs_weight', cls_path)
-        zs_weight = torch.tensor(
-            np.load(cls_path), 
-            dtype=torch.float32).permute(1, 0).contiguous() # D x C
-    else:
-        zs_weight = cls_path
-    zs_weight = torch.cat(
-        [zs_weight, zs_weight.new_zeros((zs_weight.shape[0], 1))], 
-        dim=1) # D x (C + 1)
-    if model.roi_heads.box_predictor[0].cls_score.norm_weight:
-        zs_weight = F.normalize(zs_weight, p=2, dim=0)
-    zs_weight = zs_weight.to(model.device)
-    for k in range(len(model.roi_heads.box_predictor)):
-        del model.roi_heads.box_predictor[k].cls_score.zs_weight
-        model.roi_heads.box_predictor[k].cls_score.zs_weight = zs_weight
+def load_clip_embeddings(path: Path) -> torch.Tensor:
+    return torch.tensor(np.load(path)).to(torch.float32)

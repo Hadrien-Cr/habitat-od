@@ -2,7 +2,7 @@ from collections import Counter
 from pathlib import Path
 import numpy as np
 from habitat_sim.agent.agent import AgentState
-
+from common.interfaces import Labels
 
 def kmeans(inputs: list, k: int, rng_gen, max_iter: int = 20) -> tuple[list[int], list[list[int]]]:
     n = len(inputs)
@@ -198,7 +198,7 @@ def covisibility_subset(samples: list[tuple[AgentState, dict, list[dict]]], rng_
 
 
 def area_bin_sampling(
-    list_of_samples: list[tuple[str, list[dict]]],
+    list_of_samples: list[Labels],
     rng_gen,
     mask_filtering_fn,
     num_samples=20,
@@ -214,8 +214,8 @@ def area_bin_sampling(
         return indices.tolist()
     
     areas = np.array([
-        max([inst["mask_area"] for inst in instances if mask_filtering_fn(inst)], default=0)
-        for _, instances in list_of_samples
+        max([inst["mask_area"] for inst in labels.instances if mask_filtering_fn(inst)], default=0)
+        for  labels in list_of_samples
     ])
 
 

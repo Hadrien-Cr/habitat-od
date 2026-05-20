@@ -17,9 +17,8 @@ from PIL import Image
 
 import common.utils.pose_utils as pu
 from common.utils.plot_utils import draw_line, get_contour_points
-from common.hssd_od_open_voc.hssd_object_annotations import PaletteIndices, ColorPaletteHSSD
+from common.hssd_od_open_voc.hssd_object_annotations import PaletteIndices
 
-palette = ColorPaletteHSSD()
 
 def add_border(frame: np.ndarray, border_size: int) -> np.ndarray:
     """Add a white border to a frame."""
@@ -236,7 +235,6 @@ class Visualizer:
         name = f"snapshot_{timestep}.png"
 
         cv2.imwrite(os.path.join(self.vis_dir, name), out_frame) # type: ignore
-        cv2.waitKey(0)
 
     def pad_frame(self, frame: np.ndarray, width: int) -> np.ndarray:
         """Pad the width of a frame to `width` centered white sides."""
@@ -257,7 +255,7 @@ class Visualizer:
         new_h = self.ind_frame_height - text_bar_height - 2 * border_size
         new_w = int(new_h / sem_img.shape[0] * sem_img.shape[1])
         
-        sem_img = cv2.resize(sem_img, (new_h, new_h))
+        sem_img = cv2.resize(sem_img, (new_w, new_h))
 
         sem_img = cv2.cvtColor(sem_img, cv2.COLOR_RGB2BGR)
         sem_img = add_border(sem_img, border_size)

@@ -4,7 +4,7 @@ defaults:
   - /habitat/task: pointnav
   - /habitat/task/measurements: 
     - top_down_map
-  - /habitat/simulator/agents@habitat.simulator.agents.main_agent: rgbd_agent
+  - /habitat/simulator/agents@habitat.simulator.agents.main_agent: rgbds_agent
   - _self_
 
 habitat:
@@ -21,19 +21,25 @@ habitat:
             width: 640
             height: 480
             hfov: 79
-            position: [0, 0.88, 0]
+            position: [0, 1.41, 0]
           depth_sensor:
             width: 640
             height: 480
             hfov: 79
             min_depth: 0.5
             max_depth: 5.0
-            position: [0, 0.88, 0]
-        height: 0.88
+            position: [0, 1.41, 0]
+          semantic_sensor:
+            width: 640
+            height: 480
+            hfov: 79
+            position: [0, 1.41, 0]
+        height: 1.41
         radius: 0.18
     habitat_sim_v0:
       gpu_device_id: 0
       allow_sliding: False
+      enable_physics: True
   dataset:
     type: PointNav-v1
     split: val

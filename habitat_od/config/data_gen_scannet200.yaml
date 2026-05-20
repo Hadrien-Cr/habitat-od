@@ -47,30 +47,57 @@ habitat:
 
 DATA_GEN:
   seed: 0
+  min_pixel_area: 500
   frame_height: 480
   frame_width: 640
-  min_pixel_area: 1000
-  meters_per_grid_pixel: 0.05
+  meters_per_grid_pixel: 0.1
   viewpoint_spacing: 0.5
   turn_angle: 30
-  num_samples: 100
-  scenes_to_include: [
-    "103997403_171030405",
-    "103997424_171030444",
-    "103997445_171030492",
-    "103997460_171030507",
-    "103997478_171030525",
-    "103997478_171030528",
-    "103997541_171030615",
-    "103997562_171030642",
-    "103997586_171030666",
-    "103997586_171030669",
-  ]
-
+  per_class_num_samples: 20
+  vocab: SCANNET200
   dataset:
-    type: PointNav-v1
-    split: val
-    data_path: data/datasets/habitat_active_od/{split}/{split}.json.gz
-    scenes_dir: data/scene_datasets/hssd-hab/scenes
-    content_scenes: ["*"]
-
+    data_root: datasets/
+    dataset_name: hssd_od_scannet200
+    splits:
+      - split_name: hssd_od_scannet200_small
+        scenes_to_include: [
+          "102343992",
+          "102344022",
+          "102344049",
+        ]
+      - split_name: hssd_od_scannet200_full
+        scenes_to_include: [
+          "102343992",
+          "102344022",
+          "102344049",
+          "102344094",
+          "102344115",
+          "102344193",
+          "102344250",
+          "102344280",
+          "102344307",
+          "102344328",
+          "102344403",
+          "102344439",
+          "102344457",
+          "102344469",
+          "102344529",
+          "102815835",
+          "102815859",
+          "102816009",
+          "102816036",
+          "102816051",
+          "102816066",
+          "102816114",
+          "102816216",
+          "102816600",
+          "102816615",
+          "102816627",
+          "102816729",
+          "102816756",
+          "102816786",
+          "102816852",
+          "102817053",
+          "102817140",
+          "102817200"
+        ]

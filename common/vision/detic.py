@@ -1,3 +1,4 @@
+import os
 from omegaconf import OmegaConf, DictConfig
 
 import sys
@@ -6,6 +7,9 @@ import numpy as np
 from PIL import Image
 import torch
 from pathlib import Path
+import torch
+from torch.nn import functional as F
+
 
 from detectron2.data import transforms as T
 from detectron2.config import CfgNode, get_cfg
@@ -19,7 +23,7 @@ from centernet.config import add_centernet_config # type: ignore
 sys.path.insert(0, "third_party/Detic/third_party/Deformable-DETR")
 from third_party.Detic.detic.config import add_detic_config
 
-from common.vision.clip import get_clip_embeddings, reset_cls_test
+from common.vision.clip import get_clip_embeddings, save_clip_embeddings, load_clip_embeddings
 from common.utils.plot_utils import make_mosaic
 
 DETIC_ROOT = "third_party/Detic"
@@ -44,61 +48,75 @@ def setup_cfg(detic_config: DictConfig) -> CfgNode:
         Path(DETIC_ROOT)
         / cfg.MODEL.ROI_BOX_HEAD.CAT_FREQ_PATH
     )
-    cfg.MODEL.ROI_HEADS.ONE_CLASS_PER_PROPOSAL = True
+    cfg.WITH_IMAGE_LABELS = False
+    cfg.MODEL.DYNAMIC_CLASSIFIER = False
     cfg.freeze()
     return cfg
 
 
-def build_detic_predictor(detic_config: CfgNode, vocab: list[str]):
-    detic_config = OmegaConf.load("config/detic_config.yaml") # type: ignore
+def build_detic_model(detic_config: CfgNode, vocab: list[str], vocab_name: str) -> torch.nn.Module:
     cfg = setup_cfg(detic_config) # type: ignore
-
-    predictor = DefaultPredictor(cfg)
-    checkpointer = DetectionCheckpointer(predictor.model)
+    model = build_model(cfg)
+    checkpointer = DetectionCheckpointer(model)
     checkpointer.load(cfg.MODEL.WEIGHTS)
 
-    classifier = get_clip_embeddings(vocab)
-    reset_cls_test(predictor.model, classifier, len(vocab))
+    path_clip_embeddings = Path(f"datasets/metadata/{vocab_name}.npy")
 
+    if not os.path.exists(path_clip_embeddings):
+        classifier = get_clip_embeddings(vocab)
+        save_clip_embeddings(classifier, path_clip_embeddings)
+    else:
+        classifier = load_clip_embeddings(path_clip_embeddings)
+
+    reset_cls(model, classifier, len(vocab))
+    model.num_classes = len(vocab)
+    return model
+
+
+def build_detic_predictor(detic_config: CfgNode, vocab: list[str], vocab_name: str) -> DefaultPredictor:
+    cfg = setup_cfg(detic_config) # type: ignore
+    predictor = DefaultPredictor(cfg)
+
+    path_clip_embeddings = Path(f"datasets/metadata/{vocab_name}.npy")
+
+    if not os.path.exists(path_clip_embeddings):
+        classifier = get_clip_embeddings(vocab)
+        save_clip_embeddings(classifier, path_clip_embeddings)
+    else:
+        classifier = load_clip_embeddings(path_clip_embeddings)
+
+    reset_cls(predictor.model, classifier, len(vocab))
+    predictor.model.num_classes = len(vocab)
     return predictor
 
-# def process_detic_output(
-#     output
-# )
+
+def reset_cls(model, cls_path, num_classes, frozen=True):
+    model.roi_heads.num_classes = num_classes
     
-#     ds = DatasetCatalog.get(ds_name)
-# import time
-# for class_name in metadata.thing_classes:
-#     list_fname_images = []
-#     class_samples_ids = [
-#         i for i in range(len(ds)) if ds[i]["file_name"].split("/")[-1].startswith("cls_" + class_name)
-#     ]
+    if type(cls_path) == str:
+        zs_weight = torch.tensor(
+            np.load(cls_path), 
+            dtype=torch.float32).permute(1, 0).contiguous() # D x C
+    else:
+        zs_weight = cls_path
 
-#     if len(class_samples_ids) < 16:
-#         continue
+    assert zs_weight.shape[1] == num_classes, f"Expected {num_classes} classes, got {zs_weight.shape[1]}"
 
-#     class_id = metadata.thing_classes.index(class_name)
-    
-#     for sample_id in class_samples_ids[0:16]:
-#         d = ds[sample_id]
-#         img = cv2.imread(d["file_name"])
-    
-#         t = time.time()
-#         outputs = predictor(img)
-#         print(predictor.model.device)
-#         print(time.time() - t)
+    zs_weight = torch.cat(
+        [zs_weight, zs_weight.new_zeros((zs_weight.shape[0], 1))], 
+        dim=1) # D x (C + 1)
+    if model.roi_heads.box_predictor[0].cls_score.norm_weight:
+        zs_weight = F.normalize(zs_weight, p=2, dim=0)
+    zs_weight = zs_weight.to(model.device)
 
-#         v = Visualizer(
-#             img[:, :, ::-1],   # BGR -> RGB
-#             metadata=metadata,
-#             scale=0.5
-#         )
-#         instances = outputs["instances"].to("cpu")
-#         keep = instances.pred_classes == class_id
-#         # instances_filtered = instances[keep]
-#         vis = v.draw_instance_predictions(instances)
-#         result = vis.get_image()
-#         list_fname_images.append((class_name, result ))
+    for k in range(len(model.roi_heads.box_predictor)):
+        del model.roi_heads.box_predictor[k].cls_score.zs_weight
+        model.roi_heads.box_predictor[k].cls_score.zs_weight = zs_weight
+        model.roi_heads.box_predictor[k].num_classes = num_classes
 
-#     im = make_mosaic(list_fname_images)
-#     im.save(f"mosaic_rare/{class_name}.png")
+    if frozen:
+        for param in model.roi_heads.box_predictor[0].cls_score.parameters():
+            param.requires_grad = False
+    else:
+        for param in model.roi_heads.box_predictor[0].cls_score.parameters():
+            param.requires_grad = True

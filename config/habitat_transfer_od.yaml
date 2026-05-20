@@ -1,19 +1,15 @@
 # @package _global_
 defaults:
-  - /benchmark/nav/objectnav/objectnav_hssd-hab.yaml
+  - /habitat: habitat_config_base
+  - /habitat/task: pointnav
   - /habitat/task/measurements: 
     - top_down_map
-  - override /habitat/simulator/agents@habitat.simulator.agents.main_agent: rgbds_agent
+  - /habitat/simulator/agents@habitat.simulator.agents.main_agent: rgbds_agent
   - _self_
 
 habitat:
-  dataset:
-    type: ObjectNav-v1
-    split: val
-    data_path: data/datasets/objectnav/hssd-hab/{split}/{split}.json.gz
-    scenes_dir: data/scene_datasets/hssd-hab/scenes
-    content_scenes: ["*"]
-
+  environment:
+    max_episode_steps: 500
   simulator:
     scene_dataset: "data/scene_datasets/hssd-hab/hssd-hab.scene_dataset_config.json"
     navmesh_include_static_objects: True
@@ -44,17 +40,19 @@ habitat:
       gpu_device_id: 0
       allow_sliding: False
       enable_physics: True
+  dataset:
+    type: PointNav-v1
+    split: val
+    data_path: data/datasets/habitat_active_od/{split}/{split}.json.gz
+    scenes_dir: data/scene_datasets/hssd-hab/scenes
+    content_scenes: ["*"]
 
-DATA_GEN:
-  seed: 0
-  frame_height: 480
-  frame_width: 640
-  min_pixel_area: 1000
-  meters_per_grid_pixel: 0.05
-  viewpoint_spacing: 0.5
-  turn_angle: 30
-  num_samples: 100
-  scenes_to_include: [
+ONLINE_TRAINING:
+  collection_dir: datadump/collection/
+  num_episodes: 100
+  steps_per_episode: 50
+  batch_size: 1
+  scenes: [
     "103997403_171030405",
     "103997424_171030444",
     "103997445_171030492",
@@ -66,11 +64,3 @@ DATA_GEN:
     "103997586_171030666",
     "103997586_171030669",
   ]
-
-  dataset:
-    type: PointNav-v1
-    split: val
-    data_path: data/datasets/habitat_active_od/{split}/{split}.json.gz
-    scenes_dir: data/scene_datasets/hssd-hab/scenes
-    content_scenes: ["*"]
-

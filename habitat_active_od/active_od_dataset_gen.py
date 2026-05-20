@@ -11,7 +11,7 @@ import gzip
 import habitat # type: ignore
 from habitat.datasets.pointnav.pointnav_dataset import PointNavDatasetV1, NavigationEpisode, NavigationGoal # type: ignore
 
-from common.hssd_od_open_voc.hssd_open_voc_env import HSSD_OpenVoc_Env
+from common.hssd_od_open_voc.hssd_env import HSSD_OpenVoc_Env
 from common.utils.plot_utils import plot_semantic_2d_map, make_mosaic
 
 
@@ -19,7 +19,7 @@ def collect_episodes_all_scenes(config) -> list:
     episodes = []
     rng_gen = np.random.default_rng(0)
 
-    habitat_env = HSSD_OpenVoc_Env(config=config)
+    habitat_env = HSSD_OpenVoc_Env(config=config, vocab_name=config.DATA_GEN.vocab)
     scene_names = habitat_env.get_scenes_names()
 
     for scene_idx, scene in enumerate(scene_names[0:config.DATA_GEN.num_scenes]):
@@ -29,12 +29,13 @@ def collect_episodes_all_scenes(config) -> list:
         print("Collection in Scene = ", scene, f"({scene_idx}/{len(scene_names)})")
 
         habitat_obj_occupancy_grid = habitat_env.get_oracle_object_occupancy_grid(config.DATA_GEN.meters_per_grid_pixel)
-        object_annotations = habitat_env.get_object_annotations()
+        objid_to_class = habitat_env.get_objid_to_class()
 
-        for object_id, class_name in tqdm(object_annotations.items()):
+        for object_id, class_name in tqdm(objid_to_class.items()):
             if class_name == "unknown":
                 continue
             
+            start = habitat_obj_occupancy_grid.get_all_agent_states()[0]
             candidate_agent_states = habitat_obj_occupancy_grid.get_all_viewpoints(object_id, viewpoint_spacing=config.DATA_GEN.viewpoint_spacing)
             viewpoints = []
 
@@ -44,10 +45,10 @@ def collect_episodes_all_scenes(config) -> list:
                     continue
                 viewpoints.append(agent_state)
 
-            if not len(viewpoints) > 3: 
+            if len(viewpoints) < 3: 
                 continue
             
-            goals = 
+            goals = [
                 NavigationGoal(position=viewpoints[-1].position, radius=0)
             ]
             episode = NavigationEpisode(
@@ -55,9 +56,10 @@ def collect_episodes_all_scenes(config) -> list:
                 episode_id=f"{scene_idx}_obj_id_{object_id}",
                 scene_dataset_config=config.habitat.simulator.scene_dataset,
                 scene_id=scene,
-                start_position=viewpoints[0].position,
-                start_rotation=viewpoints[0].rotation,
+                start_position=start.position,
+                start_rotation=start.rotation,
             )
+            
             episode.info = {}
             episode.info["viewpoints"] = [
                 {

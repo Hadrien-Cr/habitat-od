@@ -193,7 +193,7 @@ class HabitatObjOccupancyGrid:
 
                 new_state = AgentState()
                 new_state.position = np.array([x,self.ref_point[1],z], dtype = np.float32)
-                new_state.rotation = quaternion_from_rpy(0, 0,  yaw - np.pi / 2)
+                new_state.rotation = quaternion_from_rpy(0, 0,  - yaw - np.pi / 2)
                 agent_states.append(new_state)
 
         return agent_states

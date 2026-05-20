@@ -3,6 +3,9 @@ import matplotlib.pyplot as plt
 from scipy import ndimage
 from PIL import Image, ImageDraw
 import cv2
+from detectron2.utils.visualizer import Visualizer as DetVisualizer
+from detectron2.utils.visualizer import ColorMode
+from detectron2.data import Metadata
 
 def plot_semantic_2d_map(
     bg_grid,
@@ -96,9 +99,36 @@ def plot_mask(mask) -> Image.Image:
     colored[mask == 1] = [255, 255, 255]
     return Image.fromarray(colored)
 
+
+def plot_segmentation_pred(img: np.ndarray, instances, metadata: Metadata) -> Image.Image:
+    det_visualizer = DetVisualizer(
+        img,
+        metadata=metadata,
+        scale=0.5,
+        instance_mode=ColorMode.SEGMENTATION
+    )
+    vis = det_visualizer.draw_instance_predictions(instances.to("cpu"), jittering=False)
+    result = vis.get_image()
+    im = Image.fromarray(result)
+    return im
+
+
+def plot_segmentation_gt(img: np.ndarray, dataset_dict: dict, metadata: Metadata) -> Image.Image:
+    det_visualizer = DetVisualizer(
+        img,
+        metadata=metadata,
+        scale=0.5,
+        instance_mode=ColorMode.SEGMENTATION
+    )
+    vis = det_visualizer.draw_dataset_dict(dataset_dict)
+    result = vis.get_image()
+    im = Image.fromarray(result)
+    return im
+
+
 def make_mosaic(
     list_fnames_images: list[tuple[str, np.ndarray]],
-    target_height: int = 2000,
+    target_size: int = 1_000_000,
     N_cols: int = 4
 ) -> Image.Image:
     n =  len(list_fnames_images)
@@ -139,7 +169,7 @@ def make_mosaic(
 
     final_mosaic = np.vstack(rows)
 
-    downscale_factor = target_height / final_mosaic.shape[0]
+    downscale_factor = np.ceil(np.sqrt(target_size / (final_mosaic.shape[0] * final_mosaic.shape[1])))
     final_mosaic = cv2.resize(
         final_mosaic,
         (

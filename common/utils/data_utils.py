@@ -35,7 +35,7 @@ def agent_state2fname(prefix: str, pose: AgentState) -> Path:
     """Get the filename corresponding to the given pose."""
     (x,y,z) = pose.position
     (_,_,yaw) = rpy_from_quaternion(pose.rotation)
-    str_x, str_y, str_z, str_yaw = str(round(x,2)).replace(".", "p"), str(round(y,2)).replace(".", "p"), str(round(z,2)).replace(".", "p"), str(round(yaw,2)).replace(".", "p")
+    str_x, str_y, str_z, str_yaw = str(round(x,3)).replace(".", "p"), str(round(y,3)).replace(".", "p"), str(round(z,3)).replace(".", "p"), str(round(yaw,3)).replace(".", "p")
     fname = Path(f"{prefix}_x_{str_x}_y_{str_y}_z_{str_z}_yaw_{str_yaw}")
     return fname
 
@@ -72,19 +72,19 @@ def delete_image(
     path = img_dir / f"{str(fname)}.jpg"
     os.remove(path)
 
-
-def save_img(
-    img: np.ndarray,
+def move_image(
     data_dir: Path,
     fname: Path,
-) -> Path:
+    target_dir: Path
+):
     img_dir = data_dir / "images"
-    os.makedirs(img_dir, exist_ok=True)
     path = img_dir / f"{str(fname)}.jpg"
+    target_path = target_dir / "images" / f"{str(fname)}.jpg"
 
-    im = Image.fromarray(img)
-    im.save(path, format="JPEG")
-    return path
+    assert path.exists(), f"Image to move not found at {path}"
+    os.makedirs(target_dir / "images", exist_ok=True)
+    os.rename(path, target_path)
+    assert target_path.exists(), f"Failed to move image from {path} to {target_path}"
 
 
 def enumerate_fnames(source_data_dir: Path) -> list[Path]:

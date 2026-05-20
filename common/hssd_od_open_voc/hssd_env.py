@@ -15,7 +15,7 @@ from scipy.spatial.transform import Rotation as R
 import habitat.sims.habitat_simulator.sim_utilities as sutils # type: ignore
 from habitat_sim.agent.agent import AgentState
 
-from common.hssd_od_open_voc.hssd_object_annotations import ObjectSemanticsHSSD, ColorPaletteHSSD
+from common.hssd_od_open_voc.hssd_object_annotations import ObjectSemanticsHSSD
 from common.utils.grid_utils import HabitatObjOccupancyGrid
 from common.interfaces import DiscreteNavigationAction, Observations, Labels
 from common.utils.pose_utils import get_yaw
@@ -36,26 +36,11 @@ def object_shortname_from_handle( object_handle: str) -> str:
 
 
 class HSSD_OpenVoc_Env(Env):
-    obj_id_to_obj_shortname: dict[int, str]
-    vocab: str = "wnsynsetkey" # which key to use to refer object class
+    obj_id_to_objname: dict[int, str]
 
-    def __init__(self, config):
-        with read_write(config):
-            config.habitat.simulator.habitat_sim_v0.enable_physics = True # needed to interact with rigid object manager
-            agent_config = get_agent_config(sim_config=config.habitat.simulator)
-            agent_config.sim_sensors.update(
-                {"semantic_sensor": HabitatSimSemanticSensorConfig(
-                    height=480, 
-                    width=640, 
-                    position=[0.0,0.88,0.0],
-                    hfov=79
-                ),
-                }
-            )
-
+    def __init__(self, config, vocab_name="HSSD500"):
         super().__init__(config)
-        self.object_annotations = ObjectSemanticsHSSD()
-        self.color_palette = ColorPaletteHSSD()
+        self.object_annotations = ObjectSemanticsHSSD(vocab_name)
         self.goal_image = None
         self.update_scene()
 
@@ -125,8 +110,21 @@ class HSSD_OpenVoc_Env(Env):
 
         return observations
 
-    def get_obs_gt(self, agent_state: AgentState, t)-> tuple[Observations, Labels]:
+    def get_episode_viewpoints(self) -> list[AgentState]:
+        return [
+            AgentState(
+                position=vp["position"],
+                rotation=vp["rotation"]
+            )
+            for vp in self.current_episode.info["viewpoints"]
+        ]
+    
+    def teleport(self, agent_state: AgentState) -> None:
         self.sim.agents[0].set_state(agent_state)
+
+    def get_obs_gt(self, agent_state: AgentState)-> tuple[Observations, Labels]:
+        self.teleport(agent_state)
+
         sensor_obs = self.sim.get_sensor_observations()
         labels = self.decompose_frame(sensor_obs["semantic"])
         semantic_frame = self.colorize(sensor_obs["semantic"])
@@ -175,7 +173,7 @@ class HSSD_OpenVoc_Env(Env):
         )
         return observation, labels
 
-
+    
     def get_scenes_names(self,) -> list[str]:
         scenes_dir = self._config.dataset.scenes_dir
         content_scenes = self._config.dataset.content_scenes
@@ -199,10 +197,11 @@ class HSSD_OpenVoc_Env(Env):
 
     def get_objects(self,) -> list[dict]:
         out = []
-
-        for obj_id, obj_name in self.obj_id_to_obj_shortname.items():
+        objid_to_class = self.get_objid_to_class()
+        
+        for obj_id, obj_name in self.obj_id_to_objname.items():
             obj = get_obj_from_id(self.sim, obj_id)
-            class_name = self.get_class(obj_name)
+            class_name = objid_to_class[obj_id]
 
             aabb = obj.collision_shape_aabb # type: ignore
             min_v = aabb.min
@@ -238,66 +237,37 @@ class HSSD_OpenVoc_Env(Env):
             })
         
         return out
-
+    
+    def get_objid_to_class(self) -> dict[int, str]:
+        return {obj_id: self.object_annotations.mapping_objname_class[obj_name] for obj_id, obj_name in self.obj_id_to_objname.items()} 
 
     def update_scene(self) -> None:
-        def object_shortname_from_handle( object_handle: str) -> str:
-            return object_handle.split("/")[-1].split(".")[0].split("_:")[0].split("_")[0]
-
-        # setup the dictionnary obj_id_to_obj_shortname
-        self.obj_id_to_obj_shortname = {}
-        vocab = self.get_vocab()
-
-        for obj_id, obj_handle in sutils.get_all_object_ids(self.sim).items():
-            shortname = object_shortname_from_handle(obj_handle)
-            self.obj_id_to_obj_shortname[obj_id] = shortname
-            assert shortname in vocab
-
+        self.setup_obj_id_to_objname()
         self.setup_semantic_labels()
 
-
-    def get_object_annotations(self) -> dict[int, str]:
-        vocab = self.get_vocab()
-        return {obj_id: vocab[obj_name] for obj_id, obj_name in self.obj_id_to_obj_shortname.items()} 
-
-    def get_vocab(self) -> dict[str, str]:
-        if self.vocab == "semantic_class":
-            return self.object_annotations.mapping_obj_name_semantic_class
-        
-        elif self.vocab == "full_name":
-            return self.object_annotations.mapping_obj_name_fullname
-        
-        elif self.vocab == "wnsynsetkey":
-            return self.object_annotations.mapping_obj_name_wnsynsetkey
-
-        elif self.vocab == "category":
-            return self.object_annotations.mapping_obj_name_category
-        
-        raise ValueError   
-    
     def get_class(self, obj_name: str):
-        return self.get_vocab()[obj_name]
+        return self.object_annotations.mapping_objname_class[obj_name]
 
-    def get_classes(self):
-        return sorted(set(self.get_vocab().values()))
+    def get_classes(self) -> list[str]:
+        return sorted(set(self.object_annotations.mapping_objname_class.values()))
     
-    def colorize(self, semantic_obs) -> np.ndarray:
-        object2class = self.get_object_annotations()
-        class2color = self.color_palette.class2color
+    def colorize(self, semantic_obs: np.ndarray) -> np.ndarray:
+        class2color = self.object_annotations.class2color
+        objid_to_class = self.get_objid_to_class()
 
         color_map = np.array(
-            [class2color[class_name] for obj_id, class_name in sorted(object2class.items())]
+            [(0,0,0)] + [class2color[class_name] for obj_id, class_name in sorted(objid_to_class.items())]
         ).astype(np.uint8)
-
         colorized = color_map[semantic_obs].astype(np.uint8)
+
         return colorized
 
-    def decompose_frame(self, semantic_obs) -> Labels:
+
+    def decompose_frame(self, semantic_obs: np.ndarray) -> Labels:
         instances = []
         
         values = np.unique(semantic_obs)
-
-        annotations = self.get_object_annotations()
+        objid_to_class = self.get_objid_to_class()
 
         def flatten_contour(countour_of_pairs):
             out = []
@@ -306,14 +276,18 @@ class HSSD_OpenVoc_Env(Env):
                 out.append(countour_of_pairs[i,1])
             return out
         
-        for label in values:
-            if label == 0:
+        for semantic_id in values:
+            if semantic_id == 0:
                 continue
 
-            mask = (semantic_obs == label).astype("uint8")
+            mask = (semantic_obs == semantic_id).astype("uint8")
 
-            obj_id = label
-            class_name = annotations[obj_id]
+            obj_id = semantic_id - 1
+            obj_name = self.obj_id_to_objname[obj_id]
+            class_name = objid_to_class[obj_id]
+
+            if class_name == "unknown":
+                continue
 
             contours, _ = cv2.findContours(
                 mask,
@@ -343,9 +317,10 @@ class HSSD_OpenVoc_Env(Env):
             mask_area = int(np.sum(mask))
 
             instances.append({
-                "object_id": obj_id,
                 "class_name": class_name,
-                "mask": mask,
+                "object_id": obj_id,
+                "obj_name": obj_name,
+                "source_class_name": self.object_annotations.source_mapping_objname_class.get(obj_name, "unknown"),
                 "mask_polygons": list_mask_polygons,
                 "bounding_box": (x, y, w, h),
                 "bbx_area": bbx_area,
@@ -354,14 +329,22 @@ class HSSD_OpenVoc_Env(Env):
 
         return Labels(instances=instances)
 
-    def setup_semantic_labels(self,):
-        """
-        This function modifies the semantic sensor such that it outputs segmentations based object instead of scene semantic info.
-        To do so, we overwrite obj.semantic_id. 
-        """        
+    def setup_semantic_labels(self,)  -> None:
         rom = self.sim.get_rigid_object_manager()
 
         for _, handle in enumerate(rom.get_object_handles()):
             obj = rom.get_object_by_handle(handle)
             for node in obj.visual_scene_nodes:
-                node.semantic_id = obj.object_id
+                node.semantic_id = 1 + obj.object_id
+    
+    def setup_obj_id_to_objname(self,) -> None:
+        def objname_from_handle( object_handle: str) -> str:
+            return object_handle.split("/")[-1].split(".")[0].split("_:")[0].split("_")[0]
+
+        # setup the dictionnary obj_id_to_objname
+        self.obj_id_to_objname = {}
+
+        for obj_id, obj_handle in sutils.get_all_object_ids(self.sim).items():
+            objname = objname_from_handle(obj_handle)
+            self.obj_id_to_objname[obj_id] = objname
+            assert objname in self.object_annotations.mapping_objname_class, f"Object name {objname} not found in annotations mapping. Please check the object config files and the annotations csv file."

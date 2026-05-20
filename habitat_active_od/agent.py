@@ -10,11 +10,12 @@ from sklearn.cluster import DBSCAN
 
 from common.exploration.frontier_exploration import FrontierExplorationPolicy
 from common.planning.discrete_planner import DiscretePlanner
-from visualizer import Visualizer
+from habitat_active_od.visualizer import Visualizer
 from common.mapping.categorical_2d_semantic_map_module import Categorical2DSemanticMapModule
 from common.mapping.categorical_2d_semantic_map_state import Categorical2DSemanticMapState
 from common.interfaces import DiscreteNavigationAction, Observations
 import common.utils.pose_utils as pu
+from common.utils.plot_utils import plot_segmentation_pred, plot_segmentation_gt
 
 
 class ObsPreprocessor:
@@ -268,7 +269,7 @@ class ActiveODModule(nn.Module):
 
 class ActiveODAgent:
 
-    def __init__(self, config: DictConfig, device_id: int = 0) -> None:
+    def __init__(self, config: DictConfig, predictor, classes, device_id: int = 0) -> None:
         self.device = torch.device(f"cuda:{device_id}")
         self.obs_preprocessor = ObsPreprocessor(config, self.device)
         self.max_steps = config.habitat.environment.max_episode_steps
@@ -324,6 +325,8 @@ class ActiveODAgent:
             dtype=self.semantic_map.local_map.dtype,
             device=self.device,
         )
+        self.predictor = predictor
+        self.classes = classes
 
         self.visualizer = None
         if self.verbose:
@@ -346,6 +349,13 @@ class ActiveODAgent:
 
     def act(self, obs: Observations) -> DiscreteNavigationAction:
         """Act end-to-end."""
+        # Predict on observation
+        outputs = self.predictor(obs.rgb)
+        pred_instances = outputs["instances"].to("cpu")
+        
+        sem_img = plot_segmentation_pred(obs.rgb, pred_instances, self.classes)    
+    
+        # Else; plan with the module's internal semantic map state and return a discrete action.
         (
             obs_preprocessed,
             pose_delta,
@@ -379,7 +389,7 @@ class ActiveODAgent:
                 **vis_inputs[0],
                 "rgb_frame": obs.rgb.copy(),
                 "depth_frame": obs.depth.copy(),
-                "semantic_frame": obs.semantic.copy(),
+                "semantic_frame": sem_img.copy(),
                 "closest_goal_map": closest_goal_map,
                 "last_goal_image": obs.task_observations["goal_image"],
                 "last_collisions": collision,
