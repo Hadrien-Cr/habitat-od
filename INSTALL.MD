@@ -1,8 +1,11 @@
 ```
 export PYTHONNOUSERSITE=1
 export HABITAT_DATA=<path/to/habitat/data>
-conda env create -n habitat_od -f environment.yml
 ln -s $HABITAT_DATA . # create a symlink from the data folder to the root
+conda env create -n habitat_od -f environment.yml
+export CUDA_HOME=$CONDA_PREFIX
+export CC=$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-gcc 
+export CXX=$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-g++
 ```
 
 ```
