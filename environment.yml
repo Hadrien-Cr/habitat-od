@@ -6,6 +6,7 @@ channels:
   - pyg
   - aihabitat
 dependencies:
+  - ninja
   - python=3.9
   - cmake
   - pybind11

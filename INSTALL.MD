@@ -6,6 +6,11 @@ ln -s $HABITAT_DATA . # create a symlink from the data folder to the root
 ```
 
 ```
+git clone https://github.com/facebookresearch/detectron2
+pip install -e detectron2 -v
+```
+
+```
 git clone --branch v0.2.5 https://github.com/facebookresearch/habitat-lab.git third_party/habitat-lab
 cd third_party/habitat-lab
 pip install -e habitat-lab
