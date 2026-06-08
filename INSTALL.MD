@@ -12,16 +12,15 @@ export CXX=$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-g++
 git clone https://github.com/facebookresearch/detectron2
 pip install -e detectron2 -v
 ```
+```
+pip install -r requirements.txt
+```
 
 ```
 git clone --branch v0.2.5 https://github.com/facebookresearch/habitat-lab.git third_party/habitat-lab
 cd third_party/habitat-lab
 pip install -e habitat-lab
 pip install -e habitat-baselines
-```
-
-```
-pip install -r requirements.txt
 ```
 
 ```

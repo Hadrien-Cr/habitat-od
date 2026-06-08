@@ -62,7 +62,6 @@ class HabitatObjOccupancyGrid:
         self,
         sim,
         meters_per_grid_pixel: float,
-        class_mapping: dict[str, int],
         list_object_info: list[dict],
     ):
         ref_y = sim.agents[0].state.position[1]
@@ -96,7 +95,7 @@ class HabitatObjOccupancyGrid:
                     self.gridpoints.append((row, col))
 
         # Object Occupancy grid: obj_occupancy_td_view[row][col][obj_id] == 1 if object occupies the cell (row,col)
-        n = len(list_object_info)
+        n = max(obj_info["object_id"] for obj_info in list_object_info) + 1
         self.obj_occupancy_td_view = np.zeros((H, W, n), dtype=np.uint8)
 
         # Add objects

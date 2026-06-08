@@ -1,0 +1,96 @@
+# @package _global_
+defaults:
+  - /habitat: habitat_config_base
+  - habitat/task/lab_sensors:
+      - pointgoal_with_gps_compass_sensor
+  - /habitat/task: pointnav
+  - /habitat/task/measurements: 
+    - top_down_map
+  - /habitat/simulator/agents@habitat.simulator.agents.main_agent: rgbds_agent
+  - _self_
+
+habitat:
+  environment:
+    max_episode_steps: 500
+    iterator_options:
+      shuffle: False
+  simulator:
+    scene_dataset: "data/scene_datasets/hssd-hab/hssd-hab.scene_dataset_config.json"
+    navmesh_include_static_objects: True
+    turn_angle: 30
+    agents_order:
+      - main_agent
+    agents:
+      main_agent:
+        height: 0.88
+        radius: 0.2
+        sim_sensors:
+          semantic_sensor:
+            width: 640
+            height: 640
+            position: [0, 0.88, 0]
+
+          rgb_sensor:
+            width: 640
+            height: 640
+            position: [0, 0.88, 0]
+
+          depth_sensor:
+            width: 640
+            height: 640
+            min_depth: 0.5
+            max_depth: 5.0
+            position: [0, 0.88, 0]
+            normalize_depth: false
+        
+    habitat_sim_v0:
+      gpu_device_id: 0
+      allow_sliding: True
+      enable_physics: True
+
+  task:
+    type: ExplorationTask-v0
+    lab_sensors:
+      agent_collision_sensor:
+        type: agent_collision_sensor
+      movement_sensor:
+        type: movement_sensor
+      position_sensor:
+        type: position_sensor
+        
+  dataset:
+    type: ExplorationNav
+    split: train
+    data_path: data/datasets/objectnav/hssd-hab/{split}/{split}.json.gz
+    scenes_dir: data/scene_datasets/hssd-hab/scenes
+    content_scenes: ["*"]
+
+object_params:
+  env_name: "HSSD-HAB/COCO80"
+  area_thr: 100.0
+
+baseline_params:
+  visualize: True
+  replanning_steps: 50
+
+habitat_baselines:
+  exp_name: randomteleportbaseline
+  num_environments: 1
+  env_name: ExplorationEnv-v0
+  trainer_name: randomteleportbaseline
+
+  tensorboard_dir: "tb"
+  video_dir: "video_dir"
+  test_episode_count: -1
+  num_updates: -1
+  eval_ckpt_path_dir: "checkpoints"
+  checkpoint_folder: "checkpoints"
+
+  total_num_steps: 1_000_000
+  log_interval: 25
+  log_file: "train.log"
+  force_blind_policy: false
+  checkpoint_interval: -1
+  num_checkpoints: 100
+  force_torch_single_threaded: true
+  torch_gpu_id: 0

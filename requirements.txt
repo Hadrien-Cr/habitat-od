@@ -19,3 +19,5 @@ natsort
 pandas
 mss
 matplotlib
+torchmetrics
+albumentations

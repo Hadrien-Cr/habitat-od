@@ -1,0 +1,25 @@
+habitat_config_path: config/habitat/default.yaml
+
+DATA_GEN:
+  seed: 0
+  min_pixel_area: 500
+  frame_height: 480
+  frame_width: 640
+  meters_per_grid_pixel: 0.25
+  viewpoint_spacing: 0.5
+  turn_angle: 30
+  per_class_num_samples: 20
+  vocab: HSSD500
+  dataset:
+    data_root: datasets/
+    dataset_name: hssd_od_hssd500
+    splits:
+      - split_name: hssd_od_hssd500_small
+        scenes_to_include: [
+          "102344022", "102817053",
+        ]
+      - split_name: hssd_od_hssd500_full
+        scenes_to_include: [
+          "102344022", "102817053", "104348133_171513054", "105515175_173104107", "106366371_174226743", "108294573_176710113",
+          "102344049", "102817200", "104348160_171513093", "105515211_173104179", "106366434_174226881", "108294624_176710203",
+        ]

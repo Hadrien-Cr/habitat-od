@@ -2,7 +2,6 @@ from collections import Counter
 from pathlib import Path
 import numpy as np
 from habitat_sim.agent.agent import AgentState
-from common.interfaces import Labels
 
 def kmeans(inputs: list, k: int, rng_gen, max_iter: int = 20) -> tuple[list[int], list[list[int]]]:
     n = len(inputs)
@@ -138,9 +137,9 @@ def covisibility_subsampling(samples: list[tuple[AgentState, np.ndarray, list[di
     return out[:num_samples]
 
 
-def covisibility_subset(samples: list[tuple[AgentState, dict, list[dict]]], rng_gen) ->  list[int]:
+def covisibility_subset(samples: list[tuple[AgentState, dict, list]], rng_gen) ->  list[int]:
     """
-    samples : list of tuples (fname, image, labels)
+    samples : list of tuples (fname, image, instances)
     Follow Co-Visibility Clustering algorithm from https://arxiv.org/pdf/2411.17735
     """
     def get_objects(sample):
@@ -198,9 +197,10 @@ def covisibility_subset(samples: list[tuple[AgentState, dict, list[dict]]], rng_
 
 
 def area_bin_sampling(
-    list_of_samples: list[Labels],
+    list_of_instances: list,
     rng_gen,
     mask_filtering_fn,
+    area_calculation_fn,
     num_samples=20,
     num_bins=10,
     keep_top_k_bins=5,
@@ -208,14 +208,14 @@ def area_bin_sampling(
     """
     Stratified sampling over largest mask area, focusing on top-k largest bins.
     """
-    indices = np.array(list(range(len(list_of_samples))))
+    indices = np.array(list(range(len(list_of_instances))))
 
     if len(indices) < num_samples:
         return indices.tolist()
     
     areas = np.array([
-        max([inst["mask_area"] for inst in labels.instances if mask_filtering_fn(inst)], default=0)
-        for  labels in list_of_samples
+        max([area_calculation_fn(i, instances) for i in range(len(instances)) if mask_filtering_fn(i, instances)], default=0)
+        for instances in list_of_instances
     ])
 
 

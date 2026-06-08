@@ -7,11 +7,13 @@
       "type": "debugpy",
       "request": "launch",
       "program": "${file}",
+      "python": "/home/hadriencr/miniconda3/envs/objectnav_zoo/bin/python",
       "env": {
         "PYTHONPATH": "/home/hadriencr/Code/thor-od",
         "PYTHONNOUSERSITE": "1",
         "HABITAT_DATA": "/home/hadriencr/Code/habitat_data/data",
-        },
+        "PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION": "python"
+      },
     }
   ]
 }

@@ -16,6 +16,9 @@ from third_party.Detic.detic.modeling.text.text_encoder import (  # noqa:E402
     build_text_encoder,
 )
 
+def cosine_similarity(vec1, vec2):  
+    return torch.dot(vec1, vec2) / (torch.norm(vec1) * torch.norm(vec2))
+
 def get_clip_embeddings(vocabulary: list[str], prompt: str = "a ") -> torch.Tensor:
     text_encoder = build_text_encoder(pretrain=True)
     text_encoder.eval()

@@ -11,7 +11,7 @@ def plot_semantic_2d_map(
     bg_grid,
     sem_grid,
     colors: dict[int, tuple[int,int,int]],
-    name_mapping: dict[int, str],
+    classes: list[str],
     scale=8
 ) -> Image.Image:
     # sem: (h, w, nc)
@@ -54,7 +54,7 @@ def plot_semantic_2d_map(
 
             draw.text(
                 (x, y),
-                name_mapping[c],
+                classes[c],
                 fill=(255,255,255),
                 font_size=20,
                 anchor="mm"  # center text on region centroid
@@ -93,38 +93,65 @@ def get_contour_points(
 
     return np.array([pt1, pt2, pt3, pt4])
 
+def plot_array(arr: np.ndarray) -> Image.Image:
+    return Image.fromarray(arr)
+    
 
 def plot_mask(mask) -> Image.Image:
     colored = np.zeros((*mask.shape[:2], 3), dtype=np.uint8)
     colored[mask == 1] = [255, 255, 255]
     return Image.fromarray(colored)
 
+def plot_segmentation_pred(rgb: np.ndarray, instances, classes: list[str], colors: list[tuple[float, float, float]], scale: float = 1.0) -> Image.Image:
+    from detectron2.data import Metadata
+    metadata = Metadata()
+    metadata.set(thing_classes=classes)
+    metadata.set(thing_colors=colors)
 
-def plot_segmentation_pred(img: np.ndarray, instances, metadata: Metadata) -> Image.Image:
     det_visualizer = DetVisualizer(
-        img,
+        rgb,
         metadata=metadata,
-        scale=0.5,
+        scale=scale,
         instance_mode=ColorMode.SEGMENTATION
     )
-    vis = det_visualizer.draw_instance_predictions(instances.to("cpu"), jittering=False)
-    result = vis.get_image()
+    vis_img = det_visualizer.draw_instance_predictions(instances.to("cpu"), jittering=False)
+    result = vis_img.get_image()
     im = Image.fromarray(result)
     return im
 
 
-def plot_segmentation_gt(img: np.ndarray, dataset_dict: dict, metadata: Metadata) -> Image.Image:
+def plot_segmentation_gt(rgb: np.ndarray, gt_instances, classes: list[str], colors: list[tuple[float, float, float]], scale: float = 1.0) -> Image.Image:
+    from detectron2.data import Metadata
+    metadata = Metadata()
+    metadata.set(thing_classes=classes)
+    metadata.set(thing_colors=colors)
+
     det_visualizer = DetVisualizer(
-        img,
+        rgb,
         metadata=metadata,
-        scale=0.5,
+        scale=scale,
         instance_mode=ColorMode.SEGMENTATION
     )
-    vis = det_visualizer.draw_dataset_dict(dataset_dict)
-    result = vis.get_image()
+    vis_img = det_visualizer.overlay_instances(
+        boxes=gt_instances.gt_boxes.tensor.cpu().numpy(),
+        masks=gt_instances.gt_masks.tensor.cpu().numpy() if gt_instances.has("gt_masks") else None,
+        labels=[classes[c] for c in gt_instances.gt_classes.cpu().numpy()] if gt_instances.has("gt_classes") else None,
+        assigned_colors=[colors[c] for c in gt_instances.gt_classes.cpu().numpy()] if gt_instances.has("gt_classes") else None,
+    )
+    result = vis_img.get_image()
     im = Image.fromarray(result)
     return im
 
+
+def plot_segmentation_gt_and_pred(rgb: np.ndarray, pred_instances, gt_instances, classes: list[str], colors: list[tuple[float, float, float]], scale: float = 0.5) -> Image.Image:
+    if gt_instances is not None:
+        im = plot_segmentation_gt(rgb, gt_instances, ["gt_" + c for c in classes], [(1.0, 0.0, 0.0) for _ in classes], scale=1.0)
+        rgb = np.array(im)
+
+    if pred_instances is not None:
+        return plot_segmentation_pred(rgb, pred_instances, classes, colors, scale)
+
+    return im
 
 def make_mosaic(
     list_fnames_images: list[tuple[str, np.ndarray]],
