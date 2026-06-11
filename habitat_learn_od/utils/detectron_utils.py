@@ -23,35 +23,6 @@ from detectron2.utils.registry import Registry
 from torch.nn import functional as F
 
 
-def enable_dropout(model):
-    """Function to enable the dropout layers during test-time"""
-    for m in model.modules():
-        if m.__class__.__name__.startswith('Dropout'):
-            m.train()
-
-
-def get_mc_faster_rcnn_config(dataset_name, pretrained_weights_path=None):
-
-    cfg = get_cfg()
-    cfg.merge_from_file(
-        model_zoo.get_config_file("COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml")
-    )
-    cfg.DATASETS.TRAIN = (dataset_name,)
-    cfg.DATASETS.TEST = ()  # no metrics implemented for this dataset
-    cfg.DATALOADER.NUM_WORKERS = 16
-    if pretrained_weights_path is not None:
-        cfg.MODEL.WEIGHTS = pretrained_weights_path
-    cfg.SOLVER.IMS_PER_BATCH = 4
-    cfg.SOLVER.BASE_LR = 0.002
-    cfg.SOLVER.MAX_ITER = 100000
-    cfg.MODEL.ROI_HEADS.NAME = "MCStandardROIHeads"
-    cfg.MODEL.ROI_HEADS.BATCH_SIZE_PER_IMAGE = (
-        128  # faster, and good enough for this toy dataset
-    )
-    cfg.MODEL.ROI_HEADS.NUM_CLASSES = 80
-    return cfg
-
-
 def fast_rcnn_inference(
     boxes,
     scores,

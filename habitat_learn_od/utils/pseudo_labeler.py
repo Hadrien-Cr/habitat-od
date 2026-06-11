@@ -41,7 +41,7 @@ class PseudoLabeler(pl.LightningModule):
 
     def update_model(self, model) -> None:
         self.model = model
-        self.model.model.roi_heads.box_predictor.box_predictor.test_score_thresh = self.thr
+        self.model.model.roi_heads.box_predictor.test_score_thresh = self.thr
         self.model.eval()
 
     def predict_step(self, batch, batch_idx, dataloader_idx=None) -> tuple[List[Instances], List[dict]]:

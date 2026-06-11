@@ -1,5 +1,5 @@
 # @package _group_
-batch_size: 8
+batch_size: 1
 n_iterations: 1
 loss_margin: 0.3
 exp_base_name: pipeline_ce

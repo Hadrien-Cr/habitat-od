@@ -1,13 +1,15 @@
 defaults:
-  - detectron_args: maskrcnn
+  - detic_args: detic
   - training: pipeline_gt
 
-base_dir: /home/hadriencr/Code/Look_Around_And_Learn
-
+base_dir: /home/hadriencr/Code/thor-od
 habitat_base_cfg_dir: ${base_dir}/confs/habitat
 habitat_cfg: default.yaml
 exp_base_dir: ${base_dir}/exps
 data_base_dir: ${base_dir}/data
+cfg_base_dir: ${base_dir}/config
+tp_base_dir: ${base_dir}/third_party
+
 early_stopping: 0
 epochs: 20
 gpus: 1
@@ -61,7 +63,7 @@ hydra:
 #   "102816600", "104348028_171512877", "105515211_173104185", "106878915_174887025", "107734176_176000019", "108736884_177263634",
 # ]
 vocab: "COCO80"
-steps_per_episode: 200
+steps_per_episode: 500
 train_scenes: [
   "102344022", "102817053", "104348133_171513054", "105515175_173104107", "106366371_174226743", "108294573_176710113",
   "102344049", "102817200", "104348160_171513093", "105515211_173104179", "106366434_174226881", "108294624_176710203",

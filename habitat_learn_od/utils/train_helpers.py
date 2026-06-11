@@ -53,7 +53,8 @@ def get_training_params(cfg):
     trainer_configuration = {
         "multiple_trainloader_mode": "min_size",
         "default_root_dir": checkpoint_dir,
-        "gpus": gpus,
+        "accelerator": "gpu",
+        "devices": gpus,
         "max_epochs": cfg["epochs"],
         "callbacks": [ckpt_cb],
         "enable_checkpointing": True,
@@ -139,37 +140,3 @@ def mixup_batch(batch):
         del b2_image
         del b2_instances
 
-
-
-# def evaluate_labeler(loader, outputs=None, labeler=None, labels=None, device="cpu"):
-#     if labels is None:
-#         labels = labeler.get_pseudo_labels(outputs, loader)
-    
-#     for batch, batch_pseudo in zip(loader, labels):
-#         gt = [
-#             {
-#                 'boxes': b['instances'].gt_boxes.tensor.to(device),
-#                 'labels': b['instances'].gt_classes.int().to(device),
-#                 'masks': b['instances'].gt_masks.tensor.to(device),
-#             }
-#             for b in batch
-#         ]
-
-#         pred = [
-#             {
-#                 'boxes': pseudo.gt_boxes.tensor.to(device),
-#                 'labels': pseudo.gt_classes.int().to(device),
-#                 'scores': (
-#                     pseudo.gt_logits.max(1).values.to(device)
-#                     if len(pseudo) > 0
-#                     else torch.Tensor([]).float().to(device)
-#                 ),
-#                 'masks': pseudo.gt_masks.to(device),
-#             }
-#             for pseudo in [batch_pseudo]
-#         ]
-
-#         labeler.test_map_metric.update(pred, gt)
-
-#     results = labeler.test_map_metric.compute()
-#     return results

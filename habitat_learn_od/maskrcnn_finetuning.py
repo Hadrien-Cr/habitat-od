@@ -8,20 +8,29 @@ from habitat_learn_od.utils.train_helpers import get_training_params
 from habitat_learn_od.utils import data_modules, teacher_student_modules
 from common.env_utils.object_detector_sensors import * 
 
-@hydra.main(config_path="../config", config_name="maskrcnn_train.yaml")
+
+@hydra.main(config_path="../config", config_name="train.yaml")
 def main(cfg):
     data_path = os.path.join(os.getcwd(), "data")
-
     if not (os.path.exists(data_path)):
         os.symlink(cfg.data_base_dir, data_path)
 
-    teacher_student = teacher_student_modules.TeacherStudent(**cfg,**cfg.training)
-    trainer_config = get_training_params(cfg)
+    config_path = os.path.join(os.getcwd(), "config")
+    if not (os.path.exists(config_path)):
+        os.symlink(cfg.cfg_base_dir, config_path)
 
+    tp_path = os.path.join(os.getcwd(), "third_party")
+    if not (os.path.exists(tp_path)):
+        os.symlink(cfg.tp_base_dir, tp_path)
+
+    teacher_student = teacher_student_modules.TeacherStudent(**cfg,**cfg.training, **cfg.detic_args, device="cuda:0")
+    trainer_config = get_training_params(cfg)
+    print(trainer_config)
     dataset_path = os.path.join(os.getcwd(), "data", cfg.collected_set)
     trainer = pl.Trainer(**trainer_config)    
 
     checkpoint_path = None
+
 
     with EventStorage(start_iter=0) as storage:
         for id_iteration in range(cfg.training.n_iterations):

@@ -132,11 +132,29 @@ def plot_segmentation_gt(rgb: np.ndarray, gt_instances, classes: list[str], colo
         scale=scale,
         instance_mode=ColorMode.SEGMENTATION
     )
+
+    for box, class_id in zip(
+        gt_instances.gt_boxes.tensor.cpu().numpy(),
+        gt_instances.gt_classes.cpu().numpy()
+    ):
+        x1, y1, x2, y2 = box
+        height_ratio = (y2 - y1) / rgb.shape[0]
+        font_size = (
+            np.clip((height_ratio - 0.02) / 0.08 + 1, 1.2, 2) * 0.5 * det_visualizer._default_font_size
+        )
+        det_visualizer.draw_text(
+            classes[class_id],
+            font_size=font_size,
+            position=(x1, y2 - 10 * height_ratio),
+            horizontal_alignment="left",
+            color="red"
+        )
+
     vis_img = det_visualizer.overlay_instances(
         boxes=gt_instances.gt_boxes.tensor.cpu().numpy(),
-        masks=gt_instances.gt_masks.tensor.cpu().numpy() if gt_instances.has("gt_masks") else None,
-        labels=[classes[c] for c in gt_instances.gt_classes.cpu().numpy()] if gt_instances.has("gt_classes") else None,
-        assigned_colors=[colors[c] for c in gt_instances.gt_classes.cpu().numpy()] if gt_instances.has("gt_classes") else None,
+        masks=None,
+        labels=None,
+        assigned_colors=[(1.0, 0.0, 0.0)] * len(gt_instances),
     )
     result = vis_img.get_image()
     im = Image.fromarray(result)
@@ -144,12 +162,13 @@ def plot_segmentation_gt(rgb: np.ndarray, gt_instances, classes: list[str], colo
 
 
 def plot_segmentation_gt_and_pred(rgb: np.ndarray, pred_instances, gt_instances, classes: list[str], colors: list[tuple[float, float, float]], scale: float = 0.5) -> Image.Image:
+    if pred_instances is not None:
+        im = plot_segmentation_pred(rgb, pred_instances, classes, colors, scale)
+        rgb = np.array(im)
+
     if gt_instances is not None:
         im = plot_segmentation_gt(rgb, gt_instances, ["gt_" + c for c in classes], [(1.0, 0.0, 0.0) for _ in classes], scale=1.0)
         rgb = np.array(im)
-
-    if pred_instances is not None:
-        return plot_segmentation_pred(rgb, pred_instances, classes, colors, scale)
 
     return im
 

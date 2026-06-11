@@ -34,7 +34,7 @@ class TeacherStudent(pl.LightningModule):
 
     def __init__(
         self,
-        detectron_args,
+        detic_args,
         pseudo_labeler_method="vanilla",
         temperature=1,
         student_model=None,
@@ -55,19 +55,15 @@ class TeacherStudent(pl.LightningModule):
         }
         # Initialize student and teacher / pseudo-labeler
 
-        if student_model is not None:
-            self.student_model_class = getattr(multi_stage_models, student_model)
-        else:
-            self.student_model_class = multi_stage_models.FocalMultiStageModel # type: ignore
-
         self.kwargs = kwargs
         self.batch_size = batch_size
         self.mixup = mixup
         self.use_teacher = use_teacher
-        self.detectron_args = detectron_args
+        self.detic_args = detic_args
+        print(f"Using pseudo-labeler method: {pseudo_labeler_method}")
 
         self.pseudo_labeler: PseudoLabeler = switch[pseudo_labeler_method](
-            model=multi_stage_models.MultiStageModel(detectron_args, **kwargs),
+            model=multi_stage_models.MultiStageModel(detic_args, **kwargs),
             temperature=temperature,
             thr=thr,
             solution=solution,
@@ -87,22 +83,17 @@ class TeacherStudent(pl.LightningModule):
 
 
     def reinit_online(self) -> None:
-        self.online_network = self.student_model_class(self.detectron_args, **self.kwargs)
-        self.online_network.model.roi_heads.box_predictor.box_predictor.test_score_thresh = 0.5
+        self.online_network = multi_stage_models.MultiStageModel(self.detic_args, **self.kwargs)
+        self.online_network.model.roi_heads.box_predictor.test_score_thresh = 0.5
 
+    def configure_optimizers(self) -> torch.optim.Optimizer:
+        optimizer = self.online_network.configure_optimizers(max_steps=self.max_steps)
+        return optimizer
+    
+    def training_step(self, batch, batch_idx) -> Tensor:
+        self.online_network.train()
+        results, losses, box_features, proposals = self.online_network.model_forward(batch)
 
-    def training_step(self, batched_inputs, batch_idx) -> Tensor:
-        batch = []
-        for i in batched_inputs:
-            if isinstance(i, list):
-                batch += i
-            else:
-                batch.append(i)
-        
-        if self.mixup:
-            mixup_batch(batch)
-
-        losses, predictions = self.online_network.common_step(batch)
         loss: Tensor = sum(losses.values()) # type: ignore
 
         for k in losses.keys():
@@ -122,41 +113,15 @@ class TeacherStudent(pl.LightningModule):
             sync_dist=True,
             batch_size=self.batch_size,
         )
+
+        if ((batch_idx) % (128//self.batch_size) == 0):
+            self.log_batch(batch, batch_idx, results, prefix="train")
         return loss
 
     def validation_step(self, batch, batch_idx) -> None:
-        if self.use_teacher:
-            self.target_validation_step(batch, batch_idx)
         self.online_validation_step(batch, batch_idx)
 
-    def target_validation_step(self, batch, batch_idx) -> None:
-        self.pseudo_labeler.eval()
-        losses, predictions = self.pseudo_labeler.model.common_step(batch)
-        if losses is None:
-            return None
-        
-        loss = sum(losses.values())
-
-        for k in losses.keys():
-            self.log(
-                f"val_{k}_target",
-                losses[k],
-                on_step=True,
-                on_epoch=True,
-                sync_dist=True,
-                batch_size=self.batch_size,
-            )
-
-        self.log(
-            'val_loss_target',
-            loss,
-            on_step=True,
-            on_epoch=True,
-            sync_dist=True,
-            batch_size=self.batch_size,
-        )
-
-    def _val_map(self, batch, predictions) -> None:
+    def _val_map(self, batch, results) -> None:
         device = self.device
         gt = [
             {
@@ -171,42 +136,18 @@ class TeacherStudent(pl.LightningModule):
                 'labels': b['instances'].pred_classes.to(device),
                 'scores': b['instances'].scores.to(device),
             }
-            for b in predictions
+            for b in results
         ]
         self.online_val_map_metric.update(pred, gt)
 
     def online_validation_step(self, batch, batch_idx) -> None:
         self.online_network.eval()
-        losses, predictions = self.online_network.common_step(batch)
+        results = self.online_network.inference(batch)
 
-        if losses is None:
-            return None
-        
-        loss = sum(losses.values())
+        if ((batch_idx) % (128//self.batch_size) == 0):
+            self.log_batch(batch, batch_idx, results, prefix="val_online")
 
-        for k in losses.keys():
-            self.log(
-                f"val_{k}_online",
-                losses[k],
-                on_step=True,
-                on_epoch=True,
-                sync_dist=True,
-                batch_size=self.batch_size,
-            )
-
-        self.log(
-            'val_loss_online',
-            loss,
-            on_step=True,
-            on_epoch=True,
-            sync_dist=True,
-            batch_size=self.batch_size,
-        )
-        if (batch_idx%10 == 0):
-            self.log_batch(batch, batch_idx, predictions, prefix="val_online")
-
-        self._val_map(batch, predictions)
-        # self._val_map_segm(batch, predictions)
+        self._val_map(batch, results)
 
     def validation_epoch_end(self, outputs) -> None:
         results = self.online_val_map_metric.compute()
@@ -223,45 +164,6 @@ class TeacherStudent(pl.LightningModule):
             )
         self.online_val_map_metric = MAP(class_metrics=True)
         self.online_val_map_metric.to(self.device)
-
-
-    def test_step(self, batch, batch_idx) -> None:
-        self.online_network.eval()
-        _, predictions = self.online_network.common_step(batch)
-
-        gt = [
-            {
-                'boxes': b['instances'].gt_boxes.tensor,
-                'labels': b['instances'].gt_classes.int(),
-            }
-            for b in batch
-        ]
-        pred = [
-            {
-                'boxes': b['instances'].pred_boxes.tensor,
-                'labels': b['instances'].pred_classes,
-                'scores': b['instances'].scores,
-            }
-            for b in predictions
-        ]
-
-        self.test_map_metric.update(pred, gt)
-
-    def on_test_epoch_end(self) -> None:
-        results = self.test_map_metric.compute()
-        for k in results.keys():
-            self.log(
-                f"test_{k}",
-                results[k],
-                on_step=False,
-                on_epoch=True,
-                sync_dist=True,
-                batch_size=self.batch_size,
-            )
-
-    def configure_optimizers(self) -> torch.optim.Optimizer:
-        optimizer = self.online_network.configure_optimizers(max_steps=self.max_steps)
-        return optimizer
 
     def reset_metric(self) -> None:
         self.online_val_map_metric = MAP(class_metrics=True)
