@@ -51,7 +51,6 @@ def get_training_params(cfg):
         plugins = None
 
     trainer_configuration = {
-        "multiple_trainloader_mode": "min_size",
         "default_root_dir": checkpoint_dir,
         "accelerator": "gpu",
         "devices": gpus,

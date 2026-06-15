@@ -44,6 +44,7 @@ class TeacherStudent(pl.LightningModule):
         batch_size=1,
         mixup=False,
         solution="ours",
+        object_params=None,
         *args,
         **kwargs,
     ) -> None:
@@ -60,10 +61,12 @@ class TeacherStudent(pl.LightningModule):
         self.mixup = mixup
         self.use_teacher = use_teacher
         self.detic_args = detic_args
+        self.vocab_name = object_params["env_name"].replace("HSSD-HAB/", "")
+
         print(f"Using pseudo-labeler method: {pseudo_labeler_method}")
 
         self.pseudo_labeler: PseudoLabeler = switch[pseudo_labeler_method](
-            model=multi_stage_models.MultiStageModel(detic_args, **kwargs),
+            model=multi_stage_models.MultiStageModel(detic_args, vocab_name=self.vocab_name, **kwargs),
             temperature=temperature,
             thr=thr,
             solution=solution,
@@ -83,7 +86,7 @@ class TeacherStudent(pl.LightningModule):
 
 
     def reinit_online(self) -> None:
-        self.online_network = multi_stage_models.MultiStageModel(self.detic_args, **self.kwargs)
+        self.online_network = multi_stage_models.MultiStageModel(self.detic_args, vocab_name=self.vocab_name, **self.kwargs)
         self.online_network.model.roi_heads.box_predictor.test_score_thresh = 0.5
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
@@ -114,7 +117,7 @@ class TeacherStudent(pl.LightningModule):
             batch_size=self.batch_size,
         )
 
-        if ((batch_idx) % (128//self.batch_size) == 0):
+        if ((batch_idx) % (1//self.batch_size) == 0):
             self.log_batch(batch, batch_idx, results, prefix="train")
         return loss
 
@@ -142,18 +145,26 @@ class TeacherStudent(pl.LightningModule):
 
     def online_validation_step(self, batch, batch_idx) -> None:
         self.online_network.eval()
-        results = self.online_network.inference(batch)
+        results = self.online_network.model_inference(batch)
 
-        if ((batch_idx) % (128//self.batch_size) == 0):
+        if ((batch_idx) % (1//self.batch_size) == 0):
             self.log_batch(batch, batch_idx, results, prefix="val_online")
 
         self._val_map(batch, results)
 
-    def validation_epoch_end(self, outputs) -> None:
-        results = self.online_val_map_metric.compute()
+    def on_validation_epoch_end(self,) -> None:
+        results = deepcopy(self.online_val_map_metric.compute())
+        
+        metadata = MetadataCatalog.get(self.vocab_name)
+        classes_ids = results["classes"].cpu().numpy().tolist()
+        map_per_class = results["map_per_class"].cpu().numpy().tolist()
+        
+        results.update({f"map_class_{metadata.thing_classes[classes_ids[k]]}": torch.tensor(v) for k, v in enumerate(map_per_class)})
+        
         for k in results.keys():
-            if "per_class" in k:
+            if results[k].numel() != 1:
                 continue
+            
             self.log(
                 f"val_{k}_online",
                 results[k].item(),
@@ -172,11 +183,8 @@ class TeacherStudent(pl.LightningModule):
     def log_batch(self, batch, batch_idx, predictions = None, prefix = None) -> None:
         for idx in range(len(batch)):
             x = batch[idx]
-            if not len(x['instances']) > 0:
-                continue
 
-            vocab = x['instances'].infos[0]["env_name"].replace("HSSD-HAB/", "")
-            metadata = MetadataCatalog.get(vocab)
+            metadata = MetadataCatalog.get(self.vocab_name)
 
             if predictions is not None:
                 pred_instances = deepcopy(predictions[idx]['instances'])

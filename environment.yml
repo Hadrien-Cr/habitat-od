@@ -26,4 +26,32 @@ dependencies:
   - habitat-sim=0.2.5
   - withbullet
   - pip: 
+    - numpy<1.24 # certain deprecated operations were used in other deps
     - setuptools <70
+    - tqdm
+    - wandb
+    - trimesh
+    - datasets
+    - pytorch-lightning[extra]
+    - tensorboard
+    - cloudpickle
+    - pycocotools
+    - ipykernel
+    - hydra-core
+    - scipy
+    - opencv-python
+    - pybullet
+    - pytest
+    - open3d
+    - scikit-image
+    - scikit-fmm
+    - scikit-learn
+    - numpy-quaternion
+    - natsort
+    - pandas
+    - mss
+    - matplotlib
+    - torchmetrics
+    - albumentations
+    - connected-components-3d
+    - pyntcloud

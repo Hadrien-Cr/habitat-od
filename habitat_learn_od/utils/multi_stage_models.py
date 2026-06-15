@@ -14,8 +14,8 @@ from detectron2.structures import ImageList, Instances
 from detectron2.modeling.postprocessing import detector_postprocess
 from detectron2.modeling import build_model
 from detectron2.config import CfgNode, get_cfg
+from detectron2.utils.events import get_event_storage
 
-from detectron2.modeling.roi_heads.mask_head import mask_rcnn_inference
 from detectron2.modeling.roi_heads.fast_rcnn import fast_rcnn_inference
 
 from common.utils import triplet
@@ -56,7 +56,7 @@ def setup_cfg(config_file, confidence_threshold, weights) -> CfgNode:
     return cfg
 
 
-def build_detic_model(cfg: CfgNode, vocab: list[str], vocab_name: str) -> CustomRCNN:
+def build_detic_model(cfg: CfgNode, classes: list[str], vocab_name: str) -> CustomRCNN:
     model: CustomRCNN = build_model(cfg)
     checkpointer = DetectionCheckpointer(model)
     checkpointer.load(cfg.MODEL.WEIGHTS)
@@ -64,14 +64,14 @@ def build_detic_model(cfg: CfgNode, vocab: list[str], vocab_name: str) -> Custom
     path_clip_embeddings = Path(f"data/metadata/{vocab_name}.npy")
 
     if not os.path.exists(path_clip_embeddings):
-        classifier = get_clip_embeddings(vocab)
+        classifier = get_clip_embeddings(["a " + c.replace("_", " ") for c in classes])
         save_clip_embeddings(classifier, path_clip_embeddings)
     else:
         classifier = load_clip_embeddings(path_clip_embeddings)
 
-    reset_cls(model, classifier, len(vocab))
+    reset_cls(model, classifier, len(classes))
 
-    model.num_classes = len(vocab)
+    model.num_classes = len(classes)
     return model
 
 
@@ -80,7 +80,7 @@ class MultiStageModel(pl.LightningModule):
 
     def __init__(
         self,
-        detic_args=None,
+        detic_args: CfgNode,
         lr=0.01,
         loss_weights={},
         use_gt_matching=True,
@@ -89,17 +89,17 @@ class MultiStageModel(pl.LightningModule):
         loss_margin=0.3,
         mask_on=True,
         load_checkpoint=True,
-        vocab=None,
+        vocab_name: str = "HSSD40",
         *args,
         **kwargs,
     ) -> None:
         super().__init__()
 
-        metadata = MetadataCatalog.get(vocab)
+        metadata = MetadataCatalog.get(vocab_name)
         classes = metadata.thing_classes
         colors = metadata.thing_colors
         cfg = setup_cfg(detic_args.config_file, detic_args.confidence_threshold, detic_args.weights)
-        model = build_detic_model(cfg, vocab=classes, vocab_name=vocab)
+        model = build_detic_model(cfg, classes=classes, vocab_name=vocab_name)
         assert isinstance(model, CustomRCNN), "Expected model to be an instance of CustomRCNN"
         self.model = model
         model.to(self.device)
@@ -168,8 +168,8 @@ class MultiStageModel(pl.LightningModule):
                 for p in labeled_proposals
             ]
         )
-        roi_head_losses = self.model.roi_heads._forward_box(features, labeled_proposals, targets=gt_instances,ann_type="box")
-        losses = {**proposal_losses, **roi_head_losses}
+        roi_head_losses = self.roi_head_forward(features, labeled_proposals, targets=gt_instances)
+        losses = {**proposal_losses, **roi_head_losses}        
 
         # Get box features and predictions
         feat_list = [features[f] for f in self.model.roi_heads.box_in_features]
@@ -179,9 +179,7 @@ class MultiStageModel(pl.LightningModule):
         box_cls_predictions, box_reg_predictions = self.model.roi_heads.box_predictor[0](box_features)
         
         # also do inference for evaluation
-        pred_instances, _ = self.model.roi_heads.box_predictor[0].inference(
-            (box_cls_predictions, box_reg_predictions), labeled_proposals
-        )    
+        pred_instances = self.roi_head_inference(features, proposals)
         
         # Get foreground mask
         foreground_mask = labeled_proposal_gt_classes < self.model.roi_heads.num_classes
@@ -198,20 +196,99 @@ class MultiStageModel(pl.LightningModule):
         return results, losses, box_features, labeled_proposals_ids
     
     
-    def inference(self, inputs: list[dict]) -> list[dict]:
+    def model_inference(self, inputs: list[dict]) -> list[dict]:
         assert not self.model.training
         images = self.model.preprocess_image(inputs)
         features = self.model.backbone(images.tensor)
         proposals, _ = self.model.proposal_generator(images, features, gt_instances=None)
-        pred_instances, _ = self.model.roi_heads(images, features, proposals, targets=None)
+        pred_instances = self.roi_head_inference(features, proposals)
 
         results = []
         for input, pred in zip(inputs, pred_instances):
             height, width = input["image"].shape[1:]
-            r = detector_postprocess(pred, height, width).detach()
+            r = detector_postprocess(pred, height, width)
             results.append({"instances": r})
         return results
 
+    def roi_head_inference(self, features, proposals) -> list[Instances]:
+        if self.model.roi_heads.mult_proposal_score:
+            if len(proposals) > 0 and proposals[0].has('scores'):
+                proposal_scores = [p.get('scores') for p in proposals]
+            else:
+                proposal_scores = [p.get('objectness_logits') for p in proposals]
+        
+        feat_list = [features[f] for f in self.model.roi_heads.box_in_features]
+        head_outputs = []  # (predictor, predictions, proposals)
+        prev_pred_boxes = None
+        image_sizes = [x.image_size for x in proposals]
+
+        for k in range(self.model.roi_heads.num_cascade_stages):
+            if k > 0:
+                proposals = self.model.roi_heads._create_proposals_from_boxes(
+                    prev_pred_boxes, image_sizes,
+                    logits=[p.objectness_logits for p in proposals])
+  
+            predictions = self.model.roi_heads._run_stage(feat_list, proposals, k)
+            prev_pred_boxes = self.model.roi_heads.box_predictor[k].predict_boxes(
+                (predictions[0], predictions[1]), proposals)
+            head_outputs.append((self.model.roi_heads.box_predictor[k], predictions, proposals))
+        
+        # Each is a list[Tensor] of length #image. Each tensor is Ri x (K+1)
+        scores_per_stage = [h[0].predict_probs(h[1], h[2]) for h in head_outputs]
+        scores = [
+            sum(list(scores_per_image)) * (1.0 / self.model.roi_heads.num_cascade_stages)
+            for scores_per_image in zip(*scores_per_stage)
+        ]
+        if self.model.roi_heads.mult_proposal_score:
+            scores = [(s * ps[:, None]) ** 0.5 \
+                for s, ps in zip(scores, proposal_scores)]
+        if self.model.roi_heads.one_class_per_proposal:
+            scores = [s * (s == s[:, :-1].max(dim=1)[0][:, None]).float() for s in scores]
+        
+        predictor, predictions, proposals = head_outputs[-1]
+        boxes = predictor.predict_boxes(
+            (predictions[0], predictions[1]), proposals)
+        
+        pred_instances, _ = fast_rcnn_inference(
+            boxes,
+            scores,
+            image_sizes,
+            predictor.test_score_thresh,
+            predictor.test_nms_thresh,
+            predictor.test_topk_per_image,
+        )
+        pred_instances = self.model.roi_heads._forward_mask(features, pred_instances)
+        pred_instances = self.model.roi_heads._forward_keypoint(features, pred_instances)
+        return pred_instances
+    
+    def roi_head_forward(self, features, proposals, targets=None) -> dict:
+        assert self.model.training
+        
+        feat_list = [features[f] for f in self.model.roi_heads.box_in_features]
+        head_outputs = []  # (predictor, predictions, proposals)
+        prev_pred_boxes = None
+        image_sizes = [x.image_size for x in proposals]
+
+        for k in range(self.model.roi_heads.num_cascade_stages):
+            if k > 0:
+                proposals = self.model.roi_heads._create_proposals_from_boxes(
+                    prev_pred_boxes, image_sizes,
+                    logits=[p.objectness_logits for p in proposals])
+                proposals = self.model.roi_heads._match_and_label_boxes(
+                    proposals, k, targets)
+                
+            predictions = self.model.roi_heads._run_stage(feat_list, proposals, k)
+            prev_pred_boxes = self.model.roi_heads.box_predictor[k].predict_boxes(
+                (predictions[0], predictions[1]), proposals)
+            head_outputs.append((self.model.roi_heads.box_predictor[k], predictions, proposals))
+        
+        losses = {}
+        storage = get_event_storage()
+        for stage, (predictor, predictions, proposals) in enumerate(head_outputs):
+            with storage.name_scope("stage{}".format(stage)):
+                stage_losses = predictor.losses((predictions[0], predictions[1]), proposals,)
+            losses.update({k + "_stage{}".format(stage): v  for k, v in stage_losses.items()})
+        return losses
 
     def configure_optimizers(self, *args, **kwargs) -> torch.optim.Optimizer:
         optimizer = getattr(torch.optim, self.optimizer)(

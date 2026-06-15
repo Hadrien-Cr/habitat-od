@@ -157,7 +157,8 @@ class HabitatDataset(Dataset):
         self.modalities = modalities
 
     def __len__(self) -> int:
-        return len(self.index)
+        return 5
+        # return len(self.index)
 
     def _transform_batch(self, x, y) -> tuple[torch.Tensor, Instances]:
         if len(y.gt_boxes.tensor) == 0:
@@ -274,8 +275,6 @@ class HabitatFullDataset(HabitatDataset):
             dataset_path, modalities=["rgb", "depth", "position", "bbsgt"], *args, **kwargs
         )
 
-    def __len__(self) -> int:
-        return len(self.index)
 
     def __getitem__(self, idx) -> dict:
         episode, step = self.inputs[self.index[idx]]

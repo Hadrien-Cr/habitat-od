@@ -31,7 +31,7 @@ def collection(ds_name, habitat_config, scenes, steps_per_episode, cfg) -> None:
         habitat_config.habitat.dataset.content_scenes = scenes
         habitat_config.habitat.environment.max_episode_steps = steps_per_episode
         habitat_config.habitat.task.lab_sensors = {
-            "object_detector_gt": ObjectDetectorGTSensorConfig(**habitat_config.object_params),
+            "object_detector_gt": ObjectDetectorGTSensorConfig(**cfg.object_params),
             **habitat_config.habitat.task.lab_sensors
         }
 
@@ -41,7 +41,7 @@ def collection(ds_name, habitat_config, scenes, steps_per_episode, cfg) -> None:
     
     
 if __name__ == "__main__":
-    cfg = OmegaConf.load("config/maskrcnn_train.yaml")
+    cfg = OmegaConf.load("config/train.yaml")
 
     habitat_config = habitat.get_config(config_path="config/habitat/default.yaml")
     collection(cfg.collected_set, habitat_config, scenes = cfg.train_scenes, steps_per_episode=cfg.steps_per_episode, cfg=cfg)

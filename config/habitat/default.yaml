@@ -67,7 +67,7 @@ habitat:
 
 object_params:
   env_name: "HSSD-HAB/COCO80"
-  area_thr: 100.0
+  area_thr: 256
 
 baseline_params:
   visualize: True

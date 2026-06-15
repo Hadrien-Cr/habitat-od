@@ -252,13 +252,24 @@ CLASS_LABELS_COCO80 = [
     "toothbrush"
 ] 
 
-def generate_mappings(source_vocab: list[str], target_vocab: list[str], threshold: float):
-    from common.vision.clip import get_clip_embeddings, cosine_similarity
+def generate_mappings(source_vocab: list[str], target_vocab: list[str]):
+    from common.vision.clip import get_clip_embeddings, cosine_similarity, build_text_encoder
+    import torch
+    text_encoder = build_text_encoder(pretrain=True)
+    text_encoder.eval()
 
-    source_embeddings = get_clip_embeddings(source_vocab, prompt = "indoor photo of a ") .permute(1,0)
-    target_embeddings = get_clip_embeddings(target_vocab, prompt = "indoor photo of a ") .permute(1,0)
+    prompts = ["a {}", "a photo of a {} in a house"]
 
-    def find_closest(idx_label, source_embeddings, target_embeddings, threshold=0.9):
+    def ensemble_embeddings(vocab):
+        all_embs = [get_clip_embeddings([prompt.format(c.replace("_", " "))], text_encoder=text_encoder).permute(1, 0) for prompt in prompts]
+        stacked = torch.stack(all_embs, dim=0)
+        emb = torch.mean(stacked, dim=0)
+        return emb / torch.norm(emb, dim=1, keepdim=True)
+
+    source_embeddings = ensemble_embeddings(source_vocab)
+    target_embeddings = ensemble_embeddings(target_vocab)
+
+    def find_closest(idx_label, source_embeddings, target_embeddings):
         source_emb = source_embeddings[idx_label]
         best_label_idx = None
         best_sim = -1
@@ -266,27 +277,18 @@ def generate_mappings(source_vocab: list[str], target_vocab: list[str], threshol
         for i, target_emb in enumerate(target_embeddings):
             sim = cosine_similarity(source_emb, target_emb)
             if sim > best_sim:
-                best_sim = sim
+                best_sim = sim.item()
                 best_label_idx = i
 
-        if best_sim < threshold:
-            return None
-
-        return best_label_idx
+        return best_label_idx, best_sim
 
     mapping_source_to_target = []
-    mapping_target_to_source = [[] for _ in target_vocab]
 
-    for i, label in enumerate(source_vocab):
-        closest_label_idx = find_closest(i, source_embeddings, target_embeddings, threshold)
-        
-        if closest_label_idx is None:
-            closest_label_idx = -1
+    for i in range(len(source_vocab)):
+        closest_label_idx, closest_label_proximity = find_closest(i, source_embeddings, target_embeddings)
+        mapping_source_to_target.append((closest_label_idx, closest_label_proximity))
 
-        mapping_source_to_target.append(closest_label_idx)
-        mapping_target_to_source[closest_label_idx].append(i)
-
-    return mapping_source_to_target, mapping_target_to_source
+    return mapping_source_to_target
 
 
 VOCAB_REGISTRY: list[tuple[str, list[str]]] = [
@@ -299,14 +301,11 @@ OUTPUT_PATH = "common/env_utils/hssd500_cross_vocab_mapping.csv"
 
 def create_cross_vocab_mapping_csv(output_path: str = OUTPUT_PATH) -> None:
     mappings = {
-        target_name: generate_mappings(
-            CLASS_LABELS_HSSD500, target_labels, threshold=0.87
-        )[0]
+        target_name: generate_mappings(CLASS_LABELS_HSSD500, target_labels)
         for target_name, target_labels in VOCAB_REGISTRY
     }
 
-    columns = ["HSSD500"] + [name for name, _ in VOCAB_REGISTRY]
-    
+    columns = ["HSSD500"] + [y for name, _ in VOCAB_REGISTRY for y in [name, name + "_proximity"]]
     header = {
         "HSSD500": f"classes ({len(CLASS_LABELS_HSSD500)}): "
                    + " | ".join(CLASS_LABELS_HSSD500),
@@ -316,18 +315,18 @@ def create_cross_vocab_mapping_csv(output_path: str = OUTPUT_PATH) -> None:
         },
     }
 
-    # 4. Mapping rows
     rows = []
     for hssd_idx, hssd_label in enumerate(CLASS_LABELS_HSSD500):
         row = {"HSSD500": hssd_label}
         for target_name, target_labels in VOCAB_REGISTRY:
-            target_idx = mappings[target_name][hssd_idx]
+            target_idx, target_prox = mappings[target_name][hssd_idx]
+            # row[target_name] = target_labels[target_idx]
             row[target_name] = (
-                target_labels[target_idx] if target_idx >= 0 else None
+                target_labels[target_idx]
             )
+            row[target_name + "_proximity"] = str(round(target_prox, 4))
         rows.append(row)
 
-    # 5. Assemble — all DataFrames share the same explicit column list
     df = pd.concat(
         [
             pd.DataFrame([header],                  columns=columns),
@@ -339,15 +338,20 @@ def create_cross_vocab_mapping_csv(output_path: str = OUTPUT_PATH) -> None:
 
     df.to_csv(output_path, index=False, quoting=csv.QUOTE_ALL)
 
+# create_cross_vocab_mapping_csv(OUTPUT_PATH)
 df = pd.read_csv(OUTPUT_PATH)
 df = df.iloc[2:].reset_index(drop=True)
 
 VOCABULARIES = {
     "HSSD500": (CLASS_LABELS_HSSD500, None, make_colors(len(CLASS_LABELS_HSSD500), seed=0, ctype=1)),
 }
+THRESHOLD = 0.9
 
-for name, labels in VOCAB_REGISTRY:
-    VOCABULARIES[name] = (labels, df.set_index("HSSD500")[name].fillna("undefined").to_dict(), make_colors(len(labels), seed=0, ctype=1))
+for vocab_name, labels in VOCAB_REGISTRY:
+    mapping = (labels, df.set_index("HSSD500")[vocab_name].fillna("undefined").to_dict(), make_colors(len(labels), seed=0, ctype=1))
+    proximity = df.set_index("HSSD500")[vocab_name + "_proximity"].fillna(-1).to_dict()
+    masked_mapping_thr = {k: (v if float(proximity[k]) >= THRESHOLD else "undefined") for k, v in mapping[1].items()}
+    VOCABULARIES[vocab_name] = (labels, masked_mapping_thr, make_colors(len(labels), seed=0, ctype=1))
 
 for vocab_name, (class_labels, mapping_500_to_target, colors) in VOCABULARIES.items():
     meta = MetadataCatalog.get(vocab_name)

@@ -122,11 +122,15 @@ class Baseline(BaseRLTrainer):
                 obs = self.current_observations[idx]
                 done = self.current_dones[idx]
                 episode = self.envs.current_episodes()[idx]
-                paths = save_obs(dataset_path, episode.episode_id, [obs], self.current_steps[idx], modalities=["rgb", "bbsgt"])
-                collected_observations_paths.append(paths)
-                
+                                
                 if done:
                     self.current_steps[idx] = 0
+
+                if len(obs["bbsgt"]["instances"]) == 0:
+                    continue
+                
+                paths = save_obs(dataset_path, episode.episode_id, [obs], self.current_steps[idx], modalities=["rgb", "bbsgt"])
+                collected_observations_paths.append(paths)
 
                 if self.visualize and idx == 0 and step % 50 == 0:
                     rgb = obs['rgb']
