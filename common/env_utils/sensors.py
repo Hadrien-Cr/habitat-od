@@ -315,7 +315,7 @@ class AgentCollisionSensor(habitat.Sensor):
             low=np.finfo(np.float32).min,
             high=np.finfo(np.float32).max,
             shape=(1,),
-            dtype=np.bool,
+            dtype=np.int32,
         )
 
     def get_observation(self, observations, *args, episode, **kwargs):

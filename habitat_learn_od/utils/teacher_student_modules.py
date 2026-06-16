@@ -1,4 +1,5 @@
 
+from fnmatch import fnmatch
 import logging
 from copy import copy, deepcopy
 import albumentations as A
@@ -82,6 +83,7 @@ class TeacherStudent(pl.LightningModule):
 
         self.online_val_map_metric = MAP(class_metrics=True)
         self.test_map_metric = MAP(class_metrics=True)
+        self.loss_weights = kwargs["loss_weights"]
         self.reinit_online()
 
 
@@ -97,12 +99,33 @@ class TeacherStudent(pl.LightningModule):
         self.online_network.train()
         results, losses, box_features, proposals = self.online_network.model_forward(batch)
 
-        loss: Tensor = sum(losses.values()) # type: ignore
+        weighted_losses = {}
+
+        for name, value in losses.items():
+            weight = None
+
+            if name in self.loss_weights:
+                weight = self.loss_weights[name]
+            else:
+                for pattern, w in self.loss_weights.items():
+                    if fnmatch(name, pattern):
+                        weight = w
+                        break
+
+            if weight is None:
+                raise ValueError(f"Loss weight for {name} not found in loss_weights dictionary. {self.loss_weights}")
+            
+            # if weight == 0.0:
+            #     continue
+            
+            weighted_losses[name] = value * weight
+
+        loss = sum(weighted_losses.values())
 
         for k in losses.keys():
             self.log(
                 f"train_{k}",
-                losses[k],
+                weighted_losses[k],
                 on_step=True,
                 on_epoch=True,
                 sync_dist=True,
@@ -117,7 +140,7 @@ class TeacherStudent(pl.LightningModule):
             batch_size=self.batch_size,
         )
 
-        if ((batch_idx) % (1//self.batch_size) == 0):
+        if ((batch_idx) % (128//self.batch_size) == 0):
             self.log_batch(batch, batch_idx, results, prefix="train")
         return loss
 
@@ -147,7 +170,7 @@ class TeacherStudent(pl.LightningModule):
         self.online_network.eval()
         results = self.online_network.model_inference(batch)
 
-        if ((batch_idx) % (1//self.batch_size) == 0):
+        if ((batch_idx) % (128//self.batch_size) == 0):
             self.log_batch(batch, batch_idx, results, prefix="val_online")
 
         self._val_map(batch, results)
@@ -159,10 +182,24 @@ class TeacherStudent(pl.LightningModule):
         classes_ids = results["classes"].cpu().numpy().tolist()
         map_per_class = results["map_per_class"].cpu().numpy().tolist()
         
-        results.update({f"map_class_{metadata.thing_classes[classes_ids[k]]}": torch.tensor(v) for k, v in enumerate(map_per_class)})
-        
         for k in results.keys():
-            if results[k].numel() != 1:
+            if results[k].numel() != 1 and k != "map_per_class":
+                continue
+
+            if k == "map_per_class":
+                for class_id, map_value in zip(classes_ids, map_per_class):
+                    if map_value == -1.0:
+                        continue
+                    class_name = metadata.thing_classes[class_id]
+                    self.log(
+                        f"val_classmap_{class_name}",
+                        map_value,
+                        on_step=False,
+                        on_epoch=True,
+                        sync_dist=True,
+                        batch_size=self.batch_size,
+                    )
+                    
                 continue
             
             self.log(

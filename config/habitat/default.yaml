@@ -6,7 +6,7 @@ defaults:
   - /habitat/task: pointnav
   - /habitat/task/measurements: 
     - top_down_map
-  - /habitat/simulator/agents@habitat.simulator.agents.main_agent: rgbds_agent
+  - /habitat/simulator/sensor_setups@habitat.simulator.agents.main_agent: rgbds_agent
   - _self_
 
 habitat:
@@ -16,14 +16,11 @@ habitat:
       shuffle: False
   simulator:
     scene_dataset: "data/scene_datasets/hssd-hab/hssd-hab.scene_dataset_config.json"
-    navmesh_include_static_objects: True
     turn_angle: 30
-    agents_order:
-      - main_agent
     agents:
       main_agent:
         height: 0.88
-        radius: 0.2
+        radius: 0.18
         sim_sensors:
           semantic_sensor:
             width: 640
@@ -42,12 +39,13 @@ habitat:
             max_depth: 5.0
             position: [0, 0.88, 0]
             normalize_depth: false
-        
+
     habitat_sim_v0:
       gpu_device_id: 0
-      allow_sliding: True
+      allow_sliding: False
+      enable_hbao: True
       enable_physics: True
-
+      
   task:
     type: ExplorationTask-v0
     lab_sensors:

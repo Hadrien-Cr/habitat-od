@@ -106,11 +106,6 @@ class SampleLoader:
         """
         mask = _mask_more_n(self.steps_list, 1)
 
-        if filter_episodes is not None:
-            mask_episodes = np.array(
-                [li in filter_episodes for li in self.episode_list]
-            )
-            mask *= mask_episodes
         return self.episode_list[mask], self.steps_list[mask]
 
 
@@ -157,8 +152,7 @@ class HabitatDataset(Dataset):
         self.modalities = modalities
 
     def __len__(self) -> int:
-        return 5
-        # return len(self.index)
+        return len(self.index)
 
     def _transform_batch(self, x, y) -> tuple[torch.Tensor, Instances]:
         if len(y.gt_boxes.tensor) == 0:

@@ -26,7 +26,7 @@ from habitat.utils.visualizations import fog_of_war, maps # type: ignore
 from habitat_sim.utils import common as sim_utils
 
 from common.env_utils.habitat_utils import construct_envs, VectorEnv # type: ignore
-from common.utils.data_utils import save_obs
+from common.utils.data_utils import save_obs, load_data
 from common.utils.plot_utils import plot_segmentation_gt, plot_segmentation_pred, plot_mask, plot_array
 from common.planning.skeleton import do_plan
 from common.utils.pose_utils import quaternion_from_rpy
@@ -134,17 +134,16 @@ class Baseline(BaseRLTrainer):
 
                 if self.visualize and idx == 0 and step % 50 == 0:
                     rgb = obs['rgb']
-                    bbsgt = obs['bbsgt']
-                    p = [path for path in paths if "rgb" in path][0]
+                    p = [path for path in paths if "bbsgt" in path][0]
+                    gt_instances = load_data(p).get_bbs_as_gt()
 
                     # save visualization of the segmentation gt
-                    if len(bbsgt["instances"]) > 0:
-                        im = plot_segmentation_pred(rgb, bbsgt["instances"], classes, colors)
-                        basename = os.path.basename(p).replace("rgb", "vis").replace(".npy", ".png")
+                    im = plot_segmentation_gt(rgb, gt_instances, classes, colors)
+                    basename = os.path.basename(p).replace("bbsgt", "vis").replace(".npy", ".png")
 
-                        os.makedirs("datadump/vis", exist_ok=True)
-                        im.save("datadump/vis/" + basename)
-                    
+                    os.makedirs("datadump/vis", exist_ok=True)
+                    im.save("datadump/vis/" + basename)
+                
                     # save tdmap
                     tdmap = self.envs.call_at(0, "get_td_map")
                     lower_bound, upper_bound = self.envs.call_at(idx, "get_map_bounds")

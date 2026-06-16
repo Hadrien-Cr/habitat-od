@@ -12,10 +12,8 @@ from gym import spaces
 from habitat.core.registry import registry # type: ignore[import]
 import habitat.sims.habitat_simulator.sim_utilities as sutils # type: ignore
 from habitat.config.default_structured_configs import LabSensorConfig, ObjectDetectorGTSensorConfig  # type: ignore[import]
-from hydra.core.config_store import ConfigStore
 from detectron2.structures import Boxes, Instances
 import magnum as mn
-from hydra.core.config_store import ConfigStore
 
 from common.env_utils.hssd_object_annotations import ObjectSemanticsHSSD
 from common.env_utils.vocab_constants import *
@@ -118,7 +116,8 @@ class ObjectDetectorGTSensor(habitat.Sensor):
                 continue
             
             mask = (semantic_obs == semantic_id).astype("uint8")
-
+            mask = cv2.morphologyEx(mask, op=cv2.MORPH_OPEN, kernel=np.ones((3, 3), dtype=np.uint8), iterations=1)
+            
             class_id = self.semantic_id_to_classid(semantic_id)
 
             assert class_id < len(classes), f"Class id {class_id} for semantic id {semantic_id} is out of range for vocabulary {self.get_classes()}"
@@ -153,7 +152,7 @@ class ObjectDetectorGTSensor(habitat.Sensor):
             bbx_area = w * h
             mask_area = int(np.sum(mask))
 
-            if mask_area < self.area_thr:
+            if bbx_area < self.area_thr:
                 continue
 
             detections.append({

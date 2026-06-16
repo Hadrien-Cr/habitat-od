@@ -20,12 +20,9 @@ student_model: MultiStageModel
 pseudo_labeler_method: vanilla
 alpha: 0.7
 loss_weights:
-  loss_rpn_cls: 1.0
-  loss_rpn_loc: 1.0
-  loss_box_reg: 1.0
-  loss_cls: 1.0
-  contrastive_loss: 0.0
-  loss_mask: 0.0
+  loss_centernet_*: 0.0
+  loss_cls_*: 1.0
+  loss_box_reg_*: 1.0
 
 weight_sampler: False
 update_target: True

@@ -7,7 +7,7 @@
       "type": "debugpy",
       "request": "launch",
       "program": "${file}",
-      "python": "/home/hadriencr/miniconda3/envs/objectnav_zoo/bin/python",
+      "python": "/home/hadriencr/miniconda3/envs/habitat_od/bin/python",
       "env": {
         "PYTHONPATH": "/home/hadriencr/Code/thor-od",
         "PYTHONNOUSERSITE": "1",

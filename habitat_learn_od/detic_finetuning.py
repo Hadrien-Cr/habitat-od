@@ -52,8 +52,8 @@ def main(cfg):
             if checkpoint_path is not None:
                 teacher_student.load_from_checkpoint(checkpoint_path)
             
-            if id_iteration == 0:
-                trainer.validate(model=teacher_student, datamodule=dm)
+            # if id_iteration == 0:
+            #     trainer.validate(model=teacher_student, datamodule=dm)
 
             trainer.fit(model=teacher_student, datamodule=dm)
 

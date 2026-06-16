@@ -143,9 +143,9 @@ def plot_segmentation_gt(rgb: np.ndarray, gt_instances, classes: list[str], colo
             np.clip((height_ratio - 0.02) / 0.08 + 1, 1.2, 2) * 0.5 * det_visualizer._default_font_size
         )
         det_visualizer.draw_text(
-            classes[class_id],
+            "gt: " + classes[class_id],
             font_size=font_size,
-            position=(x1, y2 - 10 * height_ratio),
+            position=(x1, max(y2, rgb.shape[0]) - 2 * font_size),
             horizontal_alignment="left",
             color="red"
         )
@@ -155,6 +155,7 @@ def plot_segmentation_gt(rgb: np.ndarray, gt_instances, classes: list[str], colo
         masks=None,
         labels=None,
         assigned_colors=[(1.0, 0.0, 0.0)] * len(gt_instances),
+        alpha=0.05
     )
     result = vis_img.get_image()
     im = Image.fromarray(result)
@@ -167,7 +168,7 @@ def plot_segmentation_gt_and_pred(rgb: np.ndarray, pred_instances, gt_instances,
         rgb = np.array(im)
 
     if gt_instances is not None:
-        im = plot_segmentation_gt(rgb, gt_instances, ["gt_" + c for c in classes], [(1.0, 0.0, 0.0) for _ in classes], scale=1.0)
+        im = plot_segmentation_gt(rgb, gt_instances, classes, [(1.0, 0.0, 0.0) for _ in classes], scale=1.0)
         rgb = np.array(im)
 
     return im

@@ -9,7 +9,7 @@ export CXX=$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-g++
 ```
 
 ```
-git clone --branch v0.2.5 https://github.com/facebookresearch/habitat-lab.git third_party/habitat-lab
+git clone --branch v0.3.3 https://github.com/facebookresearch/habitat-lab.git third_party/habitat-lab
 cd third_party/habitat-lab
 pip install -e habitat-lab
 pip install -e habitat-baselines
@@ -23,10 +23,7 @@ python -m pip install --no-build-isolation -e . -v # make sure to have setuptool
 ```
 git clone https://github.com/facebookresearch/Detic.git third_party/Detic
 cd third_party/Detic
-pip install -r requirements.txt
-```
-```
-pip install -r requirements.txt
+pip install -r requirements.txt # make sure to have setuptools>80
 ```
 
 ```

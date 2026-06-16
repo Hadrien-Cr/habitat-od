@@ -54,6 +54,7 @@ def construct_envs(
     :param workers_ignore_signals: Passed to :ref:`habitat.VectorEnv`'s constructor
     :return: VectorEnv object created according to specification.
     """
+    env = env_class(config=config, **kwargs)
     print("Constructing envs...")
     scenes = list(config.habitat.dataset.content_scenes)
     

@@ -15,7 +15,7 @@ epochs: 20
 gpus: 1
 
 notes: 
-exp_name: ${now:%m-%d-%H-%M-%S}_habitat_${habitat_cfg}_${training.exp_name_training}_pseudo_labeler_method_${training.pseudo_labeler_method}_batchsize_${training.batch_size}_${training.lr}_contrastive_${training.loss_weights.contrastive_loss}_notes_${notes}
+exp_name: ${now:%m-%d-%H-%M-%S}_habitat
 test_set: dataset_val_set
 collected_set: dataset_collected_set
 
@@ -66,7 +66,7 @@ object_params:
   env_name: "HSSD-HAB/SCANNET200"
   area_thr: 256
 
-steps_per_episode: 500
+steps_per_episode: 100
 train_scenes: [
   "102344022", "102817053", "104348133_171513054", "105515175_173104107", "106366371_174226743", "108294573_176710113",
   "102344049", "102817200", "104348160_171513093", "105515211_173104179", "106366434_174226881", "108294624_176710203",
