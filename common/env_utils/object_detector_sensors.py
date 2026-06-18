@@ -173,17 +173,18 @@ class ObjectDetectorGTSensor(habitat.Sensor):
                 scores=torch.zeros((0,)),
                 pred_masks=torch.zeros((0, semantic_obs.shape[0], semantic_obs.shape[1])).bool(),
             )}
-        
-        pred_boxes = torch.cat([d["bounding_box"] for d in detections])
-        pred_classes = torch.cat([d["class_id"] for d in detections])
-        pred_masks = torch.cat([d["mask"] for d in detections])
-        infos = np.array([d["info"] for d in detections] + [])
+        get_center = lambda bbx: (bbx[0] + 0.5 * (bbx[2] - bbx[0]), bbx[1] + 0.5 * (bbx[3] - bbx[1]))
+        sorted_detections = sorted(detections, key=lambda d: get_center(d["bounding_box"][0])[0] + get_center(d["bounding_box"][0])[1], reverse=False)
+        pred_boxes = torch.cat([d["bounding_box"] for d in sorted_detections])
+        pred_classes = torch.cat([d["class_id"] for d in sorted_detections])
+        pred_masks = torch.cat([d["mask"] for d in sorted_detections])
+        infos = np.array([d["info"] for d in sorted_detections])
         
         return {'instances': Instances(
             image_size=(semantic_obs.shape[0], semantic_obs.shape[1]),
             pred_boxes=Boxes(pred_boxes),
             pred_classes=pred_classes,
-            scores=torch.ones(len(detections)),
+            scores=torch.ones(len(sorted_detections)),
             pred_masks=pred_masks,
             infos=infos,
         )}

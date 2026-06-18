@@ -4,6 +4,8 @@ import logging
 from copy import copy, deepcopy
 import albumentations as A
 import habitat # type: ignore
+import cv2
+
 import numpy as np
 import pytorch_lightning as pl
 import torch
@@ -13,12 +15,12 @@ from torchmetrics.detection.mean_ap import MeanAveragePrecision as MAP
 
 import wandb
 
-from common.utils.plot_utils import plot_segmentation_gt, plot_segmentation_pred, plot_segmentation_gt_and_pred
+from common.utils.plot_utils import plot_segmentation_gt, plot_segmentation_pred, plot_segmentation
 from common.utils.dataset_utils import _transform_batch_with_logits
 
 from habitat_learn_od.utils.train_helpers import mixup_batch
-from habitat_learn_od.utils.multi_stage_models import MultiStageModel
-from habitat_learn_od.utils import multi_stage_models
+from habitat_learn_od.utils.two_stage_models import TwoStageModel
+from habitat_learn_od.utils import two_stage_models
 
 from habitat_learn_od.utils.pseudo_labeler import (
     PseudoLabeler,
@@ -31,7 +33,7 @@ log = logging.getLogger(__name__)
 
 class TeacherStudent(pl.LightningModule):
     pseudo_labeler: PseudoLabeler
-    online_network: MultiStageModel
+    online_network: TwoStageModel
 
     def __init__(
         self,
@@ -67,7 +69,7 @@ class TeacherStudent(pl.LightningModule):
         print(f"Using pseudo-labeler method: {pseudo_labeler_method}")
 
         self.pseudo_labeler: PseudoLabeler = switch[pseudo_labeler_method](
-            model=multi_stage_models.MultiStageModel(detic_args, vocab_name=self.vocab_name, **kwargs),
+            model=two_stage_models.TwoStageModel(detic_args, vocab_name=self.vocab_name, **kwargs),
             temperature=temperature,
             thr=thr,
             solution=solution,
@@ -88,7 +90,7 @@ class TeacherStudent(pl.LightningModule):
 
 
     def reinit_online(self) -> None:
-        self.online_network = multi_stage_models.MultiStageModel(self.detic_args, vocab_name=self.vocab_name, **self.kwargs)
+        self.online_network = two_stage_models.TwoStageModel(self.detic_args, vocab_name=self.vocab_name, **self.kwargs)
         self.online_network.model.roi_heads.box_predictor.test_score_thresh = 0.5
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
@@ -140,7 +142,7 @@ class TeacherStudent(pl.LightningModule):
             batch_size=self.batch_size,
         )
 
-        if ((batch_idx) % (128//self.batch_size) == 0):
+        if ((batch_idx) % (32*self.batch_size) == 0):
             self.log_batch(batch, batch_idx, results, prefix="train")
         return loss
 
@@ -168,9 +170,10 @@ class TeacherStudent(pl.LightningModule):
 
     def online_validation_step(self, batch, batch_idx) -> None:
         self.online_network.eval()
-        results = self.online_network.model_inference(batch)
+        # results = self.online_network.model_inference(batch)
+        results = self.online_network.model_inference_from_gt_boxes(batch)
 
-        if ((batch_idx) % (128//self.batch_size) == 0):
+        if ((batch_idx) % (32*self.batch_size) == 0):
             self.log_batch(batch, batch_idx, results, prefix="val_online")
 
         self._val_map(batch, results)
@@ -231,15 +234,17 @@ class TeacherStudent(pl.LightningModule):
             gt_instances = deepcopy(x['instances'])
 
             rgb = x["rgb_image"]
-            img = plot_segmentation_gt_and_pred(
+            array = np.array(plot_segmentation(
                 rgb, 
                 gt_instances=gt_instances, 
                 pred_instances=pred_instances, 
                 classes=metadata.thing_classes, 
                 colors=metadata.thing_colors,
-                scale=1.0
-            )
-            wandb_img = wandb.Image(np.array(img), caption=f"{prefix} - Batch {batch_idx} - Image {idx}")
+                scale=1.0,
+                title=f"P {len(pred_instances) if pred_instances is not None else 0}  GT {len(gt_instances) }"
+            ))
+
+            wandb_img = wandb.Image(array, caption=f"{prefix} - Batch {batch_idx} - Image {idx}")
 
             self.trainer.loggers[0].log_metrics(
                 {

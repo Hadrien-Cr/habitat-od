@@ -22,7 +22,7 @@ from detectron2.modeling.roi_heads.mask_head import mask_rcnn_inference
 from common.utils import triplet
 from common.vision.clip import get_clip_embeddings, save_clip_embeddings, load_clip_embeddings
 from common.vision.detic import (
-    reset_cls, CustomRCNN, DETIC_ROOT, add_centernet_config, add_detic_config,
+    reset_cls, CustomRCNN, DETIC_ROOT, add_centernet_config, add_detic_config,  # type: ignore
 )
 
 def detach_instances(instances):
@@ -41,7 +41,7 @@ def detach_instances(instances):
 
     return detached
 
-__ALL__ = ['MultiStageModel']
+__ALL__ = ['TwoStageModel']
 log = logging.getLogger(__name__)
 
 def setup_cfg(config_file, confidence_threshold, weights) -> CfgNode:
@@ -91,7 +91,7 @@ def build_detic_model(cfg: CfgNode, classes: list[str], vocab_name: str) -> Cust
     return model
 
 
-class MultiStageModel(pl.LightningModule):
+class TwoStageModel(pl.LightningModule):
     model: CustomRCNN
 
     def __init__(
@@ -112,10 +112,10 @@ class MultiStageModel(pl.LightningModule):
         super().__init__()
 
         metadata = MetadataCatalog.get(vocab_name)
-        classes = metadata.thing_classes
-        colors = metadata.thing_colors
+        self.classes = metadata.thing_classes
+        self.colors = metadata.thing_colors
         cfg = setup_cfg(detic_args.config_file, detic_args.confidence_threshold, detic_args.weights)
-        model = build_detic_model(cfg, classes=classes, vocab_name=vocab_name)
+        model = build_detic_model(cfg, classes=self.classes, vocab_name=vocab_name)
         assert isinstance(model, CustomRCNN), "Expected model to be an instance of CustomRCNN"
         self.model = model
         model.to(self.device)
@@ -160,9 +160,7 @@ class MultiStageModel(pl.LightningModule):
             x = x["instances"]
 
             if hasattr(x, "infos") and len(x.infos) > 0:
-                x.gt_ids = torch.tensor(
-                    [i['object_id'] for i in x.infos], dtype=torch.int16, device=self.device
-                )
+                x.gt_ids = torch.tensor([i['object_id'] for i in x.infos], dtype=torch.int16, device=self.device)
             else:
                 x.gt_ids = torch.ones(len(x), device=self.device) * -1
             gt_instances.append(x) 
@@ -211,8 +209,31 @@ class MultiStageModel(pl.LightningModule):
         features = self.model.backbone(images.tensor)
         proposals = self.centernet_inference(images, features)      
         results = self.roi_head_inference(inputs, features, proposals)
-
         return results
+
+    def model_inference_from_gt_boxes(self, inputs: list[dict]) -> list[dict]:
+        assert not self.model.training
+
+        gt_instances = []
+        for x in inputs:
+            x = x["instances"]
+
+            if hasattr(x, "infos") and len(x.infos) > 0:
+                x.gt_ids = torch.tensor([i['object_id'] for i in x.infos], dtype=torch.int16, device=self.device)
+            else:
+                x.gt_ids = torch.ones(len(x), device=self.device) * -1
+            
+            x.proposal_boxes = x.gt_boxes
+            x.scores = torch.ones(len(x), device=self.device)
+            x.objectness_logits = torch.ones(len(x), device=self.device)
+            gt_instances.append(x) 
+
+        images = self.model.preprocess_image(inputs)
+        features = self.model.backbone(images.tensor)
+        # proposals = self.centernet_inference(images, features)      
+        results = self.roi_head_inference(inputs, features, proposals=gt_instances)
+        return results
+
 
     def centernet_inference(self, images, features) -> list[dict]:
         feat_list = [features[f] for f in self.model.roi_heads.box_in_features]
@@ -227,12 +248,9 @@ class MultiStageModel(pl.LightningModule):
         
         return proposals
     
-    def roi_head_inference(self, inputs, features, proposals) -> list[Instances]:
-        if self.model.roi_heads.mult_proposal_score:
-            if len(proposals) > 0 and proposals[0].has('scores'):
-                proposal_scores = [p.get('scores') for p in proposals]
-            else:
-                proposal_scores = [p.get('objectness_logits') for p in proposals]
+    def roi_head_inference(self, inputs, features, proposals) -> list[dict]:
+        assert len(proposals) == 0 or proposals[0].has('proposal_boxes')
+        assert len(proposals) == 0 or (proposals[0].has('scores') and proposals[0].has('objectness_logits'))
         
         feat_list = [features[f] for f in self.model.roi_heads.box_in_features]
         head_outputs = []  # (predictor, predictions, proposals)
@@ -244,10 +262,10 @@ class MultiStageModel(pl.LightningModule):
                 proposals = self.model.roi_heads._create_proposals_from_boxes(
                     prev_pred_boxes, image_sizes,
                     logits=[p.objectness_logits for p in proposals])
-            predictions = self.model.roi_heads._run_stage(feat_list, proposals, k)
+            predictions_logits, predictions_deltas = self.model.roi_heads._run_stage(feat_list, proposals, k)
             prev_pred_boxes = self.model.roi_heads.box_predictor[k].predict_boxes(
-                (predictions[0], predictions[1]), proposals)
-            head_outputs.append((self.model.roi_heads.box_predictor[k], predictions, proposals))
+                (predictions_logits, predictions_deltas), proposals)
+            head_outputs.append((self.model.roi_heads.box_predictor[k], (predictions_logits, predictions_deltas), proposals))
         
         # Each is a list[Tensor] of length #image. Each tensor is Ri x (K+1)
         scores_per_stage = [h[0].predict_probs(h[1], h[2]) for h in head_outputs]
@@ -255,17 +273,19 @@ class MultiStageModel(pl.LightningModule):
             sum(list(scores_per_image)) * (1.0 / self.model.roi_heads.num_cascade_stages)
             for scores_per_image in zip(*scores_per_stage)
         ]
-        if self.model.roi_heads.mult_proposal_score:
-            scores = [(s * ps[:, None]) ** 0.5 \
-                for s, ps in zip(scores, proposal_scores)]
-        if self.model.roi_heads.one_class_per_proposal:
-            scores = [s * (s == s[:, :-1].max(dim=1)[0][:, None]).float() for s in scores]
-        
+        max_scores = [s[:, :-1].max(dim=1)[0] for s in scores]
+        argmax_scores = [s[:, :-1].argmax(dim=1) for s in scores]
+        # print("max_scores", max_scores)
+        # print("argmax_scores", argmax_scores)
+        # print("bg_scores", bg_scores)
+        # print("bg_scores_per_stage", bg_scores_per_stage)
+
+        scores = [s * (s == max_scores[i][:, None]).float() for i, s in enumerate(scores)]        
         predictor, predictions, proposals = head_outputs[-1]
         boxes = predictor.predict_boxes(
             (predictions[0], predictions[1]), proposals)
         
-        pred_instances, _ = fast_rcnn_inference(
+        _pred_instances, filter_indices = fast_rcnn_inference(
             boxes,
             scores,
             image_sizes,
@@ -273,6 +293,12 @@ class MultiStageModel(pl.LightningModule):
             predictor.test_nms_thresh,
             predictor.test_topk_per_image,
         )
+        pred_instances = []
+        for i, (pred, filter_idx) in enumerate(zip(_pred_instances, filter_indices)):
+            if len(pred) > 0:
+                sorted_idx = filter_idx.argsort()
+                pred = pred[sorted_idx] # type: ignore
+            pred_instances.append(pred)
 
         boxes = [x.pred_boxes for x in pred_instances]
         box_features = self.model.roi_heads.mask_pooler(feat_list, boxes)

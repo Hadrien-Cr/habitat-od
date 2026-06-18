@@ -20,15 +20,15 @@ from common.env_utils.sense import BBSense
 from common.utils import projection_utils as pu
 from common.utils.matching import get_objects_ids
 
-from habitat_learn_od.utils.multi_stage_models import MultiStageModel
+from habitat_learn_od.utils.two_stage_models import TwoStageModel
 
 log = logging.getLogger(__name__)
 
 
 class PseudoLabeler(pl.LightningModule):
-    model: MultiStageModel
+    model: TwoStageModel
     
-    def __init__(self, model: MultiStageModel, thr=0.7, overlap_thr=0.5, *args, **kwargs) -> None:
+    def __init__(self, model: TwoStageModel, thr=0.7, overlap_thr=0.5, *args, **kwargs) -> None:
         super().__init__()
         self.model = model
         self.thr = thr
@@ -60,7 +60,7 @@ class PseudoLabeler(pl.LightningModule):
 
 
 class VanillaPseudoLabeler(PseudoLabeler):
-    def __init__(self, model: MultiStageModel, temperature=1, *args, **kwargs):
+    def __init__(self, model: TwoStageModel, temperature=1, *args, **kwargs):
         super().__init__(model, *args, **kwargs)
         self.temperature = temperature
 
@@ -91,7 +91,7 @@ class VanillaPseudoLabeler(PseudoLabeler):
 
 class SemanticMapPseudoLabeler(PseudoLabeler):
     def __init__(
-        self, model: MultiStageModel, thr=0.7, temperature=1.0, solution="ours", *args, **kwargs
+        self, model: TwoStageModel, thr=0.7, temperature=1.0, solution="ours", *args, **kwargs
     ):
         super().__init__(model=model, thr=thr)
         self.temperature = temperature
@@ -213,7 +213,7 @@ class SemanticMapPseudoLabeler(PseudoLabeler):
 
 
 class SoftPseudoLabeler(PseudoLabeler):
-    def __init__(self, model: MultiStageModel, temperature=1) -> None:
+    def __init__(self, model: TwoStageModel, temperature=1) -> None:
         super().__init__(model)
         self.temperature = temperature
 
@@ -296,7 +296,7 @@ class SoftPseudoLabeler(PseudoLabeler):
 
 
 class MajorityPseudoLabeler(PseudoLabeler):
-    def __init__(self, model: MultiStageModel, temperature=1) -> None:
+    def __init__(self, model: TwoStageModel, temperature=1) -> None:
         super().__init__(model)
         self.temperature = temperature
 
@@ -383,7 +383,7 @@ class MajorityPseudoLabeler(PseudoLabeler):
 
 
 class MaxScorePseudoLabeler(PseudoLabeler):
-    def __init__(self, model: MultiStageModel, temperature=1) -> None:
+    def __init__(self, model: TwoStageModel, temperature=1) -> None:
         super().__init__(model)
         self.temperature = temperature
 

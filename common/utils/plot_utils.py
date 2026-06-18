@@ -1,3 +1,4 @@
+from matplotlib.pyplot import text
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy import ndimage
@@ -102,59 +103,74 @@ def plot_mask(mask) -> Image.Image:
     colored[mask == 1] = [255, 255, 255]
     return Image.fromarray(colored)
 
-def plot_segmentation_pred(rgb: np.ndarray, instances, classes: list[str], colors: list[tuple[float, float, float]], scale: float = 1.0) -> Image.Image:
-    from detectron2.data import Metadata
-    metadata = Metadata()
-    metadata.set(thing_classes=classes)
-    metadata.set(thing_colors=colors)
-
+def plot_segmentation_pred(rgb: np.ndarray, pred_instances, classes: list[str], colors: list[tuple[float, float, float]], scale: float = 1.0) -> Image.Image:
     det_visualizer = DetVisualizer(
         rgb,
-        metadata=metadata,
         scale=scale,
-        instance_mode=ColorMode.SEGMENTATION
-    )
-    vis_img = det_visualizer.draw_instance_predictions(instances.to("cpu"), jittering=False)
-    result = vis_img.get_image()
-    im = Image.fromarray(result)
-    return im
-
-
-def plot_segmentation_gt(rgb: np.ndarray, gt_instances, classes: list[str], colors: list[tuple[float, float, float]], scale: float = 1.0) -> Image.Image:
-    from detectron2.data import Metadata
-    metadata = Metadata()
-    metadata.set(thing_classes=classes)
-    metadata.set(thing_colors=colors)
-
-    det_visualizer = DetVisualizer(
-        rgb,
-        metadata=metadata,
-        scale=scale,
-        instance_mode=ColorMode.SEGMENTATION
+        instance_mode=ColorMode.SEGMENTATION,
+        font_size_scale=0.8
     )
 
-    for box, class_id in zip(
-        gt_instances.gt_boxes.tensor.cpu().numpy(),
-        gt_instances.gt_classes.cpu().numpy()
-    ):
+    for i, (box, class_id, score) in enumerate(zip(
+        pred_instances.pred_boxes.tensor.cpu().numpy(),
+        pred_instances.pred_classes.cpu().numpy(),
+        pred_instances.scores.cpu().numpy()
+    )):
         x1, y1, x2, y2 = box
         height_ratio = (y2 - y1) / rgb.shape[0]
         font_size = (
             np.clip((height_ratio - 0.02) / 0.08 + 1, 1.2, 2) * 0.5 * det_visualizer._default_font_size
         )
         det_visualizer.draw_text(
-            "gt: " + classes[class_id],
+            f"{i}: pt={classes[class_id]} {(100*score):.1f}%",
             font_size=font_size,
-            position=(x1, max(y2, rgb.shape[0]) - 2 * font_size),
+            position=(x1, y1),
             horizontal_alignment="left",
-            color="red"
+            color="#{:02x}{:02x}{:02x}".format(*colors[class_id])
+        )
+
+    vis_img = det_visualizer.overlay_instances(
+        boxes=pred_instances.pred_boxes.tensor.cpu().numpy(),
+        masks=pred_instances.pred_masks.cpu().numpy() if pred_instances.pred_masks is not None else None,
+        labels=None,
+        assigned_colors=[(x/255, y/255, z/255) for class_id in pred_instances.pred_classes.cpu().numpy() for x, y, z in [colors[class_id]]],
+        alpha=0.5
+    )
+    result = vis_img.get_image()
+    im = Image.fromarray(result)
+    return im
+
+
+def plot_segmentation_gt(rgb: np.ndarray, gt_instances, classes: list[str], colors: list[tuple[float, float, float]], scale: float = 1.0) -> Image.Image:
+    det_visualizer = DetVisualizer(
+        rgb,
+        scale=scale,
+        instance_mode=ColorMode.SEGMENTATION,
+        font_size_scale=0.8
+    )
+
+    for i, (box, class_id) in enumerate(zip(
+        gt_instances.gt_boxes.tensor.cpu().numpy(),
+        gt_instances.gt_classes.cpu().numpy()
+    )):
+        x1, y1, x2, y2 = box
+        height_ratio = (y2 - y1) / rgb.shape[0]
+        font_size = (
+            np.clip((height_ratio - 0.02) / 0.08 + 1, 1.2, 2) * 0.5 * det_visualizer._default_font_size
+        )
+        det_visualizer.draw_text(
+            f"{i}: gt={classes[class_id]}",
+            font_size=font_size,
+            position=(x1, y2 - 1.5 * font_size),
+            horizontal_alignment="left",
+            color="#{:02x}{:02x}{:02x}".format(*colors[class_id])
         )
 
     vis_img = det_visualizer.overlay_instances(
         boxes=gt_instances.gt_boxes.tensor.cpu().numpy(),
         masks=None,
         labels=None,
-        assigned_colors=[(1.0, 0.0, 0.0)] * len(gt_instances),
+        assigned_colors=[(x/255, y/255, z/255) for class_id in gt_instances.gt_classes.cpu().numpy() for x, y, z in [colors[class_id]]],
         alpha=0.05
     )
     result = vis_img.get_image()
@@ -162,15 +178,39 @@ def plot_segmentation_gt(rgb: np.ndarray, gt_instances, classes: list[str], colo
     return im
 
 
-def plot_segmentation_gt_and_pred(rgb: np.ndarray, pred_instances, gt_instances, classes: list[str], colors: list[tuple[float, float, float]], scale: float = 0.5) -> Image.Image:
+def plot_segmentation(
+    rgb: np.ndarray, 
+    pred_instances, 
+    gt_instances, 
+    classes: list[str], 
+    colors: list[tuple[float, float, float]], 
+    scale: float = 0.5,
+    title: str = ""
+) -> Image.Image:
+    
+    if gt_instances is not None:
+        im = plot_segmentation_gt(rgb, gt_instances, classes, [(255, 0, 0) for _ in classes], scale=scale)
+        rgb = np.array(im)
+        scale = 1.0 
+
+
     if pred_instances is not None:
         im = plot_segmentation_pred(rgb, pred_instances, classes, colors, scale)
         rgb = np.array(im)
 
-    if gt_instances is not None:
-        im = plot_segmentation_gt(rgb, gt_instances, classes, [(1.0, 0.0, 0.0) for _ in classes], scale=1.0)
-        rgb = np.array(im)
 
+    if title:
+        fontscale = 0.5
+        cv2.putText(
+            rgb,
+            title,
+            (int((rgb.shape[1] / 2) * (1 - len(title) * fontscale)), int(fontscale * 20)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            fontscale,
+            (255, 255, 255),
+            thickness=2,
+        )
+        im = Image.fromarray(rgb)
     return im
 
 def make_mosaic(

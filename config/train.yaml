@@ -64,7 +64,7 @@ hydra:
 # ]
 object_params:
   env_name: "HSSD-HAB/SCANNET200"
-  area_thr: 256
+  area_thr: 2048
 
 steps_per_episode: 100
 train_scenes: [

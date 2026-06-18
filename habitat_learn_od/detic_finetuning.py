@@ -5,7 +5,8 @@ from detectron2.utils.events import EventStorage # type: ignore
 from habitat_learn_od.utils.train_helpers import get_training_params
 from habitat_learn_od.utils import data_modules, teacher_student_modules
 from common.env_utils.object_detector_sensors import * 
-
+import matplotlib
+matplotlib.use("Agg")
 
 @hydra.main(config_path="../config", config_name="train.yaml")
 def main(cfg):
@@ -52,8 +53,8 @@ def main(cfg):
             if checkpoint_path is not None:
                 teacher_student.load_from_checkpoint(checkpoint_path)
             
-            # if id_iteration == 0:
-            #     trainer.validate(model=teacher_student, datamodule=dm)
+            if id_iteration == 0:
+                trainer.validate(model=teacher_student, datamodule=dm)
 
             trainer.fit(model=teacher_student, datamodule=dm)
 

@@ -18,7 +18,7 @@ from common.utils.dataset_utils import (
     HabitatFullSequentialDataset,
     HabitatSequentialDataset,
 )
-from habitat_learn_od.utils.multi_stage_models import *
+from habitat_learn_od.utils.two_stage_models import *
 from habitat_learn_od.utils.train_helpers import (
     dict_helper_collate,
     list_helper_collate,

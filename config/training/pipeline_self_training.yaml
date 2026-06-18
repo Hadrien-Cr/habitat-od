@@ -15,7 +15,7 @@ transform_type: strong_image
 teacher_momentum: 0.99
 temperature: 2
 pipeline: Pipeline
-student_model: MultiStageModel
+student_model: TwoStageModel
 pseudo_labeler_method: vanilla
 alpha: 0.7
 
