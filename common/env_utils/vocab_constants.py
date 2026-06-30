@@ -1,4 +1,5 @@
 import csv
+import os
 import numpy as np
 import pandas as pd
 from detectron2.data import MetadataCatalog
@@ -25,13 +26,25 @@ def make_colors(num, seed=1, ctype=1) -> list[tuple[int,int,int]]:
 
     def random_unique_color(colors, ctype, rng_gen):
         """
+        ctype=0: random high saturation colors
         ctype=1: completely random
         ctype=2: red random
         ctype=3: blue random
         ctype=4: green random
         ctype=5: yellow random
         """
-        if ctype == 1:
+        if ctype == 0:
+            import colorsys
+            h = rng_gen.random()
+            s = rng_gen.uniform(0.8, 1.0)
+            v = rng_gen.uniform(0.7, 1.0)
+            r, g, b = colorsys.hsv_to_rgb(h, s, v)
+            color = "#{:02x}{:02x}{:02x}".format(
+                int(r * 255),
+                int(g * 255),
+                int(b * 255),
+            )
+        elif ctype == 1:
             color = "#%06x" % rng_gen.integers(0x444444, 0x999999)
             while color in colors:
                 color = "#%06x" % rng_gen.integers(0x444444, 0x999999)
@@ -162,7 +175,7 @@ CLASS_LABELS_HSSD500 = [
     "wok", "workbench", "wreath",
 ]
 
-CLASS_LABELS_HSSD40 = [
+CLASS_LABELS_hssd80 = [
     "alarm_clock", "animal", "bathtub", "bed", "bench", "bicycle", "blender", "book", 
     "bottle", "bowl", "breadbin", "cabinet", "camera", "candle", "car", "carpet", 
     "ceiling_lamp", "chair", "chest_of_drawers", "clothing", "coffee_maker", "colander", 
@@ -258,10 +271,10 @@ def generate_mappings(source_vocab: list[str], target_vocab: list[str]):
     text_encoder = build_text_encoder(pretrain=True)
     text_encoder.eval()
 
-    prompts = ["a {}", "a photo of a {} in a house"]
+    prompts = ["a {} can be seen"]
 
     def ensemble_embeddings(vocab):
-        all_embs = [get_clip_embeddings([prompt.format(c.replace("_", " "))], text_encoder=text_encoder).permute(1, 0) for prompt in prompts]
+        all_embs = [get_clip_embeddings([prompt.format(c.replace("_", " ")) for c in vocab], text_encoder=text_encoder).permute(1, 0) for prompt in prompts]
         stacked = torch.stack(all_embs, dim=0)
         emb = torch.mean(stacked, dim=0)
         return emb / torch.norm(emb, dim=1, keepdim=True)
@@ -297,7 +310,8 @@ VOCAB_REGISTRY: list[tuple[str, list[str]]] = [
     ("MPCAT40",    CLASS_LABELS_MPCAT40),
     ("COCO80",     CLASS_LABELS_COCO80),
 ]
-OUTPUT_PATH = "common/env_utils/hssd500_cross_vocab_mapping.csv"
+BASE_DIR = os.environ["BASE_DIR"]
+OUTPUT_PATH = os.path.join(BASE_DIR, "common", "env_utils", "hssd500_cross_vocab_mapping.csv")
 
 def create_cross_vocab_mapping_csv(output_path: str = OUTPUT_PATH) -> None:
     mappings = {
@@ -343,15 +357,16 @@ df = pd.read_csv(OUTPUT_PATH)
 df = df.iloc[2:].reset_index(drop=True)
 
 VOCABULARIES = {
-    "HSSD500": (CLASS_LABELS_HSSD500, None, make_colors(len(CLASS_LABELS_HSSD500), seed=0, ctype=1)),
+    "HSSD500": (CLASS_LABELS_HSSD500, None, make_colors(len(CLASS_LABELS_HSSD500), seed=0, ctype=0)),
+    "hssd80": (CLASS_LABELS_hssd80, None, make_colors(len(CLASS_LABELS_hssd80), seed=0, ctype=0)),
 }
-THRESHOLD = 0.9
+THRESHOLD = 0.925
 
 for vocab_name, labels in VOCAB_REGISTRY:
-    mapping = (labels, df.set_index("HSSD500")[vocab_name].fillna("undefined").to_dict(), make_colors(len(labels), seed=0, ctype=1))
+    mapping = (labels, df.set_index("HSSD500")[vocab_name].fillna("undefined").to_dict(), make_colors(len(labels), seed=0, ctype=0))
     proximity = df.set_index("HSSD500")[vocab_name + "_proximity"].fillna(-1).to_dict()
     masked_mapping_thr = {k: (v if float(proximity[k]) >= THRESHOLD else "undefined") for k, v in mapping[1].items()}
-    VOCABULARIES[vocab_name] = (labels, masked_mapping_thr, make_colors(len(labels), seed=0, ctype=1))
+    VOCABULARIES[vocab_name] = (labels, masked_mapping_thr, make_colors(len(labels), seed=0, ctype=0))
 
 for vocab_name, (class_labels, mapping_500_to_target, colors) in VOCABULARIES.items():
     meta = MetadataCatalog.get(vocab_name)

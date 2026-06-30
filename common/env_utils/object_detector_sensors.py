@@ -4,7 +4,8 @@ from typing import Any
 
 from attr import dataclass
 import cv2
-import habitat_sim
+from habitat_sim.agent.agent import AgentState
+import habitat_sim # type: ignore
 import torch
 import habitat # type: ignore
 import numpy as np
@@ -17,6 +18,7 @@ import magnum as mn
 
 from common.env_utils.hssd_object_annotations import ObjectSemanticsHSSD
 from common.env_utils.vocab_constants import *
+from common.utils.grid_utils import HabitatObjOccupancyGrid
 
 log = logging.getLogger(__name__)
 
@@ -27,8 +29,8 @@ def get_obj_from_id(sim: habitat_sim.Simulator,obj_id: int,):
         return rom.get_object_by_id(obj_id)
     return None
 
-def object_shortname_from_handle( object_handle: str) -> str:
-    return object_handle.split("/")[-1].split(".")[0].split("_:")[0]
+def object_shortname_from_handle(object_handle: str) -> str:
+    return object_handle.split("/")[-1].split(".")[0].split("_:")[0].split("_")[0]
 
 def get_all_objects(
     sim: habitat_sim.Simulator,
@@ -43,15 +45,68 @@ def get_all_objects(
     return all_objects
 
 
+def get_objects_info(sim, obj_name_to_class: dict[str, str], fallback_obj_name_to_class: dict[str, str]) -> list[dict]:
+    out = []
+
+    for obj_id, obj_handle in sutils.get_all_object_ids(sim).items():
+        obj_name = object_shortname_from_handle(obj_handle)
+
+        obj = get_obj_from_id(sim, obj_id)
+
+        aabb = obj.collision_shape_aabb # type: ignore
+        min_v = aabb.min
+        max_v = aabb.max
+
+        # 8 local box corners
+        corners_local = [
+            mn.Vector3(c) # type: ignore
+            for c in itertools.product(
+                [min_v.x, max_v.x],
+                [min_v.y, max_v.y],
+                [min_v.z, max_v.z],
+            )
+        ]
+
+        corners_world = [
+            obj.rotation.transform_vector(c) + obj.translation # type: ignore
+            for c in corners_local
+        ]
+
+        out.append({
+            "object_id": obj_id,
+            "obj_name": obj_name,
+            "class_name": obj_name_to_class.get(obj_name, "/u:" + fallback_obj_name_to_class[obj_name]),
+            "position": obj.translation, # type: ignore
+            "rotation": obj.rotation, # type: ignore
+            "center": np.array(obj.collision_shape_aabb.center), # type: ignore
+            "corners": [
+                (c.x, c.y, c.z)
+                for c in corners_world
+            ],
+        })
+    return out
+
+
 @registry.register_sensor
 class ObjectDetectorGTSensor(habitat.Sensor):
+    scene: str
+    env_name: str
+    object_info_list: list[dict]
+    object_occupancy_grid: HabitatObjOccupancyGrid
+    area_thr: float
+    filter_occluded: bool # whether to filter out objects that are occluded 50% occluded
+
+    
     def __init__(self, sim, config: ObjectDetectorGTSensorConfig, **kwargs: Any) -> None:
         super().__init__(config=config)
         self._sim = sim
         self.scene = ""
+        self.object_info_list = None
+        self.object_occupancy_grid = None
 
         self.env_name = config.env_name
         self.area_thr = config.area_thr
+        self.filter_occluded = config.filter_occluded
 
         if self.env_name.startswith("HSSD-HAB"):
             self.object_annotations = ObjectSemanticsHSSD(self.env_name.replace("HSSD-HAB/", ""))
@@ -63,7 +118,6 @@ class ObjectDetectorGTSensor(habitat.Sensor):
             return self.object_annotations.classes
         else:
             raise NotImplementedError(f"Environment {self.env_name} not supported for object detector gt sensor")
-        
 
     def semantic_id_to_classid(self, semantic_id: int) -> int:
         if semantic_id < 1000:
@@ -101,14 +155,7 @@ class ObjectDetectorGTSensor(habitat.Sensor):
     def decompose_frame(self, semantic_obs: np.ndarray) -> dict:
         detections = []
         classes = self.get_classes()
-        values = np.unique(semantic_obs)
-
-        def flatten_contour(countour_of_pairs):
-            out = []
-            for i in range(len(countour_of_pairs)):
-                out.append(countour_of_pairs[i,0])
-                out.append(countour_of_pairs[i,1])
-            return out
+        values = [v for v in set(semantic_obs.ravel().tolist()) if v >= 1000]
 
         for semantic_id in values:
             if semantic_id < 1000:
@@ -116,7 +163,9 @@ class ObjectDetectorGTSensor(habitat.Sensor):
                 continue
             
             mask = (semantic_obs == semantic_id).astype("uint8")
-            mask = cv2.morphologyEx(mask, op=cv2.MORPH_OPEN, kernel=np.ones((3, 3), dtype=np.uint8), iterations=1)
+            # mask = cv2.morphologyEx(mask, op=cv2.MORPH_OPEN, kernel=np.ones((3, 3), dtype=np.uint8), iterations=1)
+            if self.filter_occluded and not self.object_occupancy_grid.object_is_visible(semantic_id - 1000, agent_state=self._sim.get_agent_state(), min_depth=0.0, max_depth=5.0, camera_hfov=90, n_rays=5, min_object_fov=5.0):
+                continue
             
             class_id = self.semantic_id_to_classid(semantic_id)
 
@@ -124,35 +173,12 @@ class ObjectDetectorGTSensor(habitat.Sensor):
 
             if classes[class_id] == "undefined":
                 continue
-
-            contours, _ = cv2.findContours(
-                mask,
-                cv2.RETR_EXTERNAL,
-                cv2.CHAIN_APPROX_SIMPLE
-            )
-
-            if not contours:
-                continue
-
-            # list of polygons (one per contour)
-            list_mask_polygons = [
-                flatten_contour(contour.reshape(-1, 2))
-                for contour in contours
-                if len(contour) >= 3  # valid polygon
-            ]
-
-            if not list_mask_polygons:
-                continue
-
-            # bounding box over all contours / full object
-            x, y, w, h = cv2.boundingRect(
-                np.vstack(contours)
-            )
-
+            
+            x, y, w, h = cv2.boundingRect(mask)
+            mask_area = np.sum(mask)
             bbx_area = w * h
-            mask_area = int(np.sum(mask))
 
-            if bbx_area < self.area_thr:
+            if min(mask_area*2, bbx_area) < self.area_thr:
                 continue
 
             detections.append({
@@ -179,7 +205,7 @@ class ObjectDetectorGTSensor(habitat.Sensor):
         pred_classes = torch.cat([d["class_id"] for d in sorted_detections])
         pred_masks = torch.cat([d["mask"] for d in sorted_detections])
         infos = np.array([d["info"] for d in sorted_detections])
-        
+
         return {'instances': Instances(
             image_size=(semantic_obs.shape[0], semantic_obs.shape[1]),
             pred_boxes=Boxes(pred_boxes),
@@ -213,10 +239,9 @@ class ObjectDetectorGTSensor(habitat.Sensor):
 
                 self.objid_to_class_id[obj.object_id] = class_id
 
-            self.objid_to_to_info = {
-                o["object_id"]: o for o in self.get_objects_info()
-            }
-
+            self.object_info_list = get_objects_info(self._sim, self.object_annotations.mapping_objname_class, self.object_annotations.source_mapping_objname_class)
+            self.object_occupancy_grid = HabitatObjOccupancyGrid(self._sim, meters_per_grid_pixel=0.125, list_object_info=self.object_info_list)
+        
         else:
             raise NotImplementedError
         
@@ -242,47 +267,3 @@ class ObjectDetectorGTSensor(habitat.Sensor):
             "objects": mapping,
         }
     
-
-    def get_objects_info(self,) -> list[dict]:
-        out = []
-
-        for obj_id, obj_handle in sutils.get_all_object_ids(self._sim).items():
-            obj_name = object_shortname_from_handle(obj_handle)
-
-            if obj_name not in self.object_annotations.mapping_objname_class:
-                continue
-
-            obj = get_obj_from_id(self._sim, obj_id)
-
-            aabb = obj.collision_shape_aabb # type: ignore
-            min_v = aabb.min
-            max_v = aabb.max
-
-            # 8 local box corners
-            corners_local = [
-                mn.Vector3(c) # type: ignore
-                for c in itertools.product(
-                    [min_v.x, max_v.x],
-                    [min_v.y, max_v.y],
-                    [min_v.z, max_v.z],
-                )
-            ]
-
-            corners_world = [
-                obj.rotation.transform_vector(c) + obj.translation # type: ignore
-                for c in corners_local
-            ]
-
-            out.append({
-                "object_id": obj_id,
-                "obj_name": obj_name,
-                "class_name": self.object_annotations.mapping_objname_class.get(obj_name, "unknown"),
-                "position": obj.translation, # type: ignore
-                "rotation": obj.rotation, # type: ignore
-                "center": np.array(obj.collision_shape_aabb.center), # type: ignore
-                "corners": [
-                    (c.x, c.y, c.z)
-                    for c in corners_world
-                ],
-            })
-        return out

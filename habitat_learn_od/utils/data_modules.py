@@ -2,21 +2,17 @@
 import logging
 import os
 import pickle
-import albumentations as A
 import pytorch_lightning as pl # type: ignore
 from torch.utils.data.dataloader import DataLoader, Dataset
 
 import shutil
 from detectron2.data import transforms as T  # type: ignore
-from habitat_learn_od.utils.augmentations import get_transform
 from habitat_learn_od.utils.detectron_utils import get_coco_item_dict
 from habitat_learn_od.utils.pseudo_labeler import PseudoLabeler
 from common.utils.dataset_utils import (
     SampleLoader,
     HabitatDataset,
-    HabitatFullDataset,
     HabitatFullSequentialDataset,
-    HabitatSequentialDataset,
 )
 from habitat_learn_od.utils.two_stage_models import *
 from habitat_learn_od.utils.train_helpers import (
@@ -34,10 +30,8 @@ class HabitatDataModule(pl.LightningDataModule):
         self, 
         pseudo_labeler, 
         collection_policy, 
-        dataset_path,
-        data_base_dir, 
-        test_set, 
-        transform_type='none', 
+        collected_dataset_path,
+        test_dataset_path,
         batch_size=8, 
         consecutive_obs=1, 
         train_scenes=None,
@@ -49,13 +43,11 @@ class HabitatDataModule(pl.LightningDataModule):
         super().__init__()
         self.pseudo_labeler = pseudo_labeler
         self.collection_policy = collection_policy
-        self.dataset_path = dataset_path
+        self.collected_dataset_path = collected_dataset_path
+        self.test_dataset_path = test_dataset_path
         self.sampler = None
         self.labels = None
         self.batch_size=batch_size
-        self.data_base_dir = data_base_dir
-        self.test_set = test_set
-        self.transform_type = transform_type
         self.num_workers = 0
         self.consecutive_obs = int(consecutive_obs)
         
@@ -64,19 +56,9 @@ class HabitatDataModule(pl.LightningDataModule):
 
     def _get_labels(self, sampler) -> dict:
         """Uses a pseudo_labeler and SinglecamEpisodeFullDataset to get consistent pseudo-labels for all samples in the dataset"""
-        val_transform = A.Compose(
-            get_transform("none"),
-            bbox_params=A.BboxParams(
-                format='pascal_voc',
-                min_area=0,
-                min_visibility=0,
-                label_fields=['class_labels', 'infos'],
-            ),
-        )
         pseudolabel_dataset = SinglecamEpisodeFullDataset(
             None,
             sampler=sampler,
-            transform=val_transform,
         )
         pseudolabel_loader = DataLoader(
             pseudolabel_dataset,
@@ -102,10 +84,6 @@ class HabitatDataModule(pl.LightningDataModule):
         return coco_pseudo_labels
 
     def prepare_data(self) -> None:
-        if not os.path.exists(self.dataset_path):
-            assert self.collection_policy is not None, "Collection policy must be provided to generate dataset"
-            self.collection_policy.generate(self.dataset_path)
-
         sampler = self._get_sampler()
         coco_pseudo_labels = self._get_labels(sampler)
 
@@ -113,8 +91,8 @@ class HabitatDataModule(pl.LightningDataModule):
             pickle.dump(coco_pseudo_labels, fp)
 
     def _get_sampler(self) -> SampleLoader:
-        if os.path.exists(self.dataset_path):
-            sampler = SampleLoader(self.dataset_path)
+        if os.path.exists(self.collected_dataset_path):
+            sampler = SampleLoader(self.collected_dataset_path)
         else:
             path = os.path.join(os.getcwd(), f"dataset")
             sampler = SampleLoader(path)
@@ -124,14 +102,7 @@ class HabitatDataModule(pl.LightningDataModule):
         """
         Apply pseudo-labeler and return consistent pseudolabel dataset
         """
-        train_transform = A.Compose(
-            get_transform(self.transform_type),
-            bbox_params=A.BboxParams(
-                format='pascal_voc',
-                min_area=0,
-                label_fields=['class_labels', 'infos', 'gt_logits'],
-            ),
-        )
+
         assert len(coco_pseudo_labels) > 0, "No pseudo-labels provided"
         assert len(coco_pseudo_labels) == len(
             sampler
@@ -140,26 +111,15 @@ class HabitatDataModule(pl.LightningDataModule):
         train_dataset = PseudoFullDataset(
             dataset_path=None,
             sampler=sampler,
-            transform=train_transform,
             pseudo_labels=coco_pseudo_labels,
             consecutive_obs=self.consecutive_obs
         )
         return train_dataset
 
     def _get_validation_dataset(self) -> Dataset:
-        transform = A.Compose(
-            [
-                A.pytorch.ToTensorV2() # type: ignore
-            ],
-            bbox_params=A.BboxParams(
-                format='pascal_voc',
-                label_fields=['class_labels', 'infos'],
-            ),
-        )
-
         dataset = HabitatDataset(
-            os.path.join(self.data_base_dir, self.test_set),
-            transform=transform,
+            dataset_path=self.test_dataset_path,
+            input_format=self.pseudo_labeler.model.cfg.INPUT.FORMAT,
         )
         return dataset
 
@@ -218,12 +178,7 @@ class GTDataModule(HabitatDataModule):
         super().__init__(*args, **kwargs)
 
     def prepare_data(self) -> None:
-        if not os.path.exists(self.dataset_path):
-            assert self.collection_policy is not None, "Collection policy must be provided to generate dataset"
-            path = os.path.join(os.getcwd(), f"dataset")
-            if os.path.exists(path):
-                shutil.rmtree(path) # Empty dataset before generating new samples
-            self.collection_policy.generate(path)
+        assert os.path.exists(self.collected_dataset_path), f"Collected dataset path does not exist: {self.collected_dataset_path}"
 
     def setup(self, stage) -> None:
         sampler = self._get_sampler()
@@ -232,15 +187,6 @@ class GTDataModule(HabitatDataModule):
 
     def _get_train_dataset(self, sampler: SampleLoader) -> Dataset:
         """Using ground-truth for detector training """
-        train_transform = A.Compose(
-            get_transform(self.transform_type),
-            bbox_params=A.BboxParams(
-                format='pascal_voc',
-                min_area=0,
-                label_fields=['class_labels', 'infos'],
-            ),
-        )
-
         inputs = sampler.get_episode_and_steps_dense_list()
         filter_empty_instances = []
 
@@ -252,5 +198,4 @@ class GTDataModule(HabitatDataModule):
             dataset_path=None,
             sampler=sampler,
             index_mask=filter_empty_instances,
-            transform=train_transform,
         )

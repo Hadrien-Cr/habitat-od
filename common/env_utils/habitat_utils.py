@@ -64,8 +64,9 @@ def construct_envs(
         num_processes_on_first_gpu,
         num_processes_per_gpu,
     ) = get_multi_gpu_config(len(scenes))
-    
+
     num_processes = min(num_processes, len(scenes))
+    num_processes = min(num_processes, 1)
     configs = []
 
     env_classes = [env_class for _ in range(num_processes)]

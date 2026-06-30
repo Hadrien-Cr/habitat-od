@@ -7,11 +7,13 @@
       "type": "debugpy",
       "request": "launch",
       "program": "${file}",
-      "python": "/home/hadriencr/miniconda3/envs/habitat_od/bin/python",
+      "python": "/home/hcrassou/miniconda3/envs/habitat_od/bin/python",
       "env": {
-        "PYTHONPATH": "/home/hadriencr/Code/thor-od",
+        "CUDA_VISIBLE_DEVICES": "0",
+        "BASE_DIR": "/home/hcrassou/habitat-od",
+        "PYTHONPATH": "/home/hcrassou/habitat-od",
         "PYTHONNOUSERSITE": "1",
-        "HABITAT_DATA": "/home/hadriencr/Code/habitat_data/data",
+        "HABITAT_DATA": "/home/hcrassou/habitat_data/data",
         "PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION": "python"
       },
     }

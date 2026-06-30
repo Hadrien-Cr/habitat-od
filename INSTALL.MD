@@ -23,7 +23,9 @@ python -m pip install --no-build-isolation -e . -v # make sure to have setuptool
 ```
 git clone https://github.com/facebookresearch/Detic.git third_party/Detic
 cd third_party/Detic
-pip install -r requirements.txt # make sure to have setuptools>80
+pip install setuptools -U # make sure to have setuptools>80
+pip install -r requirements.txt
+git submodule init && git submodule update
 ```
 
 ```

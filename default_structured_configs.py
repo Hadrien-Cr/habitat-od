@@ -400,8 +400,9 @@ class PointGoalWithGPSCompassSensorConfig(PointGoalSensorConfig):
 @dataclass
 class ObjectDetectorGTSensorConfig(LabSensorConfig):
     type: str = "ObjectDetectorGTSensor"
-    env_name: str = "HSSD-HAB/HSSD40"
+    env_name: str = "HSSD-HAB/NYU40"
     area_thr: float = 1000.0
+    filter_occluded: bool = True
 
 @dataclass
 class HumanoidDetectorSensorConfig(LabSensorConfig):

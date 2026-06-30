@@ -6,7 +6,7 @@ import cv2
 from habitat_sim.agent.agent import AgentState
 
 from common.utils.plot_utils import plot_mask
-from common.utils.pose_utils import quaternion_from_rpy
+from common.utils.pose_utils import quaternion_from_rpy, rpy_from_quaternion, get_pose
 
 from scipy.ndimage import distance_transform_edt
 
@@ -19,36 +19,50 @@ def object_in_view(
     col,
     obj_occupancy,
     obstacles,
-    yaw,
-    min_range,
-    max_range,
-    fov_deg=30.0,
+    camera_yaw,
+    camera_hfov,
+    min_dist,
+    max_dist,
+    min_corner_relative_angle,
+    max_corner_relative_angle,
     n_rays=3,
 ):
     H, W = obj_occupancy.shape
+    rays_hits = 0
 
-    half_fov = np.deg2rad(fov_deg / 2.0)
+    min_camera_angle = camera_yaw - np.deg2rad(camera_hfov / 2.0)
+    max_camera_angle = camera_yaw + np.deg2rad(camera_hfov / 2.0)
+    if min_camera_angle < 0:
+        min_camera_angle += 2 * np.pi
+        max_camera_angle += 2 * np.pi
 
-    angles = np.linspace(-half_fov, half_fov, n_rays, endpoint=True) + yaw
+    ray_angles = np.linspace(min_corner_relative_angle, max_corner_relative_angle, n_rays, endpoint=True)
 
-    for angle in angles:
-        sin_a = np.sin(angle)
-        cos_a = np.cos(angle)
+    for ray_angle in ray_angles:
+        if ray_angle < 0:
+            ray_angle += 2 * np.pi
 
-        for dist in range(min_range, max_range + 1):
-            rr = int(round(row + dist * sin_a))
-            cc = int(round(col + dist * cos_a))
+        if ray_angle < min_camera_angle or ray_angle > max_camera_angle:
+            continue  # Skip rays that are outside the camera's field of view
+
+        sin_a = np.sin(ray_angle)
+        cos_a = np.cos(ray_angle)
+
+        for dist in range(min_dist, max_dist + 1):
+            rr = round(row + dist * sin_a)
+            cc = round(col + dist * cos_a)
 
             if rr < 0 or rr >= H or cc < 0 or cc >= W:
-                continue
+                break
 
             if obstacles[rr, cc]:
-                continue
+                break
 
             if obj_occupancy[rr, cc]:
-                return True
-
-    return False
+                rays_hits += 1
+                break  # Stop checking further along this ray if we hit the object
+            
+    return rays_hits
 
 
 @dataclass
@@ -63,16 +77,13 @@ class HabitatObjOccupancyGrid:
         sim,
         meters_per_grid_pixel: float,
         list_object_info: list[dict],
+        turn_angle: float = 30.0
     ):
         ref_y = sim.agents[0].state.position[1]
-        self.turn_angle = 30
-
-        navmesh_verts = sim.pathfinder.build_navmesh_vertices(-1)
-        height = min(x[1] for x in navmesh_verts)
+        height = sim.pathfinder.get_random_navigable_point()[1]
 
         self.world_bounds = sim.pathfinder.get_bounds()
         (b1, b2) = self.world_bounds
-
 
         startx = min(b1[0], b2[0])
         startz = min(b1[2], b2[2])
@@ -98,21 +109,26 @@ class HabitatObjOccupancyGrid:
         n = max(obj_info["object_id"] for obj_info in list_object_info) + 1
         self.obj_occupancy_td_view = np.zeros((H, W, n), dtype=np.uint8)
 
-        # Add objects
+        self.corners_2d = {}
+        self.obj_class_ids = {}
+
         for obj_info in list_object_info:
             corners_3d = obj_info["corners"]
             corners_2d = [
                 (corners_3d[i][0], corners_3d[i][2]) for i in [0,1,6,7]
             ]
             self.add_object(corners_2d, obj_info['object_id'])
-
-        self.obstacles = np.zeros_like(self.topdown_view, dtype=bool)
-        self.obstacles = np.logical_or(self.obstacles, self.topdown_view == 0)
+            self.corners_2d[obj_info['object_id']] = corners_2d
+            self.obj_class_ids[obj_info['object_id']] = obj_info['class_name']
+    
+        self.list_object_info = list_object_info
+        self.obstacles = (self.topdown_view == 0).astype(bool)
         
         for i in range(n):
             self.obstacles = np.logical_and(self.obstacles, self.obj_occupancy_td_view[:, :, i] == 0)
         
         self.obstacles = cv2.erode(self.obstacles.astype(np.uint8), np.ones((3, 3)), iterations=2)
+
 
     def world_to_grid(
         self, point: tuple[float, float], do_round: bool
@@ -181,60 +197,27 @@ class HabitatObjOccupancyGrid:
         self.obj_occupancy_td_view[:, :, obj_id][mask == 1] = 1
 
 
-    def get_all_agent_states(self) -> list[AgentState]:
-        agent_states = []
-
-        for (row, col) in self.gridpoints:
-            x, z = self.grid_to_world((row, col))
-
-            for k in range(int(360 / self.turn_angle)):
-                yaw = 2 * np.pi * (k * self.turn_angle / 360)
-
-                new_state = AgentState()
-                new_state.position = np.array([x,self.ref_point[1],z], dtype = np.float32)
-                new_state.rotation = quaternion_from_rpy(0, 0,  - yaw - np.pi / 2)
-                agent_states.append(new_state)
-
-        return agent_states
-
-    def get_all_viewpoints(self, obj_id: int, visibility_range: tuple[float, float] = (0.5, 2.0), viewpoint_spacing: float = 0.25) -> list[AgentState]:
-        agent_states = []
-
-        obj_occupancy = self.obj_occupancy_td_view[:, :, obj_id] == 1
-
-        min_range = visibility_range[0] / self.meters_per_grid_pixel
-        max_range = visibility_range[1] / self.meters_per_grid_pixel
-
-        in_range = cells_in_range(obj_occupancy, min_range, max_range)
-        in_range_downsampled = np.zeros_like(in_range, dtype=bool)
+    def object_is_visible(self, obj_id, agent_state: AgentState, min_depth: float = 0.0, max_depth: float = 3.0, n_rays=3, min_object_fov=5.0, camera_hfov=90.0) -> bool:
+        _,_, o = get_pose(agent_state.position, agent_state.rotation)
+        camera_yaw = - np.pi / 2 - o
+        row, col = self.world_to_grid((agent_state.position[0], agent_state.position[2]), do_round=True)
         
-        downsampling_step = max(1,int(viewpoint_spacing/self.meters_per_grid_pixel))
-        in_range_downsampled[::downsampling_step, ::downsampling_step] = in_range[::downsampling_step, ::downsampling_step]
+        obj_corners_2d = self.corners_2d[obj_id]
+        obj_corner_relative_angles = [np.arctan2(c[1] - agent_state.position[2], c[0] - agent_state.position[0]) for c in obj_corners_2d]
+        min_corner_relative_angle = min(obj_corner_relative_angles)
+        max_corner_relative_angle = max(obj_corner_relative_angles)
 
-        rows, cols = np.where(in_range_downsampled)
-
-        for yaw_idx, yaw in enumerate([2 * np.pi * (yaw_deg / 360) for yaw_deg in range(0, 360, self.turn_angle)]):    
-            for row, col in zip(rows, cols):
-                if not self.is_navigable((row, col)):
-                    continue
-                
-                if not object_in_view(
-                    row=row,
-                    col=col,
-                    obj_occupancy=obj_occupancy,
-                    obstacles=self.obstacles,
-                    yaw=yaw,
-                    min_range=int(visibility_range[0] / self.meters_per_grid_pixel),
-                    max_range=int(visibility_range[1] / self.meters_per_grid_pixel),
-                    fov_deg=30.0,
-                    n_rays=3,
-                ):
-                    continue
-                
-                x, z = self.grid_to_world((row, col))
-                new_state = AgentState()
-                new_state.position = np.array([x,self.ref_point[1],z], dtype = np.float32)
-                new_state.rotation = quaternion_from_rpy(0, 0, - yaw - np.pi / 2)
-                agent_states.append(new_state)
-
-        return agent_states
+        rays_hits = object_in_view(
+            row,
+            col,
+            self.obj_occupancy_td_view[:, :, obj_id],
+            self.obstacles,
+            camera_yaw=camera_yaw,
+            camera_hfov=camera_hfov,
+            min_corner_relative_angle=min_corner_relative_angle,
+            max_corner_relative_angle=max_corner_relative_angle,
+            max_dist=int(max_depth / self.meters_per_grid_pixel),
+            min_dist=int(min_depth / self.meters_per_grid_pixel),
+            n_rays=n_rays,
+        )
+        return (rays_hits / n_rays) * (max_corner_relative_angle - min_corner_relative_angle) >= np.deg2rad(min_object_fov)

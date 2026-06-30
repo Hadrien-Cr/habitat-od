@@ -1,5 +1,5 @@
 import os
-from typing import Any
+from typing import Any, cast
 
 from omegaconf import read_write
 
@@ -31,7 +31,6 @@ class ExplorationEnv(RLEnv):
         self.episode_over = False
         self._elapsed_steps = 0
         self._max_episode_steps = self._env._max_episode_steps
-        self.tdmap = None
 
 
     def reset(self):
@@ -58,7 +57,6 @@ class ExplorationEnv(RLEnv):
 
         self._env.task.sensor_suite.get("bbsgt").setup_semantic_labels()
         sim_obs = self._env.sim.get_sensor_observations()
-        self.tdmap = None
 
         task_obs = self._env.task.sensor_suite.get_observations(
             observations=sim_obs,
@@ -93,14 +91,11 @@ class ExplorationEnv(RLEnv):
     def get_last_reward(self) -> float:
         return self.last_reward
 
-    def get_td_map(self) -> np.ndarray:
-        if self.tdmap is not None:
-            return self.tdmap
-        self.tdmap = self._env.sim.pathfinder.get_topdown_view(
-            meters_per_pixel=0.1, height=self._env.sim.get_agent(0).state.position[1]
-        ).astype(np.uint8)
-        maps._outline_border(self.tdmap)
-        return self.tdmap
+    def get_tdmap(self) -> np.ndarray:
+        return self._env.task.sensor_suite.get("bbsgt").object_occupancy_grid.topdown_view
+
+    def get_object_occupancy(self) -> np.ndarray:
+        return self._env.task.sensor_suite.get("bbsgt").object_occupancy_grid
 
     def get_env_name(self) -> str:
         return self._env.task.sensor_suite.get("bbsgt").env_name
@@ -155,8 +150,5 @@ class ExplorationEnv(RLEnv):
         self._env.task.sensor_suite.get("bbsgt").setup_semantic_labels()
         return
     
-    def get_objects_info(self) -> list[dict[str, Any]]:
-        return self._env.task.sensor_suite.get("bbsgt").get_objects_info()
-
     def get_reward_range(self):
         return (-1.0, 1.0)

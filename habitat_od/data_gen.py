@@ -21,7 +21,6 @@ from common.baselines.agents import *
 from common.utils.data_utils import save_obs, load_data, _remove_data, SenseInfo
 from common.utils.plot_utils import plot_segmentation_gt, plot_segmentation_pred
 from common.utils.sampling_utils import area_bin_sampling
-from common.utils.grid_utils import HabitatObjOccupancyGrid
 
 
 
@@ -168,7 +167,6 @@ if __name__ == "__main__":
         "config/datagen/data_gen_nyu40.yaml", 
         "config/datagen/data_gen_scannet200.yaml", 
         "config/datagen/data_gen_coco80.yaml",
-        "config/datagen/data_gen_hssd40.yaml",
         "config/datagen/data_gen_hssd500.yaml", 
     ]:
         habitat_config = habitat.get_config(config_path="config/habitat/default.yaml")

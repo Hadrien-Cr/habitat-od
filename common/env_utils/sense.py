@@ -234,18 +234,7 @@ class RGBSense(VisualSense):
     @staticmethod
     def load(path):
         rgb_image = np.load(path)
-
-        if (
-            rgb_image.shape[0] == 3
-            or rgb_image.shape[0] == 1
-            or rgb_image.shape[0] == 4
-        ):
-            # channel-last
-            rgb_image = rgb_image.transpose(1, 2, 0)
-
-        if rgb_image.shape[-1] > 3:
-            rgb_image = rgb_image[:, :, :-1]  # remove `a`` channel
-
+        rgb_image = rgb_image[:, :, 0:3]  # remove alpha channel
         return RGBSense(rgb_image, path, sense_info=get_sense_info(path))
 
 
@@ -320,7 +309,6 @@ class BBSense(VisualSense):
             target.gt_masks = self.bbs.pred_masks
 
         if hasattr(self.bbs, "infos"):
-
             target.infos = self.bbs.infos
             for t in target.infos:
                 t['episode'] = self.sense_info.episode

@@ -51,8 +51,6 @@ habitat:
     lab_sensors:
       agent_collision_sensor:
         type: agent_collision_sensor
-      movement_sensor:
-        type: movement_sensor
       position_sensor:
         type: position_sensor
         
@@ -65,7 +63,8 @@ habitat:
 
 object_params:
   env_name: "HSSD-HAB/COCO80"
-  area_thr: 2048
+  area_thr: 250
+  filter_occluded: true
 
 baseline_params:
   visualize: True

@@ -12,31 +12,45 @@ def plot_semantic_2d_map(
     bg_grid,
     sem_grid,
     colors: dict[int, tuple[int,int,int]],
-    classes: list[str],
-    scale=8
+    classes: dict[int, str],
+    meters_per_grid_pixel: float = 0.01,
+    scale=1.0
 ) -> Image.Image:
     # sem: (h, w, nc)
     num_sem_classes = sem_grid.shape[-1]
 
     colored = np.zeros((*sem_grid.shape[:2], 3), dtype=np.uint8)
-
-    colored[bg_grid == 0] = [255, 255, 255]
-    colored[bg_grid == 1] = [0, 0, 0]
+    colored[bg_grid == 0] = [235, 235, 235]
+    colored[bg_grid == 1] = [30, 30, 30]
+    areas_m = np.zeros(num_sem_classes, dtype=np.float32)
 
     for c in range(num_sem_classes):
         object_mask = (sem_grid[:, :, c] == 1)
-        colored[object_mask] = colors[c]
+        areas_m[c] = np.sum(object_mask) * meters_per_grid_pixel ** 2
 
-    # Convert to image and upscale x4
+    for c in sorted(range(num_sem_classes), key=lambda x: areas_m[x], reverse=True):
+        object_mask = (sem_grid[:, :, c] == 1)
+        if not np.any(object_mask):
+            continue
+        
+        if c not in colors:
+            colored[object_mask] = [50 + 50*areas_m[c], 50 + 50*areas_m[c], 50 + 50*areas_m[c]]
+        else:
+            colored[object_mask] = colors[c]
+
     img = Image.fromarray(colored)
     img = img.resize(
         (img.width * scale, img.height * scale),
         resample=Image.NEAREST  # type: ignore
     )
-
     draw = ImageDraw.Draw(img)
+    
+    for c in sorted(range(num_sem_classes), key=lambda x: areas_m[x], reverse=True):
+        object_mask = (sem_grid[:, :, c] == 1)
+        
+        if not np.any(object_mask):
+            continue
 
-    for c in range(num_sem_classes):
         object_mask = (sem_grid[:, :, c] == 1)
 
         labeled_mask, num = ndimage.label(object_mask)
@@ -45,7 +59,7 @@ def plot_semantic_2d_map(
             region = labeled_mask == i
             coords = np.column_stack(np.where(region))
 
-            if len(coords) < 10:
+            if areas_m[c] < 0.05:
                 continue
 
             y, x = coords.mean(axis=0)
@@ -57,7 +71,7 @@ def plot_semantic_2d_map(
                 (x, y),
                 classes[c],
                 fill=(255,255,255),
-                font_size=20,
+                font_size = 1.5 * np.clip(np.sqrt(areas_m[c]), 0.1, 2) * scale,
                 anchor="mm"  # center text on region centroid
             )
     return img
@@ -122,7 +136,7 @@ def plot_segmentation_pred(rgb: np.ndarray, pred_instances, classes: list[str], 
             np.clip((height_ratio - 0.02) / 0.08 + 1, 1.2, 2) * 0.5 * det_visualizer._default_font_size
         )
         det_visualizer.draw_text(
-            f"{i}: pt={classes[class_id]} {(100*score):.1f}%",
+            f"{i}: pt={classes[class_id]} {round(100*score)}%",
             font_size=font_size,
             position=(x1, y1),
             horizontal_alignment="left",
@@ -134,7 +148,6 @@ def plot_segmentation_pred(rgb: np.ndarray, pred_instances, classes: list[str], 
         masks=pred_instances.pred_masks.cpu().numpy() if pred_instances.pred_masks is not None else None,
         labels=None,
         assigned_colors=[(x/255, y/255, z/255) for class_id in pred_instances.pred_classes.cpu().numpy() for x, y, z in [colors[class_id]]],
-        alpha=0.5
     )
     result = vis_img.get_image()
     im = Image.fromarray(result)
@@ -171,7 +184,7 @@ def plot_segmentation_gt(rgb: np.ndarray, gt_instances, classes: list[str], colo
         masks=None,
         labels=None,
         assigned_colors=[(x/255, y/255, z/255) for class_id in gt_instances.gt_classes.cpu().numpy() for x, y, z in [colors[class_id]]],
-        alpha=0.05
+        alpha=0.5
     )
     result = vis_img.get_image()
     im = Image.fromarray(result)
@@ -204,7 +217,7 @@ def plot_segmentation(
         cv2.putText(
             rgb,
             title,
-            (int((rgb.shape[1] / 2) * (1 - len(title) * fontscale)), int(fontscale * 20)),
+            (int((rgb.shape[1] / 2)), int(fontscale * 20)),
             cv2.FONT_HERSHEY_SIMPLEX,
             fontscale,
             (255, 255, 255),

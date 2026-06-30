@@ -27,7 +27,7 @@ from habitat_sim.utils import common as sim_utils
 
 from common.env_utils.habitat_utils import construct_envs, VectorEnv # type: ignore
 from common.utils.data_utils import save_obs, load_data
-from common.utils.plot_utils import plot_segmentation_gt, plot_segmentation_pred, plot_mask, plot_array
+from common.utils.plot_utils import plot_segmentation, plot_mask, plot_array, plot_semantic_2d_map
 from common.planning.skeleton import do_plan
 from common.utils.pose_utils import quaternion_from_rpy
 
@@ -82,7 +82,7 @@ class Baseline(BaseRLTrainer):
         self.num_steps_done = 0
         env_class = get_env_class(config.habitat_baselines.env_name)
         assert env_class is not None, f"Environment class for {config.habitat_baselines.env_name} not found"
-        envs = construct_envs(config, env_class, True, **kwargs)
+        envs = construct_envs(config, env_class, True, **kwargs) # type: ignore
         self.current_steps = np.zeros(envs.num_envs)
         return envs
 
@@ -102,17 +102,10 @@ class Baseline(BaseRLTrainer):
         self.init_collection()
         collected_observations_paths = []
         
-        steps = self.envs.number_of_episodes[0] * steps_per_episode
-        pbar = tqdm(total=steps, desc="Generating data")
-        
-        from detectron2.data import MetadataCatalog
-        env_name = self.envs.call_at(0, "get_env_name")
-        classes = MetadataCatalog.get(env_name.replace("HSSD-HAB/", "")).thing_classes
-        colors = MetadataCatalog.get(env_name.replace("HSSD-HAB/", "")).thing_colors
-
-        for step in range(steps):
-            pbar.update(1)
-
+        nb_episodes: int = self.envs.number_of_episodes[0] # type: ignore
+        pbar = tqdm(total=nb_episodes * steps_per_episode * self.envs.num_envs, desc="Generating data")
+    
+        for _ in range(nb_episodes * steps_per_episode): 
             for idx in range(self.envs.num_envs):
                 self.plan(idx)
 
@@ -122,70 +115,107 @@ class Baseline(BaseRLTrainer):
                 obs = self.current_observations[idx]
                 done = self.current_dones[idx]
                 episode = self.envs.current_episodes()[idx]
-                                
+                step = self.current_steps[idx]
+
                 if done:
                     self.current_steps[idx] = 0
-
-                if len(obs["bbsgt"]["instances"]) == 0:
-                    continue
                 
-                paths = save_obs(dataset_path, episode.episode_id, [obs], self.current_steps[idx], modalities=["rgb", "bbsgt"])
-                collected_observations_paths.append(paths)
+                if self.visualize and idx == 0 and step % 100 == 1:
+                    self.do_visualize(idx, dataset_path=dataset_path)
 
-                if self.visualize and idx == 0 and step % 50 == 0:
-                    rgb = obs['rgb']
-                    p = [path for path in paths if "bbsgt" in path][0]
-                    gt_instances = load_data(p).get_bbs_as_gt()
-
-                    # save visualization of the segmentation gt
-                    im = plot_segmentation_gt(rgb, gt_instances, classes, colors)
-                    basename = os.path.basename(p).replace("bbsgt", "vis").replace(".npy", ".png")
-
-                    os.makedirs("datadump/vis", exist_ok=True)
-                    im.save("datadump/vis/" + basename)
-                
-                    # save tdmap
-                    tdmap = self.envs.call_at(0, "get_td_map")
-                    lower_bound, upper_bound = self.envs.call_at(idx, "get_map_bounds")
-
-                    agent_position = obs['position']['position']
-                    agent_rotation = obs['position']['orientation']
-
-                    recolor_map = np.array(
-                        [[255, 255, 255], [128, 128, 128], [0, 0, 0]], dtype=np.uint8
-                    )
-
-                    top_down_map = recolor_map[tdmap]
-
-                    tdmap_resolution = (
-                        abs(upper_bound[2] - lower_bound[2]) / tdmap.shape[0],
-                        abs(upper_bound[0] - lower_bound[0]) / tdmap.shape[1],
-                    )
-                    agent_pixel_pos = [
-                        int((agent_position[2] - lower_bound[2]) / tdmap_resolution[0]),
-                        int((agent_position[0] - lower_bound[0]) / tdmap_resolution[1])
-                    ]
-                    
-                    agent_forward = sim_utils.quat_to_magnum(agent_rotation).transform_vector(
-                        mn.Vector3(0, 0, -1.0) # type: ignore
-                    ) 
-                    agent_orientation = math.atan2(agent_forward[0], agent_forward[2])
-                    top_down_map = maps.draw_agent(
-                        top_down_map,
-                        agent_center_coord=agent_pixel_pos,
-                        agent_rotation=agent_orientation,
-                        agent_radius_px=4,
-                    )
-                    im = plot_array(top_down_map)
-                    basename = os.path.basename(p).replace("rgb", "map").replace(".npy", ".png")
-                    os.makedirs("datadump/maps", exist_ok=True)
-                    im.save("datadump/maps/" + basename)
-
+            paths = save_obs(
+                dataset_path, 
+                int(episode.episode_id),
+                [self.current_observations[idx] for idx in range(self.envs.num_envs)], 
+                int(step), 
+                modalities=["rgb", "bbsgt"]
+            )
+            collected_observations_paths.append(paths)
+            pbar.update(self.envs.num_envs)
+            
+        del self.current_steps
         del self.current_dones
         del self.current_observations
 
         self.envs.close()
         return sorted(collected_observations_paths)
+
+
+    def do_visualize(self, env_idx: int, dataset_path: str):
+        obs = self.current_observations[env_idx]
+        episode = self.envs.current_episodes()[env_idx]
+        step = self.current_steps[env_idx]
+        gt_instances = obs["bbsgt"]["instances"]
+
+        from detectron2.data import MetadataCatalog
+        env_name = self.envs.call_at(0, "get_env_name")
+        classes = MetadataCatalog.get(env_name.replace("HSSD-HAB/", "")).thing_classes
+        colors = MetadataCatalog.get(env_name.replace("HSSD-HAB/", "")).thing_colors
+        
+        # save visualization of the segmentation gt
+        fname = f"episode_{int(episode.episode_id):06d}_modality_vis_step_{int(step):05d}_id_{env_idx}.png"
+        rgb = obs['rgb']
+        im = plot_segmentation(rgb, pred_instances=gt_instances, gt_instances = None, classes=classes, colors=colors)
+
+        os.makedirs("datadump/vis/" + dataset_path.split("/")[-1], exist_ok=True)
+        im.save("datadump/vis/" + dataset_path.split("/")[-1] + "/" + fname)
+    
+
+        # save object_occupancy map
+        tdmap = self.envs.call_at(0, "get_tdmap")
+        object_occupancy_grid = self.envs.call_at(0, "get_object_occupancy")
+        list_object_info = object_occupancy_grid.list_object_info
+
+        obj_id_to_class = {object_info["object_id"]: object_info["class_name"] for object_info in list_object_info}
+        obj_id_to_color = {object_info["object_id"]: colors[classes.index(object_info["class_name"])]  for object_info in list_object_info if object_info["class_name"] in classes}
+
+        im = plot_semantic_2d_map(
+            object_occupancy_grid.topdown_view, 
+            object_occupancy_grid.obj_occupancy_td_view, 
+            classes=obj_id_to_class, colors=obj_id_to_color, 
+            meters_per_grid_pixel=object_occupancy_grid.meters_per_grid_pixel, 
+            scale=10
+        )
+        fname = f"episode_{int(episode.episode_id):06d}_modality_obj_step_{int(step):05d}_id_{env_idx}.png"
+        os.makedirs("datadump/maps/" + dataset_path.split("/")[-1], exist_ok=True)
+        im.save("datadump/maps/" + dataset_path.split("/")[-1] + "/" + fname)
+
+        # save tdmap
+        tdmap = self.envs.call_at(0, "get_tdmap")
+        lower_bound, upper_bound = self.envs.call_at(env_idx, "get_map_bounds")
+
+        agent_position = obs['position']['position']
+        agent_rotation = obs['position']['orientation']
+
+        recolor_map = np.array(
+            [[255, 255, 255], [128, 128, 128], [0, 0, 0]], dtype=np.uint8
+        )
+
+        top_down_map = recolor_map[tdmap]
+
+        tdmap_resolution = (
+            abs(upper_bound[2] - lower_bound[2]) / tdmap.shape[0],
+            abs(upper_bound[0] - lower_bound[0]) / tdmap.shape[1],
+        )
+        agent_pixel_pos = (
+            int((agent_position[2] - lower_bound[2]) / tdmap_resolution[0]),
+            int((agent_position[0] - lower_bound[0]) / tdmap_resolution[1])
+        )
+        
+        agent_forward = sim_utils.quat_to_magnum(agent_rotation).transform_vector(
+            mn.Vector3(0, 0, -1.0) # type: ignore
+        ) 
+        agent_orientation = math.atan2(agent_forward[0], agent_forward[2])
+        top_down_map = maps.draw_agent(
+            top_down_map,
+            agent_center_coord=agent_pixel_pos,
+            agent_rotation=agent_orientation,
+            agent_radius_px=4,
+        )
+        im = plot_array(top_down_map)
+        fname = f"episode_{int(episode.episode_id):06d}_modality_tdmap_step_{int(step):05d}_id_{env_idx}.png"
+        os.makedirs("datadump/maps/" + dataset_path.split("/")[-1], exist_ok=True)
+        im.save("datadump/maps/" + dataset_path.split("/")[-1] + "/" + fname)
 
 
 @baseline_registry.register_trainer(name="randombaseline")
@@ -272,7 +302,7 @@ class RandomGoalsBaseline(Baseline):
         self.path_step[idx] = 0
 
         # get the current td map
-        tdmap = self.envs.call_at(idx, "get_td_map")
+        tdmap = self.envs.call_at(idx, "get_tdmap")
         lower_bound, upper_bound = self.envs.call_at(idx, "get_map_bounds")
         agent_position = self.current_observations[idx]['position']['position']
 
@@ -353,13 +383,14 @@ class RandomTeleport(Baseline):
         super().__init__(config, agent_class=RotateAgent, **kwargs)
 
     def get_random_agent_state(self, idx, obs) -> AgentState:
-        tdmap = self.envs.call_at(idx, "get_td_map")
+        tdmap = self.envs.call_at(idx, "get_tdmap")
         lower_bound, upper_bound = self.envs.call_at(idx, "get_map_bounds")
         tdmap_resolution = (
             abs(upper_bound[2] - lower_bound[2]) / tdmap.shape[0],
             abs(upper_bound[0] - lower_bound[0]) / tdmap.shape[1],
         )
         valid_positions = np.argwhere(tdmap == 1)
+        assert np.sum(tdmap) > 0, "No valid positions found in the top-down map"
         random_pixel = valid_positions[self.rng_gen.integers(0, len(valid_positions))]
         random_position = np.array([
             lower_bound[0] + random_pixel[1] * tdmap_resolution[1],

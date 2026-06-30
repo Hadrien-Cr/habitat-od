@@ -6,11 +6,11 @@ import cv2
 import numpy as np
 import torch
 import tqdm
-from albumentations.pytorch import ToTensorV2
 from detectron2.data import detection_utils as du
 from detectron2.structures.boxes import Boxes, BoxMode
 from detectron2.structures.instances import Instances
 from detectron2.structures.masks import BitMasks
+import detectron2.data.transforms as T
 from torch.utils.data import Dataset
 
 
@@ -113,18 +113,49 @@ class SampleLoader:
 log = logging.getLogger(__name__)
 
 
+def transform_batch(image: np.ndarray, gt_instances: Instances, aug) -> tuple[torch.Tensor, Instances]:
+    """Input: HWC image"""
+    tfm = aug.get_transform(image)
+    
+    transformed_image = tfm.apply_image(image)
+    transformed_image = torch.from_numpy(transformed_image.copy().transpose(2, 0, 1)).float()
+
+    if len(gt_instances.gt_boxes.tensor) == 0:
+        gt_instances = Instances(
+            gt_boxes=Boxes(torch.Tensor()),
+            image_size=transformed_image.shape[1:],
+            gt_masks=BitMasks(torch.Tensor(size=[0, *transformed_image.shape[1:]])),
+            gt_classes=torch.Tensor(),
+            infos=[],
+        )
+        return transformed_image, gt_instances
+
+    transformed_boxes = tfm.apply_box(gt_instances.gt_boxes)
+    transformed_masks = np.stack(
+        [tfm.apply_segmentation(mask.cpu().numpy().astype(np.uint8)) for mask in gt_instances.gt_masks],
+        axis=0,
+    )
+    transformed_gt_instances = Instances(image_size=transformed_image.shape[1:])
+    transformed_gt_instances.gt_boxes = Boxes(torch.from_numpy(transformed_boxes))
+    transformed_gt_instances.gt_classes = gt_instances.gt_classes
+    transformed_gt_instances.gt_masks = BitMasks(torch.from_numpy(transformed_masks))
+
+    return transformed_image, transformed_gt_instances
+
 class HabitatDataset(Dataset):
     def __init__(
         self,
         dataset_path,
         inputs=None,
         sampler=None,
-        transform=None,
+        aug=None,
         modalities=None,
+        input_format="RGB",
         *args,
         **kwargs,
     ) -> None:
         super().__init__()
+        self.input_format = input_format
         self.dataset_path = dataset_path
         if modalities is None:
             modalities = ["rgb", "bbsgt"]
@@ -144,56 +175,12 @@ class HabitatDataset(Dataset):
 
         self.index = indices
 
-        if transform is None:
-            transform = ToTensorV2()
-        self.transform = transform
-
         self.camera_id = 0
         self.modalities = modalities
+        self.aug = T.ResizeShortestEdge((800,800), 1333,)
 
     def __len__(self) -> int:
         return len(self.index)
-
-    def _transform_batch(self, x, y) -> tuple[torch.Tensor, Instances]:
-        if len(y.gt_boxes.tensor) == 0:
-            x = self.transform.transforms[0](image=x)["image"] # type: ignore
-            size = x.shape[1:]
-            y = Instances(
-                gt_boxes=Boxes(torch.Tensor()),
-                image_size=size,
-                gt_masks=BitMasks(torch.Tensor(size=[0, *size])),
-                gt_classes=torch.Tensor(),
-                infos=[],
-            )
-            return x, y
-
-        transformed = self.transform(
-            image=x,
-            bboxes=y.gt_boxes.tensor.numpy(),
-            class_labels=y.gt_classes,
-            masks=[m for m in y.gt_masks.numpy().astype(np.uint8)],
-            infos=y.infos,
-        )
-
-        transformed_image = transformed["image"]
-        transformed_bboxes = transformed["bboxes"]
-        transformed_class_labels = transformed["class_labels"]
-        transformed_infos = transformed["infos"]
-        transformed_mask = transformed["masks"]
-
-        size = transformed_image.shape[1:]
-
-        x = transformed_image
-        y = Instances(
-            image_size=size,
-            gt_boxes=Boxes(transformed_bboxes),
-            gt_classes=torch.stack(transformed_class_labels),
-            gt_masks=BitMasks(
-                torch.stack(transformed_mask)
-            ),
-            infos=transformed_infos,
-        )
-        return x, y
 
     def __getitem__(self, idx) -> dict:
         episode, step = self.inputs[self.index[idx]]
@@ -201,66 +188,66 @@ class HabitatDataset(Dataset):
         data = self.sampler.get_sample_multimodality(
             episode, self.camera_id, self.modalities, step
         )
-        
-        rgb_image = data["rgb"].data # type: ignore
-
+        image_path = self.sampler.paths[episode][self.camera_id]["rgb"][step]
+        rgb_image = data["rgb"].data.copy() # type: ignore
         assert rgb_image.shape[-1] == 3
 
-        x = np.ascontiguousarray(rgb_image[:, :, ::-1])
-        y = data["bbsgt"].get_bbs_as_gt() # type: ignore
+        image = np.ascontiguousarray(rgb_image[:, :, ::-1]) if self.input_format == "BGR" else rgb_image
 
-        x, y = self._transform_batch(x, y)
+        gt_instances = data["bbsgt"].get_bbs_as_gt() # type: ignore
 
-        size = x.shape[1:]
+        transformed_image, transformed_gt_instances = transform_batch(image, gt_instances, self.aug)
 
         return {
             "episode": episode,
-            "image": x,
+            "image": transformed_image,
             "rgb_image": rgb_image,
+            "image_path": image_path,
             "episode": episode,
             "image_id": idx,
-            "instances": y,
-            "width": size[1],
-            "height": size[0],
+            "instances": transformed_gt_instances,
+            "width": transformed_image.shape[2],
+            "height": transformed_image.shape[1],
+            "image_size": transformed_image.shape[1:],
         }
 
-    def get_coco_item_dict(self, idx) -> dict:
-        ind = self.index[idx].item()
-        episode, step = self.inputs[ind]
+    # def get_coco_item_dict(self, idx) -> dict:
+    #     ind = self.index[idx].item()
+    #     episode, step = self.inputs[ind]
 
-        data = self.sampler.get_sample_multimodality(
-            episode, self.camera_id, ["bbsgt"], step
-        )
+    #     data = self.sampler.get_sample_multimodality(
+    #         episode, self.camera_id, ["bbsgt"], step
+    #     )
 
-        gt = data["bbsgt"]
-        file_name = gt.frame.sense_info.get_path()  # type: ignore
-        y = data["bbsgt"].get_bbs_as_gt()  # type: ignore
-        class_labels = y.gt_classes
+    #     gt = data["bbsgt"]
+    #     file_name = gt.frame.sense_info.get_path()  # type: ignore
+    #     y = data["bbsgt"].get_bbs_as_gt()  # type: ignore
+    #     class_labels = y.gt_classes
 
-        annotations = [
-            {
-                "bbox": y[id_instance].gt_boxes.tensor[0].tolist(),
-                "bbox_mode": BoxMode.XYXY_ABS,
-                "category_id": class_labels[id_instance],
-                # "segmentation": y[id_instance].gt_masks,
-                "iscrowd": 0,
-            }
-            for id_instance in range(len(y))
-        ]
-        rgb_image = data["rgb"].data # type: ignore
-        assert rgb_image.shape[-1] == 3
+    #     annotations = [
+    #         {
+    #             "bbox": y[id_instance].gt_boxes.tensor[0].tolist(),
+    #             "bbox_mode": BoxMode.XYXY_ABS,
+    #             "category_id": class_labels[id_instance],
+    #             # "segmentation": y[id_instance].gt_masks,
+    #             "iscrowd": 0,
+    #         }
+    #         for id_instance in range(len(y))
+    #     ]
+    #     rgb_image = data["rgb"].data # type: ignore
+    #     assert rgb_image.shape[-1] == 3
 
-        instance_dict = {
-            "file_name": file_name,
-            "image_id": ind,
-            "rgb_image": rgb_image,
-            "height": y.image_size[0],
-            "width": y.image_size[1],
-            "annotations": annotations,
-            "episode": episode,
-        }
+    #     instance_dict = {
+    #         "file_name": file_name,
+    #         "image_id": ind,
+    #         "rgb_image": rgb_image,
+    #         "height": y.image_size[0],
+    #         "width": y.image_size[1],
+    #         "annotations": annotations,
+    #         "episode": episode,
+    #     }
 
-        return instance_dict
+    #     return instance_dict
 
 
 class HabitatFullDataset(HabitatDataset):
@@ -271,108 +258,7 @@ class HabitatFullDataset(HabitatDataset):
 
 
     def __getitem__(self, idx) -> dict:
-        episode, step = self.inputs[self.index[idx]]
-
-        data = self.sampler.get_sample_multimodality(
-            episode, self.camera_id, self.modalities, step
-        )
-        rgb_image = data["rgb"].data # type: ignore
-        assert rgb_image.shape[-1] == 3
-
-
-        x = np.ascontiguousarray(rgb_image[:, :, ::-1])
-
-        depth = data["depth"].data # type: ignore
-        location = data["position"].get_T() # type: ignore
-        y = data["bbsgt"].get_bbs_as_gt() # type: ignore
-
-        rgbd = np.concatenate((x, depth), -1)
-        transformed_rgbd, y = self._transform_batch(rgbd, y)
-        x = transformed_rgbd[:3]
-        depth = transformed_rgbd[-1].unsqueeze(0)
-        size = x.shape[1:]
-
-        return {
-            "image": x,
-            "rgb_image": rgb_image,
-            "depth": depth,
-            "location": torch.tensor(location),
-            "instances": y,
-            "width": size[1],
-            "height": size[0],
-            "info": f"episode_{episode}_step_{step}",
-            "episode": episode,
-        }
-
-
-class HabitatSequentialDataset(HabitatDataset):
-    def __init__(
-        self, dataset_path, consecutive_obs=4, subsample_factor=2, *args, **kwargs
-    ) -> None:
-        sampler = SampleLoader(dataset_path)
-        (
-            self.episode_list,
-            self.steps_list,
-        ) = sampler.get_episode_and_steps_dense_list()
-
-        num_sample = len(self.steps_list) // consecutive_obs * subsample_factor
-        episode_list = np.resize(self.episode_list, (num_sample, consecutive_obs))
-        steps_list = np.resize(self.steps_list, (num_sample, consecutive_obs))
-
-        inputs = np.array([x for x in zip(episode_list, steps_list)])
-
-        self.window_size = consecutive_obs
-        modalities = ["rgb", "bbsgt"]
-
-        super().__init__(
-            dataset_path=dataset_path,
-            sampler=sampler,
-            inputs=inputs,
-            modalities=modalities,
-            *args,
-            **kwargs,
-        )
-        self.subsample_factor = subsample_factor
-
-    def __getitem__(self, idx) -> list[dict]:
-        result = []
-        episodes, steps = self.inputs[self.index[idx]]
-        length_mask = len(episodes)
-        sub_randomized_mask = np.random.choice(
-            range(length_mask), length_mask // self.subsample_factor
-        )
-        for index in sub_randomized_mask:
-            episode = episodes[index]
-            step = steps[index]
-
-            data = self.sampler.get_sample_multimodality(
-                episode, self.camera_id, self.modalities, step
-            )
-
-            rgb_image = data["rgb"].data # type: ignore
-            assert rgb_image.shape[-1] == 3
-
-    
-
-            x = np.ascontiguousarray(rgb_image[:, :, ::-1])
-            y = data["bbsgt"].get_bbs_as_gt() # type: ignore
-
-            x, y = self._transform_batch(x, y)
-
-            size = x.shape[1:]
-            result.append(
-                {
-                    "image": x,
-                    "rgb_image": rgb_image,
-                    "instances": y,
-                    "width": size[1],
-                    "height": size[0],
-                    "episode": episode,
-                    "info": f"episode_{episode}_step_{step}",
-                }
-            )
-        return result
-
+        raise NotImplementedError
 
 class HabitatFullSequentialDataset(HabitatDataset):
     def __init__(
@@ -423,39 +309,35 @@ class HabitatFullSequentialDataset(HabitatDataset):
         sub_randomized_mask = np.random.choice(
             range(length_mask), length_mask // self.subsample_factor, replace=False
         )
-        for index in sub_randomized_mask:
 
-            episode = episodes[index]
-            step = steps[index]
+        for index in sub_randomized_mask:
+            episode, step = episodes[index], steps[index]
 
             data = self.sampler.get_sample_multimodality(
                 episode, self.camera_id, self.modalities, step
             )
-
-            rgb_image = data["rgb"].data # type: ignore
+            image_path = self.sampler.paths[episode][self.camera_id]["rgb"][step]
+            rgb_image = data["rgb"].data.copy() # type: ignore
             assert rgb_image.shape[-1] == 3
 
-    
+            image = np.ascontiguousarray(rgb_image[:, :, ::-1]) if self.input_format == "BGR" else rgb_image
 
-            x = np.ascontiguousarray(rgb_image[:, :, ::-1])
-            y = data["bbsgt"].get_bbs_as_gt()  # type: ignore
+            gt_instances = data["bbsgt"].get_bbs_as_gt() # type: ignore
 
-            x, y = self._transform_batch(x, y)
+            transformed_image, transformed_gt_instances = transform_batch(image, gt_instances, self.aug)
 
-            size = x.shape[1:]
+            result.append({
+                "episode": episode,
+                "image": transformed_image,
+                "rgb_image": rgb_image,
+                "image_path": image_path,
+                "episode": episode,
+                "image_id": idx,
+                "instances": transformed_gt_instances,
+                "width": transformed_image.shape[2],
+                "height": transformed_image.shape[1],
+            })
 
-            result.append(
-                {
-                    "image_id": int(idx * self.window_size + index),
-                    "rgb_image": rgb_image,
-                    "image": x,
-                    "instances": y,
-                    "width": size[1],
-                    "height": size[0],
-                    "episode": torch.tensor(episode),
-                    "step": torch.tensor(step),
-                }
-            )
         return result
 
     def get_coco_item_dict(self, index) -> dict:
@@ -496,59 +378,3 @@ class HabitatFullSequentialDataset(HabitatDataset):
         }
 
         return instance_dict
-
-
-def _transform_batch_with_logits(transform, x, y) -> tuple[torch.Tensor, Instances]:
-    if isinstance(transform, ToTensorV2):
-        out = transform(image=x)
-        x = out["image"]
-
-    else:
-        transformed = transform(
-            image=x,
-            bboxes=y.gt_boxes.tensor.numpy(),
-            class_labels=y.gt_classes,
-            masks=[m for m in y.gt_masks.numpy().astype(np.uint8)],
-            infos=y.infos,
-            gt_logits=[l for l in y.gt_logits],
-        )
-
-        transformed_image = transformed["image"]
-        transformed_bboxes = transformed["bboxes"]
-
-        transformed_class_labels = transformed["class_labels"]
-        transformed_infos = transformed["infos"]
-        transformed_mask = transformed["masks"]
-
-        transformed_gt_logits = transformed["gt_logits"]
-        size = transformed_image.shape[1:]
-
-        x = transformed_image
-
-        min_area = -1  # transform._to_dict()["bbox_params"]["min_area"]
-
-        if len(transformed_class_labels) > 0:
-            semantic_masks_boxes = [cv2.boundingRect(x.numpy() if not isinstance(x, np.ndarray) else x) for x in transformed_mask]
-            semantic_masks_area = [x[-1] * x[-2] for x in semantic_masks_boxes]
-            mask =  [m for m, area in zip(transformed_mask, semantic_masks_area) if area > min_area]
-            gt_masks = BitMasks(torch.stack(mask))
-
-            y = Instances(
-                image_size=size,
-                gt_boxes=Boxes(transformed_bboxes),
-                gt_classes=torch.stack(transformed_class_labels),
-                gt_logits=torch.stack(transformed_gt_logits),
-                gt_masks=gt_masks,
-                infos=transformed_infos,
-            )
-        else:
-            y = Instances(
-                gt_boxes=Boxes(torch.Tensor()),
-                image_size=size,
-                gt_masks=BitMasks(torch.Tensor(size=[0, *size])),
-                gt_classes=torch.Tensor(),
-                gt_logits=torch.Tensor(),
-                infos=[],
-            )
-
-    return x, y

@@ -1,7 +1,8 @@
-
 from fnmatch import fnmatch
 import logging
 from copy import copy, deepcopy
+import os
+from sys import prefix
 import albumentations as A
 import habitat # type: ignore
 import cv2
@@ -15,8 +16,7 @@ from torchmetrics.detection.mean_ap import MeanAveragePrecision as MAP
 
 import wandb
 
-from common.utils.plot_utils import plot_segmentation_gt, plot_segmentation_pred, plot_segmentation
-from common.utils.dataset_utils import _transform_batch_with_logits
+from common.utils.plot_utils import plot_segmentation_gt, plot_segmentation_pred, plot_segmentation, Image
 
 from habitat_learn_od.utils.train_helpers import mixup_batch
 from habitat_learn_od.utils.two_stage_models import TwoStageModel
@@ -30,6 +30,7 @@ from habitat_learn_od.utils.pseudo_labeler import (
 )
 
 log = logging.getLogger(__name__)
+LOG_FREQ = 32
 
 class TeacherStudent(pl.LightningModule):
     pseudo_labeler: PseudoLabeler
@@ -76,10 +77,6 @@ class TeacherStudent(pl.LightningModule):
             **kwargs
         )
         self.max_steps = None
-        if freeze_teacher:
-            self.pseudo_labeler.freeze()
-        else:
-            self.pseudo_labeler.train()
 
         self.freeze_teacher = freeze_teacher
 
@@ -98,7 +95,6 @@ class TeacherStudent(pl.LightningModule):
         return optimizer
     
     def training_step(self, batch, batch_idx) -> Tensor:
-        self.online_network.train()
         results, losses, box_features, proposals = self.online_network.model_forward(batch)
 
         weighted_losses = {}
@@ -116,9 +112,6 @@ class TeacherStudent(pl.LightningModule):
 
             if weight is None:
                 raise ValueError(f"Loss weight for {name} not found in loss_weights dictionary. {self.loss_weights}")
-            
-            # if weight == 0.0:
-            #     continue
             
             weighted_losses[name] = value * weight
 
@@ -142,7 +135,7 @@ class TeacherStudent(pl.LightningModule):
             batch_size=self.batch_size,
         )
 
-        if ((batch_idx) % (32*self.batch_size) == 0):
+        if ((batch_idx) % (LOG_FREQ*self.batch_size) == 0):
             self.log_batch(batch, batch_idx, results, prefix="train")
         return loss
 
@@ -170,10 +163,10 @@ class TeacherStudent(pl.LightningModule):
 
     def online_validation_step(self, batch, batch_idx) -> None:
         self.online_network.eval()
-        # results = self.online_network.model_inference(batch)
-        results = self.online_network.model_inference_from_gt_boxes(batch)
+        with torch.no_grad():
+            results = self.online_network.model_inference(batch)
 
-        if ((batch_idx) % (32*self.batch_size) == 0):
+        if ((batch_idx) % (LOG_FREQ*self.batch_size) == 0):
             self.log_batch(batch, batch_idx, results, prefix="val_online")
 
         self._val_map(batch, results)
@@ -186,6 +179,9 @@ class TeacherStudent(pl.LightningModule):
         map_per_class = results["map_per_class"].cpu().numpy().tolist()
         
         for k in results.keys():
+            if k.startswith("mar"):
+                continue
+
             if results[k].numel() != 1 and k != "map_per_class":
                 continue
 
@@ -195,14 +191,13 @@ class TeacherStudent(pl.LightningModule):
                         continue
                     class_name = metadata.thing_classes[class_id]
                     self.log(
-                        f"val_classmap_{class_name}",
+                        f"CLASSMAP_val_{class_name}",
                         map_value,
                         on_step=False,
                         on_epoch=True,
                         sync_dist=True,
                         batch_size=self.batch_size,
                     )
-                    
                 continue
             
             self.log(
@@ -233,8 +228,8 @@ class TeacherStudent(pl.LightningModule):
                 
             gt_instances = deepcopy(x['instances'])
 
-            rgb = x["rgb_image"]
-            array = np.array(plot_segmentation(
+            rgb = x['image'].permute(1, 2, 0).cpu().numpy().astype(np.uint8)
+            im = plot_segmentation(
                 rgb, 
                 gt_instances=gt_instances, 
                 pred_instances=pred_instances, 
@@ -242,52 +237,65 @@ class TeacherStudent(pl.LightningModule):
                 colors=metadata.thing_colors,
                 scale=1.0,
                 title=f"P {len(pred_instances) if pred_instances is not None else 0}  GT {len(gt_instances) }"
-            ))
+            )
+            img_name = x["image_path"].split("/")[-1].split(".")[0] + ".png"
+            self.log_image(im, prefix=prefix, img_name=img_name,save_only = True)
 
-            wandb_img = wandb.Image(array, caption=f"{prefix} - Batch {batch_idx} - Image {idx}")
+            im = Image.fromarray(rgb)
+            img_name = x["image_path"].split("/")[-1].split(".")[0] + ".png"
+            self.log_image(im, prefix=prefix + "_rgb", img_name=img_name, save_only = True)
 
+            
+    def log_image(
+        self,
+        im: Image.Image,
+        prefix: str,
+        img_name: str = None,
+        save_only: bool = False
+    ) -> None:
+        """Log an image to wandb."""
+        if not os.path.exists("datadump"):
+            os.makedirs("datadump"
+    )
+        os.makedirs(f"datadump/{prefix}", exist_ok=True)
+        im.save(f"datadump/{prefix}/{img_name}")
+
+        if not save_only:
+            wandb_img = wandb.Image(np.array(im), caption=img_name)
             self.trainer.loggers[0].log_metrics(
                 {
-                    f"{prefix}-batch-{batch_idx}-img-{idx}": wandb_img, # type: ignore
+                    f"{prefix}-batch-{batch_idx}-img-{image_idx}": wandb_img, # type: ignore
                     "trainer/global_step": self.trainer.global_step,
                 }
             )
+            
+# class OnlineTeacherStudent(TeacherStudent):
+#     def __init__(self, *args, **kwargs) -> None:
+#         super().__init__(use_teacher=True, *args, **kwargs)
 
+#     def training_step(self, batched_inputs, batch_idx) -> Tensor:
+#         batch = []
+#         if isinstance(batched_inputs[0], list):  # assuming this is not COCO
+#             pseudo_batch = batched_inputs[0]
+#         else:
+#             pseudo_batch = batched_inputs
+#         outs = [self.pseudo_labeler.forward(pseudo_batch)]
+#         pseudo_labels = self.pseudo_labeler.get_pseudo_labels(outs)
 
-class OnlineTeacherStudent(TeacherStudent):
-    transform = None
+#         # Apply augmentation only for student training_step
+#         for b, pseudo in zip(pseudo_batch, pseudo_labels):
+#             device = b['image'].device
+#             x, y = _transform_batch_with_logits(
+#                 self.transform, b['image'].permute(1, 2, 0).cpu().numpy(), pseudo
+#             )
+#             x.to(device)
+#             b['image'] = x
+#             b['instances'] = y
 
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(use_teacher=True, *args, **kwargs)
+#         for i in batched_inputs:
+#             if isinstance(i, list):
+#                 batch += i
+#             else:
+#                 batch.append(i)
 
-    def training_step(self, batched_inputs, batch_idx) -> Tensor:
-        batch = []
-        if isinstance(batched_inputs[0], list):  # assuming this is not COCO
-            pseudo_batch = batched_inputs[0]
-        else:
-            pseudo_batch = batched_inputs
-        outs = [self.pseudo_labeler.forward(pseudo_batch)]
-        pseudo_labels = self.pseudo_labeler.get_pseudo_labels(outs)
-
-        # Apply augmentation only for student training_step
-        for b, pseudo in zip(pseudo_batch, pseudo_labels):
-            device = b['image'].device
-            x, y = _transform_batch_with_logits(
-                self.transform, b['image'].permute(1, 2, 0).cpu().numpy(), pseudo
-            )
-            x.to(device)
-            b['image'] = x
-            b['instances'] = y
-
-        for i in batched_inputs:
-            if isinstance(i, list):
-                batch += i
-            else:
-                batch.append(i)
-
-        if not self.freeze_teacher:
-            self.pseudo_labeler.train()
-        else:
-            self.pseudo_labeler.eval()
-
-        return super().training_step(batch, batch_idx)
+#         return super().training_step(batch, batch_idx)

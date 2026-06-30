@@ -2,7 +2,7 @@ import os
 import json
 import pandas as pd
 import numpy as np
-from common.env_utils.vocab_constants import VOCABULARIES, CLASS_LABELS_HSSD40, CLASS_LABELS_HSSD500
+from common.env_utils.vocab_constants import VOCABULARIES
 
 HABITAT_DATA = os.environ.get("HABITAT_DATA")
 
@@ -44,7 +44,7 @@ class ObjectSemanticsHSSD:
         annotations = load_hssd_object_annotations()
 
         self.source_mapping_objname_class = annotations["mapping_objname_wnsynsetkey"]
-        if vocab_name not in VOCABULARIES.keys():
+        if vocab_name not in list(VOCABULARIES.keys()):
             raise ValueError(f"Vocabulary {vocab_name} not recognized. Must be one of {VOCABULARIES.keys()}")
         
         target_class_labels, mapping_to_hssd500_synset, colors = VOCABULARIES[vocab_name]
@@ -54,7 +54,7 @@ class ObjectSemanticsHSSD:
 
         if vocab_name == "HSSD500":
             self.mapping_objname_class = {o: n for o, n in annotations["mapping_objname_wnsynsetkey"].items() if n != "undefined"}
-        elif vocab_name == "HSSD40":
+        elif vocab_name == "hssd80":
             self.mapping_objname_class = {o: n for o, n in annotations["mapping_objname_category"].items() if n != "undefined"}
         else:
             self.mapping_objname_class = {}

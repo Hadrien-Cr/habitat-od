@@ -3,18 +3,7 @@ import torch
 from pathlib import Path
 import numpy as np
 
-DETIC_ROOT = str(Path(__file__).parent / "../../third_party/Detic/")
-
-sys.path.insert(
-    0, DETIC_ROOT
-)
-sys.path.insert(
-    0, str(Path(DETIC_ROOT) / "third_party/CenterNet2/")
-)
-
-from third_party.Detic.detic.modeling.text.text_encoder import (  # noqa:E402
-    build_text_encoder,
-)
+from common.vision.detic import build_text_encoder  # type: ignore
 
 def cosine_similarity(vec1, vec2):  
     return torch.dot(vec1, vec2) / (torch.norm(vec1) * torch.norm(vec2))
