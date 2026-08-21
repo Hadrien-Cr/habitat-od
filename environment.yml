@@ -26,7 +26,7 @@ dependencies:
   - habitat-sim=0.3.3
   - withbullet
   - pip: 
-    - numpy<2.0 # certain deprecated operations were used in other deps
+    - numpy==1.26.4 # certain deprecated operations were used in other deps
     - setuptools==69.5.1
     - omegaconf
     - tqdm
@@ -57,3 +57,8 @@ dependencies:
     - albumentations
     - connected-components-3d
     - pyntcloud
+    - transformers==4.36.2
+    - addict
+    - yapf
+    - timm
+    - supervision

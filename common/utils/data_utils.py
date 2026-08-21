@@ -37,4 +37,11 @@ def _save_data(dataset_path: str, episode_id: int, modality: str, camera_id: int
         path,
         data,
     )
+    if modality == "rgb":
+        # Save a copy of the RGB image as a PNG for easier viewing
+        import cv2
+        cv2.imwrite(
+            f"{dataset_path}/episode_{episode_id:06d}_modality_{modality}_step_{timestamp:05d}_id_{camera_id}.png",
+            data[:, :, 0:3][:, :, ::-1],
+        )
     return path

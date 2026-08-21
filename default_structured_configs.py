@@ -402,7 +402,9 @@ class ObjectDetectorGTSensorConfig(LabSensorConfig):
     type: str = "ObjectDetectorGTSensor"
     env_name: str = "HSSD-HAB/NYU40"
     area_thr: float = 1000.0
-    filter_occluded: bool = True
+    filter_low_visibility: bool = True
+    min_visibility_fraction: float = 0.3
+    filter_out_classes: List[str] = field(default_factory=list)
 
 @dataclass
 class HumanoidDetectorSensorConfig(LabSensorConfig):

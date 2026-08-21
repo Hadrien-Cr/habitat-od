@@ -41,3 +41,9 @@ unzip $HABITAT_DATA/datasets/objectnav/hssd-hab/objectnav_hssd-hab_v0.2.5.zip -d
 mkdir third_party/Detic/models
 wget --no-check-certificate https://dl.fbaipublicfiles.com/detic/Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.pth -P third_party/Detic/models/
 ```
+
+```
+# Download Gibson-Semantic scene data & ObjectNav Dataset
+wget  https://drive.google.com/file/d/1X08U929c3GFO51EgMAcNqIoVhp52EmsN/view -d gibson_data
+cp gibson_data/scene_datasets/gibson_semantic/ $HABITAT_DATA/datasets/objectnav/
+```

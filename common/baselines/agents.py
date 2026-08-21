@@ -103,7 +103,7 @@ class Baseline(BaseRLTrainer):
         collected_observations_paths = []
         
         nb_episodes: int = self.envs.number_of_episodes[0] # type: ignore
-        pbar = tqdm(total=nb_episodes * steps_per_episode * self.envs.num_envs, desc="Generating data")
+        pbar = tqdm(total=nb_episodes * steps_per_episode * self.envs.num_envs, desc="Generating data", mininterval=50.0)
     
         for _ in range(nb_episodes * steps_per_episode): 
             for idx in range(self.envs.num_envs):

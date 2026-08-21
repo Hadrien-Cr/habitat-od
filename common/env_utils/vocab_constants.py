@@ -1,5 +1,6 @@
 import csv
 import os
+from typing import Optional
 import numpy as np
 import pandas as pd
 from detectron2.data import MetadataCatalog
@@ -74,109 +75,72 @@ def make_colors(num, seed=1, ctype=1) -> list[tuple[int,int,int]]:
         colors.append(hex_to_rgb(random_unique_color(colors,ctype=ctype,rng_gen=rng_gen)))
     return colors
 
-
-CLASS_LABELS_HSSD500 = [
-    "air_conditioner", "air_hockey_table", "alarm_clock", 
-    "aquarium", "armchair", "armoire", "armrest", "ashcan", "ashtray", 
-    "audio_system", "bag", "balcony", "ball", "ball_chair", "bandsaw", 
-    "bar", "bar_stool", "barbecue", "barrow", "base_cabinet", 
-    "basket", "bath_mat", "bath_towel", "bathrobe", "bathroom_scale", 
-    "bathtub", "beam", "beanbag_chair", "bed", "bedclothes", "bench", "bench_grinder", 
-    "bi-fold_door", "bicycle", "bicycle_rack", "bidet", "binder", "birdcage", 
-    "birdhouse", "blackboard", "blanket", "blanket_chest", 
-    "blender", "board_game", "bolster", "book", "bookcase", "bookend", 
-    "bottle", "bottle_opener", "bouquet", "bowl", "bread-bin", "bridge", 
-    "broom", "bucket", "buffet", "bulletin_board", "bunk_bed", "butter_dish", 
-    "cabin", "cabinet", "caddy", "cafeteria_tray", "cage", "cake", "cake_stand", 
-    "camcorder", "camera", "camp_chair", "candelabrum", "candle", "candlestick", 
-    "canister", "car", "carafe", "casserole", "cat", "ceiling_fan", 
-    "ceiling_lamp", "cellular_telephone", "chain_saw", "chair", 
-    "chaise_longue", "chandelier", "chess", "chest", "chest_of_drawers", 
-    "chicken", "china_cabinet", "chopping_board", "christmas_stocking", 
-    "christmas_tree", "clock", "clothes_dryer", "clothes_tree", 
-    "clothing_rack", "club_chair", "coaster", "coatrack", "cocktail_shaker", 
-    "coffee_maker", "coffee_table", "coffeepot", "colander", 
-    "computer_screen", "computer_work_area", 
-    "conference_table", "console_table", "cooker", "cookie_sheet", 
-    "countertop", "cradle", "crate", "credenza", "crib", "cruet", "cup", "curtain", 
-    "curtain_rod", "cushion", "dartboard", "darts", "daybed", "desk", "desk_calendar", 
-    "desk_organizer", "dining_area", "dining_table", 
-    "dish_rack", "dishwasher", "dog", "dollhouse", "door", "doorbell", 
-    "doormat", "double_bed", "double_door", "drawer", "drawer_unit", 
-    "dresser", "dressing_table", "drum", "drum_set", "dryer", "drying_rack", 
-    "dvd_player", "eames_chair", "earphone", "easel", "easy_chair", 
-    "electric_fan", "electric_frying_pan", 
-    "elevator", "elevator_door", "end_table", "espresso_maker", 
-    "exercise_bike", "fan", "faucet", "fence", "file", "fire_extinguisher", 
-    "firepit", "fireplace", "flat_bench", "floor_lamp", "floor_mirror", 
-    "flower", "flower_in_vase", "folding_chair", "foosball_table", 
-    "football", "footstool", "frying_pan", "game_table", "garage_door", 
-    "gate", "gazebo", "gift_box", "glass", "globe", "grab_bar", "grandfather_clock", 
-    "greenhouse", "greeting_card", "guitar", "gym_equipment", 
-    "hall_tree", "hammock", "hamper", "hand_glass", "handcart", "handle", 
-    "hanging_cabinet", "hatbox", "headboard", "heating_system", 
-    "hedge", "highchair", "hobby", "hook", "horse", "hot_tub", "hourglass", 
-    "interior_barn_door", "ironing_board", "jar", "jewelry_box", 
-    "jug", "kettle", "king_bed", "kitchen_appliance", 
-    "kitchen_cabinet", "kitchen_island", "kitchen_scale", 
-    "kitchen_timer", "knife", "knocker", "l-shaped_couch", 
-    "ladder", "ladder_bookcase", "lamp", "lantern", "laptop", "laundry_bag", 
-    "lawn_mower", "lectern", "letter", "loudspeaker", "luggage_rack", 
-    "magazine", "magazine_rack", "magnet", "mailbox", "makeup_mirror", 
-    "mantel", "mantel_clock", "mat", "mattress", "measuring_cup", 
-    "media_player", "medicine_chest", "microphone", "microwave", 
-    "mirror", "mixer", "mixing_bowl", "mobile", "monitor", "motorcycle", 
-    "mousepad", "music_stand", "napkin", "net", "nightstand", "notebook", 
-    "notepad", "ottoman", "oven", "overnighter", "pan", "paper_organizer", 
-    "paper_towel", "paperweight", "parrot", "pathway_light", 
-    "pedestal_sink", "pendant_lamp", "penguin", "pepper_mill", 
-    "person", "pestle", "pet_bed", "pet_bowl", "pet_house", "piano", "picnic_rug", 
-    "picnic_table", "picture_frame", "piggy_bank", "pinball_machine", 
-    "pitcher", "place_mat", "place_setting", "plant", "plant_stand", 
-    "planter", "plate", "play_area", "playhouse", "playpen", "plaything", 
-    "plush_toy", "pond", "pool_table", "postbox", "poster", "potholder", 
-    "potted_plant", "power_saw", "printer", "projector", "punch_bowl", 
-    "punching_bag", "purse", "quilt", "rack", "radiator", "radio_receiver", 
-    "railing", "range_hood", "reamer", "recliner", "record_player", 
-    "refrigerator", "revolving_door", "roaster", "rock", "rocking_chair", 
-    "roof", "room_divider", "round_daybed", "rug", "safe", "salver", "saucepan", 
-    "sauna", "scooter", "screen", "sculpture", "seat_cushion", 
-    "serving_cart", "sewing_machine", "shed", "sheep", "shelving", 
-    "shoe", "shoe_rack", "shoebox", "shopping_bag", "shot_glass", 
-    "shower_caddy", "shower_curtain", "shower_door", "shower_faucet", 
-    "shower_pan", "shower_stall", "showerhead", "side_table", 
-    "single_bed", "sink", "sink_cabinet", "sink_stand", "skateboard", 
-    "slide", "sliding_door", "smoke_detector", "soap", "soap_dish", 
-    "soap_dispenser", "soccer_ball", "socket", "soda_can", "sofa", "spade", 
-    "spectacles", "spice_holder", "spice_rack", "spicemill", 
-    "spoon", "stairway", "step_ladder", "step_stool", "stool", "storage_bench", 
-    "storage_box", "stove", "straight_chair", "strainer", "streetlight", 
-    "string_lights", "subwoofer", "sugar_bowl", "surfboard", 
-    "swimming_pool", "swing", "swing_bench", "swing_chair", 
-    "switch", "swivel_chair", "table", "table-tennis_table", 
-    "table_lamp", "table_mirror", "table_runner", "tablet_computer", 
-    "tapestry", "teapot", "telephone", "telescope", "television_receiver", 
-    "tent", "thermos", "throw", "throw_pillow", "timer", "tissue_box", 
-    "toaster", "toaster_oven", "toilet", "toilet_bag", "toilet_brush", 
-    "toilet_flush_plate", "toilet_paper_holder", 
-    "toilet_tissue", "toiletry", "towel", "towel_rack", "towel_rail", 
-    "towel_ring", "toy_box", "track_lighting", "trailer", "trampoline", 
-    "tray", "treadmill", "tree", "trellis", "trunk", "tumbler", "tureen", "tv_stand", 
-    "umbrella", "umbrella_stand", "urinal", "utensil", 
-    "vacuum", "valve", "vase", "video_game_console", 
-    "videodisk", "wall_art", "wall_calendar", "wall_clock", 
-    "wall_decor", "wall_hook", "wall_hook_rack", "wall_lamp", 
-    "wall_mirror", "wall_organizer", "wall_panel", "wall_shelf", 
-    "wall_shelving", "wall_sign", "wall_socket", "wall_sticker", 
-    "wall_unit", "wardrobe", "washbasin", "washer", "water_scooter", 
-    "watering_can", "weight", "whiteboard", "wind_chime", "window", 
-    "window_blind", "window_curtain", "window_shade", 
-    "wine_bottle", "wine_bucket", "wine_rack", "wineglass", 
-    "wok", "workbench", "wreath",
+# HSSD-HAB's own native per-object category scheme (hssd-hab_semantic_lexicon.json)
+CLASS_LABELS_HSSD400 = [
+    "unknown", "air_conditioner", "air_duct", "animal", "appliance", "aquarium", "arcade_game",
+    "art_frame", "art_stand", "awning", "baby_changing_station", "bag", "balcony",
+    "balcony_railing", "bar", "bar_cabinet", "barbecue", "barrel", "basin", "basket",
+    "bath_sink", "bathrobe", "bathroom_accessory", "bathroom_shelf", "bathroom_utensil",
+    "bathtub", "beam", "bed", "bed_small", "bed_table", "bedframe", "bell", "bench", "bicycle",
+    "bidet", "bin", "binder", "blanket", "blinds", "board", "boiler", "book", "book_rack",
+    "bottle", "bottles_of_wine", "bowl", "box", "box_of_fruit", "box_of_tissue", "breadbin",
+    "bridge", "broom", "brush", "bucket", "bush", "bust", "button", "cabinet", "cake_stand",
+    "calendar", "camera", "can", "candle", "car", "carpet", "carpet_roll", "cart", "case",
+    "casket", "cat", "ceiling_fan", "chair_stand", "chaise", "chandelier", "chest", "chimney",
+    "christmas_tree", "clock", "cloth", "clothes", "clothes_hanger", "clothes_hanger_rod",
+    "clothes_rack", "clothing", "coat_hanger", "coffee_machine", "coffee_maker", "computer",
+    "computer_desk", "computer_equipment", "container", "cooker", "cooker_unit", "cosmetic",
+    "couch", "counter", "cover", "credenza", "crib", "cup", "curtain", "curtain_rail",
+    "curtain_rod", "dartboard", "decor", "decoration", "decorative_bowl", "decorative_plate",
+    "decorative_quilt", "desk", "desk_and_chairs", "desk_clutter", "dinner_table", "dinnerware",
+    "dishwasher", "display_cabinet", "display_table", "dj_table", "dog", "dog_bed", "door",
+    "doormat", "drawer", "drawer_desk", "dresser", "dressing_table", "drinkware", "drum",
+    "dumbbell", "electric_outlet", "exercise_equipment", "fan", "fence", "fencing",
+    "file_cabinet", "fire_dish", "fire_extinguisher", "fire_pit", "fireplace",
+    "fireplace_utensil", "fireplace_wall", "firewood_holder", "floor", "floor__outside",
+    "floor_mat", "flower", "flower_stand", "flowerbed", "flowerpot", "food", "food_tray",
+    "fountain", "frame", "freezer", "fridge", "fruit", "fruit_bowl", "furnace", "garage_door",
+    "garden_bower", "gate", "gift", "globe", "grill", "guitar", "gym_equipment", "hammock",
+    "hand_wash", "handle", "hanger", "hanging_clothes", "hat", "heater", "hedge", "hose",
+    "ironing_board", "jacuzzi", "jar", "jewelry_box", "jug", "kettle", "kitchen_appliance",
+    "kitchen_counter", "kitchen_island", "kitchen_lower_cabinet", "kitchen_shelf",
+    "kitchen_utensil", "kitchen_wall", "knife", "knife_holder", "knob", "ladder", "lamp",
+    "lamp_stand", "lamp_table", "laptop", "lattice", "laundry_basket", "led_tv", "light",
+    "light_switch", "liquid_soap", "locker", "machine", "magazine", "mailbox", "media_console",
+    "microwave", "mirror", "mixer", "monitor", "mortar", "motorcycle", "musical_instrument",
+    "newspaper", "newspaper_basket", "nightstand", "object", "object__outside",
+    "office_utensil", "oil_lamp", "oven", "oven_vent", "painting", "painting_frame", "pan",
+    "panel", "panel_screen", "paper_towel_dispenser", "partition", "perfume", "person", "phone",
+    "photo", "photo_mount", "piano", "picture", "picture_frame", "pillar", "pillow",
+    "ping_pong_table", "pipe", "pitcher", "plant", "plant_art", "plate", "platform", "platter",
+    "playground", "playground_element", "plush_toy", "pool", "pool_table", "post", "pot",
+    "printer", "projector", "projector_screen", "rack", "radiator", "radio", "rail", "railing",
+    "range_hood", "record_player", "rock", "rocking_horse", "rod", "rolling_cart", "roof",
+    "safe", "sauna_heater", "scale", "screen", "sculpture", "seat", "security_camera",
+    "semi_chair", "set_of_armchairs", "sewing_machine", "shack", "shampoo", "shelf",
+    "shelf_cabinet", "shirt", "shoe", "shoes", "shovel", "shower", "shower_door",
+    "shower_glass", "shower_hose", "shower_mat", "shower_soap_shelf", "shower_tap",
+    "shower_wall", "showerhead", "sink", "sink_basin", "sink_cabinet", "sitting_area",
+    "skateboard", "skirting_board", "slide", "sliding_door", "smoke_alarm", "soap",
+    "soap_bottle", "soap_dish", "soap_dispenser", "soap_dispenser_shelf_in_shower", "soapbox",
+    "socket", "sofa_set", "speaker", "spice_rack", "stack_of_papers", "stair_step", "staircase",
+    "stairs", "stand", "statue", "step", "stone", "stool", "storage", "storage_box",
+    "storage_cabinet", "storage_space", "stove", "stovetop", "stuffed_animal", "sunbed",
+    "swimming_pool", "swing", "switch", "table", "tablecloth", "tablet", "tap", "teapot",
+    "telescope", "tent", "thermostat", "throw_blanket", "tile", "tissue", "tissue_box",
+    "toaster", "toilet", "toilet_bin", "toilet_brush", "toilet_brush_holder", "toilet_cleaner",
+    "toilet_paper", "toilet_sink", "toilet_stall", "toiletry", "tool", "towel", "towel_basket",
+    "towel_holder", "towel_rack", "towel_ring", "toy", "tray", "treadmill", "tree", "tripod",
+    "tv", "tv_stand", "umbrella", "urinal", "utensil", "vacuum_cleaner", "vanity", "vase",
+    "vent", "ventilation_hood", "wall", "wall__outside", "wall_board", "wall_cubby",
+    "wall_desk", "wall_panel", "wardrobe", "wash_cabinet", "washbasin", "washer_dryer",
+    "washing_machine_and_dryer", "water_dispenser", "watering_can", "weight", "wheelbarrow",
+    "window", "window_frame", "window_shade", "window_shutter", "wine_cabinet", "wine_rack",
+    "wood", "wooden_house", "workout_bike", "workstation", "wreath", "yard",
 ]
 
-CLASS_LABELS_hssd80 = [
-    "alarm_clock", "animal", "bathtub", "bed", "bench", "bicycle", "blender", "book", 
+CLASS_LABELS_HSSD80 = [
+    "alarm_clock", "animal", "bathtub", "bed", "bench", "bicycle", "blender", "book",
     "bottle", "bowl", "breadbin", "cabinet", "camera", "candle", "car", "carpet", 
     "ceiling_lamp", "chair", "chest_of_drawers", "clothing", "coffee_maker", "colander", 
     "couch", "counter", "curtain", "cushion", "dishwasher", "door", "drinkware", "earphone", 
@@ -263,18 +227,29 @@ CLASS_LABELS_COCO80 = [
     "tv", "laptop", "mouse", "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", 
     "sink", "refrigerator", "book", "clock", "vase", "scissors", "teddy bear", "hair drier", 
     "toothbrush"
-] 
+]
 
 def generate_mappings(source_vocab: list[str], target_vocab: list[str]):
-    from common.vision.clip import get_clip_embeddings, cosine_similarity, build_text_encoder
+    import sys
     import torch
+
+    detic_root = os.path.join(os.environ["BASE_DIR"], "third_party/Detic")
+    sys.path.insert(0, detic_root)
+    from detic.modeling.text.text_encoder import build_text_encoder  # type: ignore
+
+    def get_clip_embeddings(texts: list[str], text_encoder) -> torch.Tensor:
+        return text_encoder(texts).detach().permute(1, 0).contiguous().cpu()
+
+    def cosine_similarity(vec1, vec2):
+        return torch.dot(vec1, vec2) / (torch.norm(vec1) * torch.norm(vec2))
+
     text_encoder = build_text_encoder(pretrain=True)
     text_encoder.eval()
 
     prompts = ["a {} can be seen"]
 
     def ensemble_embeddings(vocab):
-        all_embs = [get_clip_embeddings([prompt.format(c.replace("_", " ")) for c in vocab], text_encoder=text_encoder).permute(1, 0) for prompt in prompts]
+        all_embs = [get_clip_embeddings([prompt.format(c.replace("_", " ")) for c in vocab], text_encoder).permute(1, 0) for prompt in prompts]
         stacked = torch.stack(all_embs, dim=0)
         emb = torch.mean(stacked, dim=0)
         return emb / torch.norm(emb, dim=1, keepdim=True)
@@ -304,41 +279,47 @@ def generate_mappings(source_vocab: list[str], target_vocab: list[str]):
     return mapping_source_to_target
 
 
-VOCAB_REGISTRY: list[tuple[str, list[str]]] = [
+HSSD400_VOCAB_REGISTRY: list[tuple[str, list[str]]] = [
+    ("HSSD80",     CLASS_LABELS_HSSD80),
     ("SCANNET200", CLASS_LABELS_SCANNET200),
     ("NYU40",      CLASS_LABELS_NYU40),
     ("MPCAT40",    CLASS_LABELS_MPCAT40),
     ("COCO80",     CLASS_LABELS_COCO80),
 ]
 BASE_DIR = os.environ["BASE_DIR"]
-OUTPUT_PATH = os.path.join(BASE_DIR, "common", "env_utils", "hssd500_cross_vocab_mapping.csv")
+HSSD400_MAPPING_OUTPUT_PATH = os.path.join(BASE_DIR, "common", "env_utils", "hssd400_cross_vocab_mapping.csv")
+THRESHOLD = 0.875
+AUTO_ACCEPT_THRESHOLD = 0.925  # >= this, the match is confident enough to auto-accept
 
-def create_cross_vocab_mapping_csv(output_path: str = OUTPUT_PATH) -> None:
+def create_hssd400_cross_vocab_mapping_csv(output_path: str = HSSD400_MAPPING_OUTPUT_PATH) -> None:
     mappings = {
-        target_name: generate_mappings(CLASS_LABELS_HSSD500, target_labels)
-        for target_name, target_labels in VOCAB_REGISTRY
+        target_name: generate_mappings(CLASS_LABELS_HSSD400, target_labels)
+        for target_name, target_labels in HSSD400_VOCAB_REGISTRY
     }
 
-    columns = ["HSSD500"] + [y for name, _ in VOCAB_REGISTRY for y in [name, name + "_proximity"]]
+    columns = ["HSSD400"] + [
+        y for name, _ in HSSD400_VOCAB_REGISTRY for y in [name, name + "_proximity", name + "_reject"]
+    ]
     header = {
-        "HSSD500": f"classes ({len(CLASS_LABELS_HSSD500)}): "
-                   + " | ".join(CLASS_LABELS_HSSD500),
-        **{
-            name: f"classes ({len(labels)}): " + " | ".join(labels)
-            for name, labels in VOCAB_REGISTRY
-        },
+        "HSSD400": f"classes ({len(CLASS_LABELS_HSSD400)}): " + " | ".join(CLASS_LABELS_HSSD400),
+        **{name: f"classes ({len(labels)}): " + " | ".join(labels) for name, labels in HSSD400_VOCAB_REGISTRY},
     }
 
     rows = []
-    for hssd_idx, hssd_label in enumerate(CLASS_LABELS_HSSD500):
-        row = {"HSSD500": hssd_label}
-        for target_name, target_labels in VOCAB_REGISTRY:
-            target_idx, target_prox = mappings[target_name][hssd_idx]
-            # row[target_name] = target_labels[target_idx]
-            row[target_name] = (
-                target_labels[target_idx]
-            )
+    for idx, label in enumerate(CLASS_LABELS_HSSD400):
+        row = {"HSSD400": label}
+        for target_name, target_labels in HSSD400_VOCAB_REGISTRY:
+            target_idx, target_prox = mappings[target_name][idx]
+            row[target_name] = target_labels[target_idx]
             row[target_name + "_proximity"] = str(round(target_prox, 4))
+            # True below THRESHOLD (clear reject), False above AUTO_ACCEPT_THRESHOLD
+            # (clear accept), blank in between - fill those in by hand one by one.
+            if target_prox < THRESHOLD:
+                row[target_name + "_reject"] = True
+            elif target_prox > AUTO_ACCEPT_THRESHOLD:
+                row[target_name + "_reject"] = False
+            else:
+                row[target_name + "_reject"] = ""
         rows.append(row)
 
     df = pd.concat(
@@ -349,26 +330,31 @@ def create_cross_vocab_mapping_csv(output_path: str = OUTPUT_PATH) -> None:
         ],
         ignore_index=True,
     )
-
     df.to_csv(output_path, index=False, quoting=csv.QUOTE_ALL)
 
-# create_cross_vocab_mapping_csv(OUTPUT_PATH)
-df = pd.read_csv(OUTPUT_PATH)
-df = df.iloc[2:].reset_index(drop=True)
+if __name__ == "__main__":
+    create_hssd400_cross_vocab_mapping_csv(HSSD400_MAPPING_OUTPUT_PATH)
+    
+_df = pd.read_csv(HSSD400_MAPPING_OUTPUT_PATH).iloc[2:].reset_index(drop=True)
 
-VOCABULARIES = {
-    "HSSD500": (CLASS_LABELS_HSSD500, None, make_colors(len(CLASS_LABELS_HSSD500), seed=0, ctype=0)),
-    "hssd80": (CLASS_LABELS_hssd80, None, make_colors(len(CLASS_LABELS_hssd80), seed=0, ctype=0)),
+# register the vocabularies in detectron2's MetadataCatalog
+HSSD400_TO_VOCAB: dict[str, dict[str, str]] = {}
+
+for vocab_name, _ in HSSD400_VOCAB_REGISTRY:
+    mapping = _df.set_index("HSSD400")[vocab_name].fillna("unknown").to_dict()
+
+    reject = _df.set_index("HSSD400")[vocab_name + "_reject"].to_dict()
+    HSSD400_TO_VOCAB[vocab_name] = {
+        k: (v if str(reject.get(k)).strip() == "False" else "unknown") for k, v in mapping.items()
+    }
+
+VOCABULARIES: dict[str, tuple[list[str], Optional[dict[str, str]], list[tuple[int, int, int]]]] = {
+    "HSSD400": (CLASS_LABELS_HSSD400, None, make_colors(len(CLASS_LABELS_HSSD400), seed=0, ctype=0)),
 }
-THRESHOLD = 0.925
+for vocab_name, labels in HSSD400_VOCAB_REGISTRY:
+    VOCABULARIES[vocab_name] = (labels, HSSD400_TO_VOCAB[vocab_name], make_colors(len(labels), seed=0, ctype=0))
 
-for vocab_name, labels in VOCAB_REGISTRY:
-    mapping = (labels, df.set_index("HSSD500")[vocab_name].fillna("undefined").to_dict(), make_colors(len(labels), seed=0, ctype=0))
-    proximity = df.set_index("HSSD500")[vocab_name + "_proximity"].fillna(-1).to_dict()
-    masked_mapping_thr = {k: (v if float(proximity[k]) >= THRESHOLD else "undefined") for k, v in mapping[1].items()}
-    VOCABULARIES[vocab_name] = (labels, masked_mapping_thr, make_colors(len(labels), seed=0, ctype=0))
-
-for vocab_name, (class_labels, mapping_500_to_target, colors) in VOCABULARIES.items():
+for vocab_name, (class_labels, _, colors) in VOCABULARIES.items():
     meta = MetadataCatalog.get(vocab_name)
     meta.thing_classes = class_labels
     meta.thing_colors = colors

@@ -1,0 +1,16 @@
+# Mirrors detectron2's own configs/COCO-Detection/faster_rcnn_R_50_FPN_1x.yaml
+# verbatim (MODEL_ZOO.md "Faster R-CNN R50-FPN 1x": box AP 37.9, model id
+# 137257794), just pointed at the local Base-RCNN-FPN.yaml copy in this
+# directory (see its header) instead of
+# third_party/detectron2/configs/Base-RCNN-FPN.yaml.
+#
+# WEIGHTS is ImageNet-pretrained backbone only (RPN/ROI heads start
+# random) -- own RPN (Base-RCNN-FPN.yaml's MODEL.RPN, no precomputed
+# proposals). 1x schedule: Base-RCNN-FPN.yaml's own STEPS/MAX_ITER
+# (60000/80000, 90000 total) apply unchanged -- nothing to override here.
+_BASE_: "Base-RCNN-FPN.yaml"
+MODEL:
+  WEIGHTS: "detectron2://ImageNetPretrained/MSRA/R-50.pkl"
+  MASK_ON: False
+  RESNETS:
+    DEPTH: 50

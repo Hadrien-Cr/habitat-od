@@ -1,0 +1,45 @@
+# Dataset-construction + vocab params, shared by collect_dataset.py
+# (builds the raw dataset) and pretrain.py --ds-config (registers the
+# already-built one for training -- see repo-root pretrain.py's
+# register_hssd). run_name keys both datasets/<run_name>/ (built by
+# collect_dataset.py against this file) and pretrain/logs/<run_name-of-the
+# -training-config>/ (written by pretrain.py, keyed by --config-file's own
+# name, not this file's) -- already collected, see datasets/ds_filter_empty/.
+#
+# Only 17 of HSSD80's 85 classes survive filter_out_classes here (mostly
+# large fixed furniture: bed, chair, table, toilet, ...) -- confirmed via
+# datasets/ds_filter_empty/train.json's actual annotated categories.
+#
+# filter_empty: drops frames with zero valid annotations instead of
+# writing them in as empty-annotation images (see build_coco_dataset).
+run_name: ds_filter_empty
+trainer_name: randomteleportbaseline
+steps_per_episode: 500
+filter_empty: True
+
+object_params:
+  env_name: "HSSD-HAB/HSSD80"
+  area_thr: 500
+  filter_low_visibility: True
+  min_visibility_fraction: 0.15
+  filter_out_classes: [ "alarm_clock", "animal", "bench", "bicycle", "blender", "book",
+    "bottle", "bowl", "breadbin", "camera", "candle", "car", "carpet",
+    "ceiling_lamp", "clothing", "coffee_maker", "colander",
+    "couch", "cushion", "dishwasher", "door", "drinkware", "earphone",
+    "exercise_bike", "eyeglasses", "filing_cabinet", "floor_lamp", "flower", "fridge",
+    "grandfather_clock", "kettle", "kitchen_scale", "laptop", "mantel_clock", "microwave",
+    "mixing_bowl", "mobile_phone", "motorcycle", "oven", "pan", "pathway_light", "person", "phone",
+    "picture_frame", "plate", "plush_toy", "pot", "printer", "range_hood",
+    "shoes", "sink", "soap_dispenser", "spicemill", "stand",
+    "table_lamp", "teapot", "toaster", "toiletry", "trashcan", "tray", "treadmill",
+    "tree", "vase", "wall_clock", "wall_lamp", "wardrobe", "washer_dryer", "window"]
+
+train_scenes: [
+  "102344022", "102817053", "104348133_171513054", "105515175_173104107", "106366371_174226743",
+  "102344049", "102817200", "104348160_171513093", "105515211_173104179", "106366434_174226881",
+  "102344115", "103997403_171030405", "104348181_171513120", "105515235_173104215", "106878945_174887058",
+  "102344193", "103997424_171030444", "104348202_171513150", "105515286_173104287", "106879023_174887148",
+]
+val_scenes: [
+  "102343992", "102816756", "104348328_171513363", "105515379_173104395",
+]

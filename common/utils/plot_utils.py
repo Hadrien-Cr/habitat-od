@@ -1,3 +1,7 @@
+import json
+from pathlib import Path
+from typing import Optional
+
 from matplotlib.pyplot import text
 import numpy as np
 import matplotlib.pyplot as plt
@@ -7,6 +11,78 @@ import cv2
 from detectron2.utils.visualizer import Visualizer as DetVisualizer
 from detectron2.utils.visualizer import ColorMode
 from detectron2.data import Metadata
+
+# Fixed-order categorical hues (validated for CVD/contrast) -- reused as-is,
+# never cycled per-key, so the same slot always means the same series.
+_SERIES_COLORS = ["#2a78d6", "#008300", "#e87ba4", "#eda100"]
+
+
+def load_metrics(metrics_json: Path) -> list[dict]:
+    """Parses a detectron2 `EventStorage` JSONWriter log: one JSON object per
+    line, only carrying whatever scalars were logged at that iteration (loss
+    terms every step, eval metrics like `bbox/AP` only every `eval_period`)."""
+    with open(metrics_json) as f:
+        return [json.loads(line) for line in f if line.strip()]
+
+
+def plot_metrics(metrics_json: Path, out_path: Path, keys: Optional[list[str]] = None) -> Path:
+    """Plots scalars logged during a detectron2 `DefaultTrainer` run (losses,
+    lr, and any periodic `EvalHook` results such as `bbox/AP`) against
+    `iteration`, one subplot per metric -- never dual-axis, since loss/mAP/lr
+    live on incomparable scales. Defaults to every numeric key in the log
+    except `iteration`/`lr`/`time`/`data_time`/`eta_seconds`; pass `keys` to
+    restrict to a subset (e.g. `["bbox/AP", "bbox/AP50"]`).
+
+    When `cfg.DATASETS.TEST` has more than one dataset (e.g. val + train),
+    detectron2 prefixes eval keys with the dataset name (`"<dataset>/bbox/AP"`);
+    those are detected and overlaid as separate lines on the same subplot
+    instead of splitting into their own panels.
+    """
+    records = load_metrics(metrics_json)
+    if not records:
+        raise ValueError(f"No metrics found in {metrics_json}")
+
+    if keys is None:
+        skip = {"iteration", "lr", "time", "data_time", "eta_seconds"}
+        keys = sorted({k for r in records for k in r} - skip)
+
+    # key -> (series_label, metric_name); a key like "<dataset>/bbox/AP" (2+
+    # slashes) is an eval metric for a specific dataset in a multi-dataset
+    # TEST set -- split off the dataset name so same-metric/different-dataset
+    # keys share one panel instead of each getting its own.
+    groups: dict[str, dict[str, str]] = {}
+    for key in keys:
+        parts = key.split("/")
+        series, metric = (parts[0], "/".join(parts[1:])) if len(parts) >= 3 else (key, key)
+        groups.setdefault(metric, {})[series] = key
+
+    n_cols = min(4, len(groups)) or 1
+    n_rows = -(-len(groups) // n_cols)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 3 * n_rows), squeeze=False)
+
+    for ax, (metric, series_map) in zip(axes.flat, groups.items()):
+        for i, (series, key) in enumerate(series_map.items()):
+            xs = [r["iteration"] for r in records if key in r]
+            ys = [r[key] for r in records if key in r]
+            # marker is required, not cosmetic: eval metrics (e.g. bbox/AP) are only
+            # logged every eval_period iterations, so a run with few eval points would
+            # otherwise render as an invisible line (matplotlib draws nothing for an
+            # unmarked single point).
+            ax.plot(xs, ys, color=_SERIES_COLORS[i % len(_SERIES_COLORS)], linewidth=2, marker="o", markersize=4, label=series)
+        ax.set_title(metric, fontsize=9)
+        ax.set_xlabel("iteration")
+        ax.grid(True, alpha=0.3)
+        if len(series_map) > 1:
+            ax.legend(fontsize=7)
+
+    for ax in axes.flat[len(groups):]:
+        ax.axis("off")
+
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    return out_path
 
 def plot_semantic_2d_map(
     bg_grid,
@@ -40,7 +116,7 @@ def plot_semantic_2d_map(
 
     img = Image.fromarray(colored)
     img = img.resize(
-        (img.width * scale, img.height * scale),
+        (int(img.width * scale), int(img.height * scale)),
         resample=Image.NEAREST  # type: ignore
     )
     draw = ImageDraw.Draw(img)
@@ -145,7 +221,7 @@ def plot_segmentation_pred(rgb: np.ndarray, pred_instances, classes: list[str], 
 
     vis_img = det_visualizer.overlay_instances(
         boxes=pred_instances.pred_boxes.tensor.cpu().numpy(),
-        masks=pred_instances.pred_masks.cpu().numpy() if pred_instances.pred_masks is not None else None,
+        masks=pred_instances.pred_masks.cpu().numpy() if pred_instances.has("pred_masks") else None,
         labels=None,
         assigned_colors=[(x/255, y/255, z/255) for class_id in pred_instances.pred_classes.cpu().numpy() for x, y, z in [colors[class_id]]],
     )
@@ -154,18 +230,19 @@ def plot_segmentation_pred(rgb: np.ndarray, pred_instances, classes: list[str], 
     return im
 
 
-def plot_segmentation_gt(rgb: np.ndarray, gt_instances, classes: list[str], colors: list[tuple[float, float, float]], scale: float = 1.0) -> Image.Image:
+def plot_segmentation_gt(rgb: np.ndarray, gt_instances, classes: list[str], colors: list[tuple[float, float, float]]) -> Image.Image:
     det_visualizer = DetVisualizer(
         rgb,
-        scale=scale,
+        scale=1.0,
         instance_mode=ColorMode.SEGMENTATION,
         font_size_scale=0.8
     )
 
-    for i, (box, class_id) in enumerate(zip(
+    for i, (box, class_id, info) in enumerate(zip(
         gt_instances.gt_boxes.tensor.cpu().numpy(),
-        gt_instances.gt_classes.cpu().numpy()
-    )):
+        gt_instances.gt_classes.cpu().numpy(),
+        gt_instances.infos if hasattr(gt_instances, "infos") else [{"filtered_low_area": False, "filtered_low_visibility": False, "visibility_fraction": 0.0}] * len(gt_instances.gt_boxes))
+    ):
         x1, y1, x2, y2 = box
         height_ratio = (y2 - y1) / rgb.shape[0]
         font_size = (
@@ -197,20 +274,16 @@ def plot_segmentation(
     gt_instances, 
     classes: list[str], 
     colors: list[tuple[float, float, float]], 
-    scale: float = 0.5,
     title: str = ""
 ) -> Image.Image:
     
     if gt_instances is not None:
-        im = plot_segmentation_gt(rgb, gt_instances, classes, [(255, 0, 0) for _ in classes], scale=scale)
+        im = plot_segmentation_gt(rgb, gt_instances, classes, [(255, 0, 0) for _ in classes])
         rgb = np.array(im)
-        scale = 1.0 
-
 
     if pred_instances is not None:
-        im = plot_segmentation_pred(rgb, pred_instances, classes, colors, scale)
+        im = plot_segmentation_pred(rgb, pred_instances, classes, colors)
         rgb = np.array(im)
-
 
     if title:
         fontscale = 0.5

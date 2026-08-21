@@ -1,11 +1,15 @@
 __pycache__/
 .venv/
+.vscode/
 data
 data/
 .gitignore
 *.pt
+*.pth
 datasets/
 datadump/
 outputs/
 third_party/
-habitat_od_data/
+habitat_embodied_al_data/
+tests/testdump/
+**/logs/*

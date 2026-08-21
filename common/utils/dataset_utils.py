@@ -113,6 +113,49 @@ class SampleLoader:
 log = logging.getLogger(__name__)
 
 
+def load_custom_coco_json(json_file: str, image_root: str, id_map: dict) -> list:
+    """Loads a COCO-format json into detectron2's standard per-image dict
+    format, remapping category ids through a precomputed id_map (raw json
+    category id -> contiguous index) instead of deriving one from the json
+    itself, so the caller's own thing_classes ordering is preserved."""
+    from pycocotools.coco import COCO
+
+    coco_api = COCO(json_file)
+    img_ids = sorted(coco_api.imgs.keys())
+    imgs = coco_api.loadImgs(img_ids)
+    anns = [coco_api.imgToAnns[img_id] for img_id in img_ids]
+
+    dataset_dicts = []
+    for img_dict, anno_dict_list in zip(imgs, anns):
+        record = {
+            "file_name": os.path.join(image_root, img_dict["file_name"]),
+            "height": img_dict["height"],
+            "width": img_dict["width"],
+            "image_id": img_dict["id"],
+        }
+
+        objs = []
+        for anno in anno_dict_list:
+            if anno.get("iscrowd", 0) > 0:
+                continue
+            if anno["category_id"] not in id_map:
+                continue
+            obj = {
+                "bbox": anno["bbox"],
+                "bbox_mode": BoxMode.XYWH_ABS,
+                "category_id": id_map[anno["category_id"]],
+            }
+            segm = anno.get("segmentation")
+            valid_segm = [poly for poly in segm if len(poly) % 2 == 0 and len(poly) >= 6] if segm else []
+            if valid_segm:
+                obj["segmentation"] = valid_segm
+            objs.append(obj)
+        record["annotations"] = objs
+        dataset_dicts.append(record)
+
+    return dataset_dicts
+
+
 def transform_batch(image: np.ndarray, gt_instances: Instances, aug) -> tuple[torch.Tensor, Instances]:
     """Input: HWC image"""
     tfm = aug.get_transform(image)

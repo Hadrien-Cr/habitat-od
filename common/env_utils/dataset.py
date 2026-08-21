@@ -29,6 +29,32 @@ CONTENT_SCENES_PATH_FIELD = "content_scenes_path"
 DEFAULT_SCENE_PATH_PREFIX = "data/scene_datasets/"
 
 
+def resolve_dataset_split(
+    dataset_config: DictConfig, scenes: List[str], candidate_splits=("train", "val")
+) -> str:
+    r"""HSSD-HAB's objectnav dataset partitions scenes disjointly across each
+    split's `content/` dir, so a caller that overrides `content_scenes` with
+    an explicit scene list (e.g. `collect_raw`) can't just leave
+    `dataset_config.split` at its config default -- it must match whichever
+    split dir actually holds those scenes' `.json.gz` files, or loading fails
+    with a raw FileNotFoundError. Scenes must all come from the same split.
+    """
+    matches = []
+    for split in candidate_splits:
+        dataset_dir = os.path.dirname(dataset_config.data_path.format(split=split))
+        content_dir = os.path.join(dataset_dir, "content")
+        if all(os.path.exists(os.path.join(content_dir, f"{scene}.json.gz")) for scene in scenes):
+            matches.append(split)
+
+    if len(matches) != 1:
+        raise ValueError(
+            f"Could not uniquely resolve the HSSD dataset split for scenes {scenes} "
+            f"among candidates {candidate_splits} (matched: {matches}). Scenes passed "
+            "together to collect_raw must all belong to the same split's content/ dir."
+        )
+    return matches[0]
+
+
 @attr.s(auto_attribs=True, kw_only=True)
 class ObjectGoalNavEpisode(NavigationEpisode):
     r"""ObjectGoal Navigation Episode

@@ -300,7 +300,17 @@ class BBSense(VisualSense):
         res = np.load(path_bb, allow_pickle=True).item()
         return BBSense(path=path_bb, bbs=res["instances"], frame=None, sense_info=get_sense_info(path_bb))
 
-    def get_bbs_as_gt(self):
+    def get_bbs_as_gt(self, filter_low_area=True, filter_low_visibility=True):
+        indices_to_remove = []
+        for i, info in enumerate(self.bbs.infos):
+            if info['filtered_low_area'] and filter_low_area:
+                indices_to_remove.append(i)
+            elif info['filtered_low_visibility'] and filter_low_visibility:
+                indices_to_remove.append(i)
+            
+        keep_idx = [i for i in range(len(self.bbs)) if i not in indices_to_remove]
+        self.bbs = self.bbs[keep_idx]
+
         target = Instances(self.bbs.image_size)
         target.gt_boxes = self.bbs.pred_boxes
         target.gt_classes = self.bbs.pred_classes
@@ -308,15 +318,4 @@ class BBSense(VisualSense):
         if hasattr(self.bbs, "pred_masks"):
             target.gt_masks = self.bbs.pred_masks
 
-        if hasattr(self.bbs, "infos"):
-            target.infos = self.bbs.infos
-            for t in target.infos:
-                t['episode'] = self.sense_info.episode
-
         return target
-
-    def get_bounding_boxes(self):
-        if 'pred_boxes' in self.bbs:
-            return self.bbs.pred_boxes
-        else:
-            return []
