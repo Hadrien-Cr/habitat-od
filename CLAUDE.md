@@ -7,9 +7,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Heavy, order-dependent native build (habitat-sim, detectron2, Detic, CenterNet2) — see `INSTALL.MD` for the full sequence. When debugging environment issues rather than re-deriving them, know that:
 
-- Conda env `habitat_od` from `environment.yml` (Python 3.9, PyTorch 1.13.1, CUDA 11.7, `habitat-sim=0.3.3`).
+- Conda env `habitat_od` from `environment.yml` (Python 3.9, PyTorch 1.13.1, CUDA 11.7, `habitat-sim=0.3.2`). habitat-lab and habitat-sim are both pinned to `v0.3.2`: upstream habitat-sim removed the `datatool` C++ utility (`create_gibson_semantic_mesh`) in the tag right after, which `scripts/gen_gibson_semantics.sh` needs to bake 3DSceneGraph annotations onto raw Gibson meshes.
 - Required env vars at runtime: `BASE_DIR` (repo root), `PYTHONPATH=.`, `HABITAT_DATA` (Habitat data root containing `scene_datasets/hssd-hab` and `datasets/objectnav/hssd-hab`), `PYTHONNOUSERSITE=1`. See `.vscode/launch.json` for the exact set used for debugging.
-- `third_party/habitat-lab` (pinned `v0.3.3`) and `third_party/detectron2` are vendored git clones, not pip packages — imported directly by path. `third_party/Detic` is only needed for `common/env_utils/vocab_constants.py::generate_mappings`'s CLIP text encoder (cross-vocab mapping tooling; not part of the active data-gen/train path).
+- `third_party/habitat-lab` and `third_party/habitat-sim` (both pinned `v0.3.2`; habitat-sim's submodules included -- source of `scripts/gen_gibson_semantics.sh`'s `datatool` build and `tools/npz2ids.py`/`npz2scn.py`), and `third_party/detectron2` are vendored git clones, not pip packages — imported/built directly by path. `third_party/Detic` is only needed for `common/env_utils/vocab_constants.py::generate_mappings`'s CLIP text encoder (cross-vocab mapping tooling; not part of the active data-gen/train path).
 - `default_structured_configs.py` at repo root must be copied over habitat-lab's own copy (`third_party/habitat-lab/habitat-lab/habitat/config/default_structured_configs.py`) to add habitat-od's Hydra structured configs (e.g. `ObjectDetectorGTSensorConfig`). If sensor/action config fields seem to be missing, check whether this copy is stale.
 - `third_party/`, `data/`, `datasets/`, `outputs/`, `habitat_embodied_al_data/`, `datadump/` are gitignored — local/generated, not tracked source.
 - `tests/` has a small pytest suite (sensor-filter/visibility/occlusion checks against the simulator); no linter or CI beyond that.
@@ -21,11 +21,11 @@ Data collection (needs the simulator) and training (plain detectron2, no simulat
 ```bash
 export HABITAT_DATA=$HOME/habitat_data/data
 export BASE_DIR=$(pwd)
-PYTHONPATH=. python habitat_embodied_al/collect_dataset.py --config habitat_embodied_al/pretrain/config/ds.yaml
-PYTHONPATH=. python pretrain.py --config-file habitat_embodied_al/pretrain/config/mask_rcnn_R_50_FPN.yaml --ds-config habitat_embodied_al/pretrain/config/ds.yaml --num-gpus 2
+PYTHONPATH=. python habitat_embodied_al/collect_dataset.py --config habitat_embodied_al/pretrain/config/ds_hssd.yaml
+PYTHONPATH=. python pretrain.py --config-file habitat_embodied_al/pretrain/config/mask_rcnn_R_50_FPN.yaml --ds-config habitat_embodied_al/pretrain/config/ds_hssd.yaml --num-gpus 2
 ```
 
-`collect_dataset.py --config` (a `ds.yaml`-shaped file) sets `run_name` (keys `datasets/<run_name>/`), `object_params` (`env_name` + `vocab_name` + `filter_out_classes`), and collection params (scenes/steps_per_episode/trainer_name/filter_empty); it writes a COCO-format `train.json`/`val.json` + images.
+`collect_dataset.py --config` (a `ds_hssd.yaml`-shaped file) sets `run_name` (keys `datasets/<run_name>/`), `object_params` (`env_name` + `vocab_name` + `filter_out_classes`), and collection params (scenes/steps_per_episode/trainer_name/filter_empty); it writes a COCO-format `train.json`/`val.json` + images.
 
 `pretrain.py --ds-config` registers that dataset under fixed `"train"`/`"val"` names and trains against it; without `--ds-config` it instead trains against `coco_testbench`'s local COCO copy, to reproduce detectron2's own model-zoo baselines. `--config-file` selects the architecture/checkpoint (a small overlay on `Base-RCNN-FPN.yaml`); `OUTPUT_DIR` is derived from `--config-file`'s own stem, under `<config-file's-parent-dir>/logs/<stem>/`.
 

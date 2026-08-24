@@ -1,18 +1,5 @@
-# Dataset-construction + vocab params, shared by collect_dataset.py
-# (builds the raw dataset) and pretrain.py --ds-config (registers the
-# already-built one for training -- see repo-root pretrain.py's
-# register_hssd). run_name keys both datasets/<run_name>/ (built by
-# collect_dataset.py against this file) and pretrain/logs/<run_name-of-the
-# -training-config>/ (written by pretrain.py, keyed by --config-file's own
-# name, not this file's) -- already collected, see datasets/ds_filter_empty/.
-#
-# Only 17 of HSSD80's 85 classes survive filter_out_classes here (mostly
-# large fixed furniture: bed, chair, table, toilet, ...) -- confirmed via
-# datasets/ds_filter_empty/train.json's actual annotated categories.
-#
-# filter_empty: drops frames with zero valid annotations instead of
-# writing them in as empty-annotation images (see build_coco_dataset).
-run_name: ds_filter_empty
+# run_name changed from ds_filter_empty -- that's the old 20/4 collection, doesn't have the 5 new scenes
+run_name: hssd
 trainer_name: randomteleportbaseline
 steps_per_episode: 500
 filter_empty: True
@@ -40,7 +27,8 @@ train_scenes: [
   "102344049", "102817200", "104348160_171513093", "105515211_173104179", "106366434_174226881",
   "102344115", "103997403_171030405", "104348181_171513120", "105515235_173104215", "106878945_174887058",
   "102344193", "103997424_171030444", "104348202_171513150", "105515286_173104287", "106879023_174887148",
+  "102344094", "102344250", "102344280", "102344307", "102344328",
 ]
 val_scenes: [
-  "102343992", "102816756", "104348328_171513363", "105515379_173104395",
+  "102343992", "102816756", "104348328_171513363", "105515379_173104395", "102344403",
 ]

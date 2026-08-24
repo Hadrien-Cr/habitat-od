@@ -1676,7 +1676,7 @@ class AgentConfig(HabitatBaseConfig):
     max_climb: float = 0.2
     max_slope: float = 45.0
     grasp_managers: int = 1
-    sim_sensors: Dict[str, Any] = field(default_factory=dict)
+    sim_sensors: Dict[str, SimulatorSensorConfig] = field(default_factory=dict)
     is_set_start_state: bool = False
     start_position: List[float] = field(default_factory=lambda: [0, 0, 0])
     start_rotation: List[float] = field(default_factory=lambda: [0, 0, 0, 1])
@@ -1803,6 +1803,38 @@ class SimulatorConfig(HabitatBaseConfig):
 
 
 @dataclass
+class PyrobotSensor(HabitatBaseConfig):
+    pass
+
+
+@dataclass
+class PyrobotVisualSensorConfig(PyrobotSensor):
+    type: str = MISSING
+    height: int = 480
+    width: int = 640
+
+
+@dataclass
+class PyrobotRGBSensorConfig(PyrobotVisualSensorConfig):
+    type: str = "PyRobotRGBSensor"
+    center_crop: bool = False
+
+
+@dataclass
+class PyrobotDepthSensorConfig(PyrobotVisualSensorConfig):
+    type: str = "PyRobotDepthSensor"
+    min_depth: float = 0.0
+    max_depth: float = 5.0
+    normalize_depth: bool = True
+    center_crop: bool = False
+
+
+@dataclass
+class PyrobotBumpSensorConfig(PyrobotSensor):
+    type: str = "PyRobotBumpSensor"
+
+
+@dataclass
 class LocobotConfig(HabitatBaseConfig):
     actions: List[str] = field(
         default_factory=lambda: ["base_actions", "camera_actions"]
@@ -1813,6 +1845,23 @@ class LocobotConfig(HabitatBaseConfig):
     camera_actions: List[str] = field(
         default_factory=lambda: ["set_pan", "set_tilt", "set_pan_tilt"]
     )
+
+
+@dataclass
+class PyrobotConfig(HabitatBaseConfig):
+    # types of robots supported:
+    robots: List[str] = field(default_factory=lambda: ["locobot"])
+    robot: str = "locobot"
+    sensors: Dict[str, PyrobotSensor] = field(
+        default_factory=lambda: {
+            "rgb_sensor": PyrobotRGBSensorConfig(),
+            "depth_sensor": PyrobotDepthSensorConfig(),
+            "bump_sensor": PyrobotBumpSensorConfig(),
+        }
+    )
+    base_controller: str = "proportional"
+    base_planner: str = "none"
+    locobot: LocobotConfig = LocobotConfig()
 
 
 @dataclass
@@ -1839,6 +1888,13 @@ class DatasetConfig(HabitatBaseConfig):
     )
     # TODO: Make this field a structured dataclass.
     metadata: Optional[Any] = None
+    # scene_dataset_config.json path baked into each synthesized episode by
+    # common/env_utils/dataset.py::ExplorationNavDataset (env_name ->
+    # path resolved via common/env_utils/env_registry.py::resolve_env) --
+    # Env.__init__ overwrites habitat.simulator.scene_dataset from the
+    # first episode's own value anyway (habitat/core/env.py), so this is
+    # the field that actually determines which scene dataset gets loaded.
+    scene_dataset_config: str = "data/scene_datasets/hssd-hab/hssd-hab.scene_dataset_config.json"
 
 
 @dataclass

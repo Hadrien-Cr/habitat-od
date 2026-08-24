@@ -26,7 +26,7 @@ from habitat_sim.utils.common import colorize_ids
 
 from common.env_utils.object_detector_sensors import ObjectDetectorGTSensorConfig
 from common.env_utils.env_base import ExplorationEnv
-from common.env_utils.dataset import ExplorationNavDataset  # noqa: F401 - registers "ExplorationNav"
+from common.env_utils.dataset import ExplorationNavDataset  # noqa: F401 - registers "ExplorationSynthetic"
 import common.env_utils.sensors  # noqa: F401 - registers agent_collision_sensor/position_sensor
 
 _SCENE = "102344022"

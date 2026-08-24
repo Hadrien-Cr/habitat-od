@@ -23,7 +23,7 @@ dependencies:
   - torchaudio
   - mkl=2024.0
   - pip
-  - habitat-sim=0.3.3
+  - habitat-sim=0.3.2
   - withbullet
   - pip: 
     - numpy==1.26.4 # certain deprecated operations were used in other deps

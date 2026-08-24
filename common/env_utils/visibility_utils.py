@@ -39,6 +39,11 @@ def mesh_visibility_fraction(
     depth_obs: np.ndarray,
 ) -> float:
     obj_depth = depth_obs[object_mask].mean()
+    if obj_depth <= 0:
+        # 0 is the depth sensor's no-return sentinel (e.g. every masked pixel lies beyond
+        # max_depth) - there's no reliable depth to size the object's unoccluded silhouette
+        # against, so treat it as unverifiable/fully occluded rather than dividing by zero.
+        return 0.0
 
     sensor_state = agent_state.sensor_states["rgb"]
     camera_rot = sensor_state.rotation

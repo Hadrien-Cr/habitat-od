@@ -1,7 +1,7 @@
 """
 Sanity check that the HSSD-HAB scene dataset (see INSTALL.MD) loads correctly in habitat_sim:
 instantiates one of the standard HSSD-HAB ObjectNav val scenes (habitat_embodied_al/pretrain/
-config/ds.yaml's val_scenes) directly via raw habitat_sim.Simulator (no habitat-lab Env/task)
+config/ds_hssd.yaml's val_scenes) directly via raw habitat_sim.Simulator (no habitat-lab Env/task)
 and renders an rgb+semantic overlay, labeled with each visible instance's category name and
 its world-space AABB wireframe, at random navigable positions - dumped as plain-rgb|overlay
 side-by-side frames to tests/testdump/test_hssd/ for visual inspection.
@@ -59,7 +59,7 @@ pytestmark = pytest.mark.skipif(
     reason="requires HABITAT_DATA pointing at a real hssd-hab dataset (see INSTALL.MD)",
 )
 
-# Standard HSSD-HAB ObjectNav val split (habitat_embodied_al/pretrain/config/ds.yaml's
+# Standard HSSD-HAB ObjectNav val split (habitat_embodied_al/pretrain/config/ds_hssd.yaml's
 # val_scenes); any one of the four works as a smoke test.
 _VAL_SCENES = ["102343992", "102816756", "104348328_171513363", "105515379_173104395"]
 _SCENE = '102816756'

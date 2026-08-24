@@ -1,0 +1,30 @@
+# train_scenes: 25 of gibson_tiny's 35 scenes -- the other 5 have no native .glb (see gen_gibson_semantics.sh)
+run_name: gibson_coco6
+trainer_name: randomteleportbaseline
+steps_per_episode: 500
+filter_empty: True
+
+object_params:
+  env_name: "Gibson-Semantic"
+  vocab_name: "COCO80"
+  area_thr: 500
+  filter_low_visibility: True
+  min_visibility_fraction: 0.15
+  filter_out_classes: [ "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train",
+    "truck", "boat", "traffic light", "fire hydrant", "stop sign", "parking meter", "bench",
+    "bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe",
+    "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard",
+    "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard",
+    "tennis racket", "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana",
+    "apple", "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake",
+    "chair", "laptop", "mouse", "remote", "keyboard", "cell phone", "microwave", "oven",
+    "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors", "teddy bear",
+    "hair drier", "toothbrush" ]
+
+train_scenes: [
+  "Allensville", "Beechwood", "Benevolence", "Coffeen", "Cosmos", "Forkland", "Hanson",
+  "Hiteman", "Klickitat", "Lakeville", "Leonardo", "Lindenwood", "Marstons", "Merom",
+  "Mifflinburg", "Newfields", "Onaga", "Pinesdale", "Pomaria", "Ranchester", "Shelbyville",
+  "Stockman", "Tolstoy", "Wainscott", "Woodbine",
+]
+val_scenes: ["Collierville", "Corozal", "Darden", "Markleeville", "Wiconisco"]

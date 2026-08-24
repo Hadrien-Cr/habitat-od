@@ -3,11 +3,13 @@ __pycache__/
 .vscode/
 data
 data/
-.gitignore
+*.zip
 *.pt
 *.pth
 datasets/
 datadump/
+gibson_data/*
+!gibson_data/verified_sample/
 outputs/
 third_party/
 habitat_embodied_al_data/

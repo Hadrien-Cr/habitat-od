@@ -55,10 +55,19 @@ habitat:
         type: position_sensor
         
   dataset:
-    type: ExplorationNav
+    # ExplorationSynthetic (common/env_utils/dataset.py) synthesizes one
+    # trivial episode per content_scenes entry at runtime -- no real
+    # per-scene episode files needed, so data_path/scenes_dir/split below
+    # are unused (kept only because DatasetConfig still declares them).
+    # scene_dataset_config is overridden per env_name by collect_raw (see
+    # common/env_utils/env_registry.py::resolve_env); this file's own
+    # default is HSSD-HAB's, for callers that build this config directly
+    # (e.g. tests) without going through collect_raw.
+    type: ExplorationSynthetic
     split: train
     data_path: data/datasets/objectnav/hssd-hab/{split}/{split}.json.gz
     scenes_dir: data/scene_datasets/hssd-hab/scenes
+    scene_dataset_config: data/scene_datasets/hssd-hab/hssd-hab.scene_dataset_config.json
     content_scenes: ["*"]
 
 object_params:

@@ -28,15 +28,15 @@ given:
   reproduces published numbers, before trusting it to assess
   habitat_embodied_al's own (HSSD-tuned) Mask R-CNN training configs.
 
-- --ds-config habitat_embodied_al/pretrain/config/ds.yaml: registers
+- --ds-config habitat_embodied_al/pretrain/config/ds_hssd.yaml: registers
   habitat_embodied_al's already-collected HSSD dataset (see
   collect_dataset.py, run separately beforehand) via
   habitat_embodied_al.dataset.register_dataset, under the fixed "train"/
   "val" names that function always uses -- matched by
   habitat_embodied_al/pretrain/config/Base-RCNN-FPN.yaml's own
   DATASETS.TRAIN/TEST. MODEL.ROI_HEADS.NUM_CLASSES is set at runtime from
-  whichever vocab ds.yaml's object_params resolves to (currently 17
-  classes -- see ds.yaml's header), since it can't be known until that
+  whichever vocab ds_hssd.yaml's object_params resolves to (currently 17
+  classes -- see ds_hssd.yaml's header), since it can't be known until that
   dataset is registered; the config's own COCO-pretrained checkpoint has a
   mismatched 80-class box_predictor, which DetectionCheckpointer skips
   automatically rather than erroring.
@@ -84,7 +84,7 @@ Usage (COCO testbench, reproducing a detectron2 model-zoo baseline):
 Usage (HSSD/embodied-AL fine-tuning on already-collected data):
   PYTHONPATH=. python pretrain.py \
       --config-file habitat_embodied_al/pretrain/config/mask_rcnn_R_50_FPN.yaml \
-      --ds-config habitat_embodied_al/pretrain/config/ds.yaml \
+      --ds-config habitat_embodied_al/pretrain/config/ds_hssd.yaml \
       --num-gpus 2
 """
 import json
@@ -219,7 +219,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--ds-config",
         default="",
-        help="Path to a habitat_embodied_al/pretrain/config/ds.yaml -- switches dataset registration to "
+        help="Path to a habitat_embodied_al/pretrain/config/ds_hssd.yaml -- switches dataset registration to "
         "habitat_embodied_al's HSSD-collected data instead of coco_testbench's local COCO copy.",
     )
     args = parser.parse_args()

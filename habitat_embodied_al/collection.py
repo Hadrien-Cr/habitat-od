@@ -14,7 +14,8 @@ from habitat_baselines.common.baseline_registry import baseline_registry  # type
 from common.env_utils.object_detector_sensors import *  # noqa: F401,F403
 from common.env_utils.sensors import *  # noqa: F401,F403
 from common.env_utils.env_base import *  # noqa: F401,F403
-from common.env_utils.dataset import *  # noqa: F401,F403
+from common.env_utils.dataset import *  # noqa: F401,F403 registers "ExplorationSynthetic"
+from common.env_utils.env_registry import resolve_env
 from common.baselines.agents import *  # noqa: F401,F403 registers trainers with baseline_registry
 from common.utils.dataset_utils import SampleLoader
 from common.utils.plot_utils import make_mosaic, plot_segmentation_gt
@@ -40,9 +41,11 @@ def collect_raw(
         os.system(f"rm -rf {out_dir}")
     os.makedirs(out_dir, exist_ok=True)
 
+    scene_dataset_config = resolve_env(object_params["env_name"])
     with read_write(habitat_config):
-        habitat_config.habitat.dataset.split = resolve_dataset_split(habitat_config.habitat.dataset, scenes)
         habitat_config.habitat.dataset.content_scenes = scenes
+        habitat_config.habitat.dataset.scene_dataset_config = scene_dataset_config
+        habitat_config.habitat.simulator.scene_dataset = scene_dataset_config
         habitat_config.habitat.environment.max_episode_steps = steps_per_episode
         habitat_config.habitat.task.lab_sensors = {
             "object_detector_gt": ObjectDetectorGTSensorConfig(**object_params),

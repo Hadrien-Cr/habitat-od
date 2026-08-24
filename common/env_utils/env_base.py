@@ -97,6 +97,12 @@ class ExplorationEnv(RLEnv):
     def get_object_occupancy(self) -> np.ndarray:
         return self._env.task.sensor_suite.get("bbsgt").annotation.object_occupancy_grid
 
+    def get_random_navigable_point(self) -> np.ndarray:
+        r"""Navmesh-based random position sampling -- unlike get_tdmap (HSSD-HAB-only, see
+        object_annotations.py's ObjectAnnotation.object_occupancy_grid), this works for any of
+        the 4 env_names, since every one of them loads a real navmesh."""
+        return np.array(self._env.sim.pathfinder.get_random_navigable_point())
+
     def get_env_name(self) -> str:
         return self._env.task.sensor_suite.get("bbsgt").env_name
 

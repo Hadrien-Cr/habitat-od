@@ -1,0 +1,47 @@
+# vocab_name "unused": ProcTHOR-hab's vocab is data-driven, read straight from the scene dataset
+run_name: procthor
+trainer_name: randomteleportbaseline
+steps_per_episode: 500
+filter_empty: True
+
+object_params:
+  env_name: "ProcTHOR-hab"
+  vocab_name: "unused"
+  area_thr: 500
+  filter_low_visibility: True
+  min_visibility_fraction: 0.15
+  filter_out_classes: [ "AlarmClock", "AluminumFoil", "Apple", "AppleSliced", "BaseballBat",
+    "BasketBall", "BathtubBasin", "Bench", "Blinds", "Book", "Boots", "Bottle", "Bowl",
+    "BowlDirty", "BowlFilled", "Box", "Bread", "BreadSliced", "ButterKnife", "CD", "Candle",
+    "Cart", "CellPhone", "Cloth", "ClothesDryer", "CoffeeMachine", "Container", "ContainerFull",
+    "CreditCard", "Cup", "Curtains", "DeskLamp", "Desktop", "Dirt", "DishSponge", "DogBed",
+    "Doorframe", "Doorway", "Drawer", "Dumbbell", "Egg", "EggCracked", "EggShell", "Faucet",
+    "Floor", "FloorLamp", "Footstool", "Fork", "GarbageBag", "GarbageCan", "HandTowel",
+    "HandTowelHolder", "HousePlant", "Kettle", "KeyChain", "Knife", "Ladle", "Lamp", "Laptop",
+    "LaundryHamper", "LaundryHamperLid", "Lettuce", "LettuceSliced", "LightSwitch", "Lighter",
+    "MassObjectSpawner", "MassScale", "MiscTableObject", "Mug", "MugFilled", "Newspaper",
+    "Omelette", "Painting", "PaintingHanger", "PaintingHangerLarge", "PaintingHangerMedium",
+    "PaintingHangerSmall", "PaintingLarge", "PaintingMedium", "PaintingSmall", "Pan", "PanLid",
+    "PaperTowelRoll", "Pen", "Pencil", "PepperShaker", "Pillow", "Plate", "Plunger", "Poster",
+    "Pot", "PotLid", "Potato", "PotatoSliced", "RemoteControl", "RoomDecor", "Safe",
+    "SaltShaker", "Sandwich", "ScreenFrame", "ScreenSheet", "ScrubBrush", "ShowerCurtain",
+    "ShowerDoor", "ShowerGlass", "ShowerHead", "Sink", "SinkBasin", "SmallMirror", "SoapBar",
+    "SoapBottle", "SoapBottleFilled", "SoapContainer", "Spatula", "Spoon", "SportsEquipment",
+    "SprayBottle", "Statue", "StoveBurner", "StoveKnob", "TableTopDecor", "TargetCircle",
+    "TeddyBear", "TennisRacket", "Tissue", "TissueBox", "TissueBoxEmpty", "ToiletPaper",
+    "ToiletPaperHanger", "ToiletPaperRoll", "Tomato", "TomatoSliced", "Towel", "TowelHolder",
+    "Undefined", "VacuumCleaner", "Vase", "Wall", "WallMirror", "Watch", "WateringCan", "Window",
+    "WineBottle" ]
+
+train_scenes: [
+  "ProcTHOR-Train-0", "ProcTHOR-Train-1", "ProcTHOR-Train-2", "ProcTHOR-Train-3",
+  "ProcTHOR-Train-4", "ProcTHOR-Train-5", "ProcTHOR-Train-6", "ProcTHOR-Train-7",
+  "ProcTHOR-Train-8", "ProcTHOR-Train-9", "ProcTHOR-Train-10", "ProcTHOR-Train-11",
+  "ProcTHOR-Train-12", "ProcTHOR-Train-13", "ProcTHOR-Train-14", "ProcTHOR-Train-15",
+  "ProcTHOR-Train-16", "ProcTHOR-Train-17", "ProcTHOR-Train-18", "ProcTHOR-Train-19",
+  "ProcTHOR-Train-20", "ProcTHOR-Train-21", "ProcTHOR-Train-22", "ProcTHOR-Train-23",
+  "ProcTHOR-Train-24",
+]
+val_scenes: [
+  "ProcTHOR-Val-0", "ProcTHOR-Val-1", "ProcTHOR-Val-2", "ProcTHOR-Val-3", "ProcTHOR-Val-4",
+]

@@ -9,7 +9,7 @@ export CXX=$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-g++
 ```
 
 ```
-git clone --branch v0.3.3 https://github.com/facebookresearch/habitat-lab.git third_party/habitat-lab
+git clone --branch v0.3.2 https://github.com/facebookresearch/habitat-lab.git third_party/habitat-lab
 cd third_party/habitat-lab
 pip install -e habitat-lab
 pip install -e habitat-baselines
@@ -50,11 +50,9 @@ unzip $HABITAT_DATA/datasets/objectnav/hssd-hab/objectnav_procthor-hab_v0.2.5.zi
 ```
 
 ```
-# Download Gibson-Semantic scene data
-python -c "import gdown;gdown.download('https://drive.google.com/uc?id=1X08U929c3GFO51EgMAcNqIoVhp52EmsN','gibson_semantic.zip')"
-unzip gibson_semantic.zip -d gibson_data
-cp gibson_data/data/scene_datasets/gibson_semantic $HABITAT_DATA/scene_datasets/ -r 
-wget --no-check-certificate https://dl.fbaipublicfiles.com/habitat/gibson/config_v1/gibson_semantic.scene_dataset_config.json -P $HABITAT_DATA/scene_datasets/gibson_semantic/
+# Gibson scene data (mesh + semantics) -- see scripts/gen_gibson_semantics.sh for everything:
+# downloads, the Datatool build, and the generation command
+scripts/gen_gibson_semantics.sh --out $HABITAT_DATA/scene_datasets/gibson_semantic
 ```
 
 ```

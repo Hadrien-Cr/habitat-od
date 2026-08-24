@@ -159,11 +159,15 @@ class Baseline(BaseRLTrainer):
 
         os.makedirs("datadump/vis/" + dataset_path.split("/")[-1], exist_ok=True)
         im.save("datadump/vis/" + dataset_path.split("/")[-1] + "/" + fname)
-    
+
+        # object_occupancy map + tdmap below are HSSD-HAB-only (object_occupancy_grid is None
+        # for the other 3 env_names -- see object_annotations.py's ObjectAnnotation)
+        object_occupancy_grid = self.envs.call_at(0, "get_object_occupancy")
+        if object_occupancy_grid is None:
+            return
 
         # save object_occupancy map
         tdmap = self.envs.call_at(0, "get_tdmap")
-        object_occupancy_grid = self.envs.call_at(0, "get_object_occupancy")
         list_object_info = object_occupancy_grid.list_object_info
 
         obj_id_to_class = {object_info["object_id"]: object_info["class_name"] for object_info in list_object_info}
@@ -382,21 +386,8 @@ class RandomTeleport(Baseline):
     def __init__(self, config, **kwargs) -> None:
         super().__init__(config, agent_class=RotateAgent, **kwargs)
 
-    def get_random_agent_state(self, idx, obs) -> AgentState:
-        tdmap = self.envs.call_at(idx, "get_tdmap")
-        lower_bound, upper_bound = self.envs.call_at(idx, "get_map_bounds")
-        tdmap_resolution = (
-            abs(upper_bound[2] - lower_bound[2]) / tdmap.shape[0],
-            abs(upper_bound[0] - lower_bound[0]) / tdmap.shape[1],
-        )
-        valid_positions = np.argwhere(tdmap == 1)
-        assert np.sum(tdmap) > 0, "No valid positions found in the top-down map"
-        random_pixel = valid_positions[self.rng_gen.integers(0, len(valid_positions))]
-        random_position = np.array([
-            lower_bound[0] + random_pixel[1] * tdmap_resolution[1],
-            obs['position']['position'][1],
-            lower_bound[2] + random_pixel[0] * tdmap_resolution[0],
-        ])
+    def get_random_agent_state(self, idx) -> AgentState:
+        random_position = self.envs.call_at(idx, "get_random_navigable_point")
         random_yaw = self.rng_gen.uniform(0, 2 * np.pi)
         agent_state = AgentState()
         agent_state.position = random_position
@@ -406,7 +397,7 @@ class RandomTeleport(Baseline):
     def _step(self, envs: VectorEnv) -> None:
         results = []
         for index_env in range(envs.num_envs):
-            agent_state = self.get_random_agent_state(index_env, self.current_observations[index_env])
+            agent_state = self.get_random_agent_state(index_env)
             r = envs.call_at(index_env, "teleport", {"agent_state": agent_state})
             results.append(r)
 
