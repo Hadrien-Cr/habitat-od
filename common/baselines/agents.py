@@ -148,9 +148,9 @@ class Baseline(BaseRLTrainer):
         gt_instances = obs["bbsgt"]["instances"]
 
         from detectron2.data import MetadataCatalog
-        env_name = self.envs.call_at(0, "get_env_name")
-        classes = MetadataCatalog.get(env_name.replace("HSSD-HAB/", "")).thing_classes
-        colors = MetadataCatalog.get(env_name.replace("HSSD-HAB/", "")).thing_colors
+        vocab_name = self.envs.call_at(0, "get_vocab_name")
+        classes = MetadataCatalog.get(vocab_name).thing_classes
+        colors = MetadataCatalog.get(vocab_name).thing_colors
         
         # save visualization of the segmentation gt
         fname = f"episode_{int(episode.episode_id):06d}_modality_vis_step_{int(step):05d}_id_{env_idx}.png"

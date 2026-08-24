@@ -18,7 +18,8 @@ steps_per_episode: 500
 filter_empty: True
 
 object_params:
-  env_name: "HSSD-HAB/HSSD80"
+  env_name: "HSSD-HAB"
+  vocab_name: "HSSD80"
   area_thr: 500
   filter_low_visibility: True
   min_visibility_fraction: 0.15

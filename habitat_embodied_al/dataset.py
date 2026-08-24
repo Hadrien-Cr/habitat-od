@@ -15,7 +15,7 @@ def build_dataset(raw_dataset_path: Path, dataset_root: Path, split_name: str, o
         str(raw_dataset_path),
         str(dataset_root),
         split_name,
-        object_params["env_name"].replace("HSSD-HAB/", ""),
+        object_params["vocab_name"],
         object_params["filter_out_classes"],
         filter_empty=filter_empty,
     )

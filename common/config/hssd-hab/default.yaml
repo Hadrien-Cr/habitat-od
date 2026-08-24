@@ -62,7 +62,8 @@ habitat:
     content_scenes: ["*"]
 
 object_params:
-  env_name: "HSSD-HAB/COCO80"
+  env_name: "HSSD-HAB"
+  vocab_name: "COCO80"
   area_thr: 250
   filter_occluded: true
 

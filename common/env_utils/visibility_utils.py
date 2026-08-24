@@ -14,13 +14,22 @@ def camera_basis(camera_rot: quaternion.quaternion, width: int, camera_hfov: flo
     focal = (width / 2.0) / np.tan(np.deg2rad(camera_hfov / 2.0))
     return forward, right, up, focal
 
-def compute_obj_dimensions(obj) -> np.ndarray:
-
-    aabb = obj.collision_shape_aabb # type: ignore
+def compute_dimensions_from_aabb(aabb) -> np.ndarray:
     min_v = aabb.min
     max_v = aabb.max
-
     return np.array([max_v.x - min_v.x, max_v.y - min_v.y, max_v.z - min_v.z])
+
+
+def compute_obj_dimensions(obj) -> np.ndarray:
+    return compute_dimensions_from_aabb(obj.collision_shape_aabb) # type: ignore
+
+
+def compute_dimensions_from_obb(obb) -> np.ndarray:
+    """SemanticObject.aabb is unreliable for MP3D/Gibson-Semantic (confirmed against real
+    data: a couch's aabb can be off by ~7x on one axis vs. its true size) - .obb.sizes is the
+    tight, correctly oriented fit test_gibson.py/test_mp3d.py already trust for their own
+    wireframes, so use that instead for these two envs."""
+    return np.array([obb.sizes.x, obb.sizes.y, obb.sizes.z])
 
 
 def mesh_visibility_fraction(

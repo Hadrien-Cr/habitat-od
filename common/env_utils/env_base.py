@@ -92,13 +92,16 @@ class ExplorationEnv(RLEnv):
         return self.last_reward
 
     def get_tdmap(self) -> np.ndarray:
-        return self._env.task.sensor_suite.get("bbsgt").object_occupancy_grid.topdown_view
+        return self._env.task.sensor_suite.get("bbsgt").annotation.object_occupancy_grid.topdown_view
 
     def get_object_occupancy(self) -> np.ndarray:
-        return self._env.task.sensor_suite.get("bbsgt").object_occupancy_grid
+        return self._env.task.sensor_suite.get("bbsgt").annotation.object_occupancy_grid
 
     def get_env_name(self) -> str:
         return self._env.task.sensor_suite.get("bbsgt").env_name
+
+    def get_vocab_name(self) -> str:
+        return self._env.task.sensor_suite.get("bbsgt").vocab_name
     
     def _past_limit(self) -> bool:
         if (

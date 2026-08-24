@@ -50,7 +50,8 @@ def env():
         habitat_config.habitat.task.lab_sensors = {
             "object_detector_gt": ObjectDetectorGTSensorConfig(
                 area_thr=0.0,
-                env_name=f"HSSD-HAB/{_VOCAB}",
+                env_name="HSSD-HAB",
+                vocab_name=_VOCAB,
             ),
             **habitat_config.habitat.task.lab_sensors,
         }

@@ -3,14 +3,14 @@ End-to-end check that ObjectDetectorGTSensor (common/env_utils/object_detector_s
 correctly classifies and separates HSSD-HAB's decomposed dining-set composites,
 using the real scene they're placed in (scenes/102344022.scene_instance.json)
 and the real sensor pipeline (setup_semantic_labels + decompose_frame) - not a
-synthetic stand-in. See tests/test_decomposed.py for the underlying
-ObjectSemanticsHSSD classification check this builds on.
+synthetic stand-in.
 
 Each test finds a dining set's real object instances in the scene, renders a
 view of it, and checks decompose_frame's detections: exactly one "table" and
 one "chair" per chair instance, each with its own separate box/mask (not
-merged - see ObjectDetectorGTSensor.decompose_frame's obj_id*1000+class_id
-semantic buffer encoding). A bounding-box snapshot is saved to
+merged - see common/env_utils/object_annotations.py's obj_id*1000+class_id
+semantic buffer encoding, which ObjectAnnotation.semantic_id_to_classid_obj_id
+decodes for decompose_frame). A bounding-box snapshot is saved to
 tests/testdump/test_composite_objects/ for visual sanity-checking.
 """
 import os
@@ -22,7 +22,8 @@ import pytest
 from PIL import Image, ImageDraw
 
 from habitat.config.default_structured_configs import ObjectDetectorGTSensorConfig
-from common.env_utils.object_detector_sensors import ObjectDetectorGTSensor, get_all_objects, object_shortname_from_handle
+from common.env_utils.object_detector_sensors import ObjectDetectorGTSensor
+from common.env_utils.object_annotations import get_all_objects, object_shortname_from_handle
 
 HABITAT_DATA = os.environ.get("HABITAT_DATA")
 _DATASET_CONFIG = (
@@ -44,8 +45,7 @@ os.system(f"rm -rf {_TESTDUMP_DIR}")
 _ROLE_COLORS = {"table": (255, 165, 0), "chair": (0, 220, 0)}
 
 # (set name, table part template id, chair part template id, camera position
-# looking at the set) - the same two dining sets as tests/test_decomposed.py,
-# both placed for real in scenes/102344022.scene_instance.json.
+# looking at the set) - two dining sets placed for real in scenes/102344022.scene_instance.json.
 DINING_SETS = [
     ("pavilion", "eeaf34edd2065a3fa2af3fc021cd343ca029f696_part_1", "eeaf34edd2065a3fa2af3fc021cd343ca029f696_part_3", [-5.84, 0.9, -3.2]),
     ("lakeland", "ba28803b05660ca87ad0650276988f02dce1081e_part_1", "ba28803b05660ca87ad0650276988f02dce1081e_part_4", [-15.7, 0.9, 2.65]),
@@ -71,8 +71,14 @@ def sensor():
     semantic_spec.resolution = [480, 480]
     semantic_spec.hfov = mn.Deg(90)
 
+    depth_spec = habitat_sim.CameraSensorSpec()
+    depth_spec.uuid = "depth"
+    depth_spec.sensor_type = habitat_sim.SensorType.DEPTH
+    depth_spec.resolution = [480, 480]
+    depth_spec.hfov = mn.Deg(90)
+
     agent_cfg = habitat_sim.agent.AgentConfiguration()
-    agent_cfg.sensor_specifications = [rgb_spec, semantic_spec]
+    agent_cfg.sensor_specifications = [rgb_spec, semantic_spec, depth_spec]
 
     ns = habitat_sim.NavMeshSettings()
     ns.set_defaults()
@@ -81,7 +87,7 @@ def sensor():
     sim = habitat_sim.Simulator(habitat_sim.Configuration(backend_cfg, [agent_cfg]))
 
     config = ObjectDetectorGTSensorConfig(
-        env_name="HSSD-HAB/HSSD80", area_thr=0.0, filter_low_visibility=False,
+        env_name="HSSD-HAB", vocab_name="HSSD80", area_thr=0.0, filter_low_visibility=False,
         min_visibility_fraction=0.0, filter_out_classes=[],
     )
     s = ObjectDetectorGTSensor(sim, config)
@@ -114,7 +120,7 @@ def test_dining_set_classified_and_separated_by_real_sensor(sensor, set_name, ta
     sim.get_agent(0).set_state(state)
 
     obs = sim.get_sensor_observations()
-    result = sensor.decompose_frame(obs["semantic"], sim.get_agent(0).get_state())
+    result = sensor.decompose_frame(obs["semantic"], sim.get_agent(0).get_state(), obs["depth"])
     instances = result["instances"]
 
     detections = [

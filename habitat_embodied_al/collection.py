@@ -55,7 +55,7 @@ def collect_raw(
     trainer.collect(str(out_dir), steps_per_episode=steps_per_episode)
 
     if create_mosaic:
-        vocab_name = object_params["env_name"].split("/")[-1]
+        vocab_name = object_params["vocab_name"]
         mosaic_path = out_dir.parent / f"{out_dir.name}_mosaic.png"
         visualize_mosaic(out_dir, vocab_name, mosaic_path, n_samples=mosaic_samples, shuffle=True, non_empty=True)
 
