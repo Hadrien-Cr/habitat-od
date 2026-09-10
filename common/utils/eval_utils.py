@@ -55,7 +55,7 @@ def compute_confusion_matrix(
     with open(predictions_json) as f:
         predictions = json.load(f)
 
-    categories = sorted(gt["categories"], key=lambda c: c["id"])
+    categories = sorted(gt["categories"], key=lambda c: c["name"])
 
     if skip_unseen_classes:
         seen_ids = {ann["category_id"] for ann in gt["annotations"]}

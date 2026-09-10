@@ -5,6 +5,7 @@
 # ../README.md -- derived from scene_name, see main.py's _VALDISTINCT_RUN_NAME).
 run_name: al_procthor_reproduce
 scene_name: "ProcTHOR-Val-0"
+seed: 0
 rounds: 5
 timesteps: 400
 samples: 20

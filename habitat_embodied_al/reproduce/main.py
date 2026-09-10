@@ -46,7 +46,9 @@ import shutil
 import shutil
 from typing import Any, Optional
 
+from detectron2.data.catalog import MetadataCatalog
 import habitat  # type: ignore
+from habitat.config import read_write  # type: ignore
 import numpy as np
 from detectron2.checkpoint import DetectionCheckpointer  # type: ignore
 from detectron2.config import get_cfg  # type: ignore
@@ -59,6 +61,8 @@ from common.utils.interface import Candidate
 from common.env_utils.env_base import ExplorationEnv
 from common.env_utils.object_annotations import resolve_classes
 from common.samplers.random_sampler import RandomSampler
+from common.utils.eval_utils import compute_confusion_matrix
+
 from common.utils.data_utils import save_obs
 from detector import Detector
 from eval import Trainer, register_dataset
@@ -115,7 +119,7 @@ def flatten_model_args(model: dict, prefix: str = "") -> list:
 
 
 def train_round(
-    config_file: str, train_name: str, val_name: Optional[str], num_classes: int,
+    config_file: str, train_name: str, val_name: str, num_classes: int,
     init_weights: str, model_overrides: Optional[dict], output_dir: Path,
 ) -> tuple[str, dict]:
     """ Train and evaluate a detector on the given train_name/val_name datasets, returning the final checkpoint"""
@@ -135,12 +139,19 @@ def train_round(
     trainer = Trainer(cfg)
     trainer.resume_or_load(resume=False)
     trainer.train()
+    
+    predictions_json = output_dir / "eval" / val_name / "coco_instances_results.json"
+    if predictions_json.exists():
+        gt_json = Path(MetadataCatalog.get(val_name).json_file)
+        confusion_matrix_png = output_dir / "eval" / val_name / "confusion_matrix.png"
+        compute_confusion_matrix(predictions_json, gt_json, confusion_matrix_png)
+        print(f"{val_name}: wrote confusion matrix to {confusion_matrix_png}")
 
     return str(output_dir / "model_final.pth"), dict(trainer._last_eval_results)
 
 
 def eval_checkpoint(
-    config_file: str, val_name: Optional[str], num_classes: int, weights: str, output_dir: Path,
+    config_file: str, val_name: str, num_classes: int, weights: str, output_dir: Path,
 ) -> dict:
     """Scores an already-trained checkpoint against val_name with no further fine-tuning """
     cfg = get_cfg()
@@ -154,7 +165,16 @@ def eval_checkpoint(
 
     model = Trainer.build_model(cfg)
     DetectionCheckpointer(model, save_dir=cfg.OUTPUT_DIR).resume_or_load(cfg.MODEL.WEIGHTS, resume=False)
-    return dict(Trainer.test(cfg, model))
+    eval_results = dict(Trainer.test(cfg, model))
+
+    predictions_json = output_dir / "eval" / val_name / "coco_instances_results.json"
+    if predictions_json.exists():
+        gt_json = Path(MetadataCatalog.get(val_name).json_file)
+        confusion_matrix_png = output_dir / "eval" / val_name / "confusion_matrix.png"
+        compute_confusion_matrix(predictions_json, gt_json, confusion_matrix_png)
+        print(f"{val_name}: wrote confusion matrix to {confusion_matrix_png}")
+
+    return eval_results
 
 
 def main(config_file: str, al_cfg: Any) -> None:
@@ -182,19 +202,22 @@ def main(config_file: str, al_cfg: Any) -> None:
     raw_root = constants.DATA_ROOT / al_cfg.run_name / "al_pool"
     history = []
     
-    # empty al_pool and rm dataset
+    # empty al_pool, dataset, logs
     shutil.rmtree(constants.DATA_ROOT / al_cfg.run_name / "al_pool", ignore_errors=True)
     shutil.rmtree(constants.DATASET_ROOT / al_cfg.run_name, ignore_errors=True)
+    shutil.rmtree(base_log_dir, ignore_errors=True)
 
     # initial eval of init_checkpoint
-    init_eval = eval_checkpoint(config_file, val_name, len(kept_classes), checkpoint, base_log_dir / "round_init")
-    init_summary = {"round": "init", "n_candidates": 0, "n_selected": 0, "checkpoint": checkpoint, "eval": init_eval}
+    init_eval_results = eval_checkpoint(config_file, val_name, len(kept_classes), checkpoint, base_log_dir / "round_init")
+    init_summary = {"round": "init", "n_candidates": 0, "n_selected": 0, "checkpoint": checkpoint, "eval": init_eval_results}
     history.append(init_summary)
     print(f"round init: {init_summary}")
 
     # set up detector, scene, env, agent, sampler
     detector = Detector(config_file, checkpoint, kept_classes)
     habitat_cfg = habitat.get_config(config_path="common/config/hssd-hab/default.yaml")
+    with read_write(habitat_cfg):
+        habitat_cfg.habitat.seed = al_cfg.seed
     configure_scene(habitat_cfg, [al_cfg.scene_name], al_cfg.timesteps, object_params)
     env = ExplorationEnv(config=habitat_cfg)
     env.reset(env.episodes[0])
@@ -202,7 +225,7 @@ def main(config_file: str, al_cfg: Any) -> None:
     full_classes = resolve_classes(object_params["env_name"], object_params["vocab_name"])
     kept_classes = [c for c in full_classes if c != "unknown" and (not filter_classes or c in filter_classes)]
 
-    rng = np.random.default_rng(habitat_cfg.habitat.seed)
+    rng = np.random.default_rng(al_cfg.seed)
 
     if al_cfg.agent == "random" and al_cfg.sampler == "random":
         agent = RandomAgent(rng)

@@ -44,7 +44,7 @@ def build_coco_dataset(
     view) instead of writing them in as empty-annotation images."""
 
     full_classes = resolve_classes(env_name, vocab_name)
-    kept_classes = [c for c in full_classes if c != "unknown" and (not filter_classes or c in filter_classes)]
+    kept_classes = sorted(c for c in full_classes if c != "unknown" and (not filter_classes or c in filter_classes))
     full_id_to_kept_id = {i: kept_classes.index(name) for i, name in enumerate(full_classes) if name in kept_classes}
     kept_ids = sorted(full_id_to_kept_id)
 
