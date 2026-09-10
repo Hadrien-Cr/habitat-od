@@ -14,20 +14,19 @@ from habitat.tasks.nav.nav import NavigationEpisode, NavigationGoal # type: igno
 
 @registry.register_dataset(name="ExplorationSynthetic")
 class ExplorationNavDataset(Dataset):
-    r"""Episode dataset for ExplorationTask/RandomTeleport (common/env_utils/
-    env_base.py, common/baselines/agents.py) that needs no real per-scene
-    episode files on disk, unlike habitat-lab's usual ObjectNav/PointNav
-    dataset types. RandomTeleport overrides the agent's position via
-    sim.pathfinder.get_random_navigable_point() on every single step, so an
-    episode's start_position/start_rotation only need to be *some* value
-    that lets Env.reset() succeed before the first teleport overwrites them
-    -- nothing is ever captured from them, so there's nothing to source
-    from a real dataset.
+    r"""Episode dataset for ExplorationTask (common/env_utils/env_base.py) that needs no real
+    per-scene episode files on disk, unlike habitat-lab's usual ObjectNav/PointNav dataset
+    types. collect_random/collect_validation (habitat_embodied_al/collection.py) always
+    teleport the agent explicitly (ExplorationEnv.get_random_point() or a
+    target-object viewpoint) before capturing anything, so an episode's start_position/
+    start_rotation only need to be *some* value that lets Env.reset() succeed before the
+    first teleport overwrites them -- nothing is ever captured from them, so there's nothing
+    to source from a real dataset.
 
     One trivial episode is synthesized per scene in config.content_scenes,
     carrying config.scene_dataset_config (see
     common/env_utils/env_registry.py::resolve_env, set by
-    habitat_embodied_al/collection.py::collect_raw from object_params'
+    habitat_embodied_al/collection.py::configure_scene from object_params'
     env_name) so Env.__init__ resolves the right scene dataset regardless
     of which of the 4 env_names is being collected -- this is what lets one
     shared Hydra config (common/config/hssd-hab/default.yaml, despite its

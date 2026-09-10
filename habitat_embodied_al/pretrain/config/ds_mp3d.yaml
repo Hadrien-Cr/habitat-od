@@ -1,17 +1,16 @@
 run_name: mp3d
-trainer_name: randomteleportbaseline
 steps_per_episode: 500
-filter_empty: True
+filter_empty: False
 
 object_params:
   env_name: "MP3D"
   vocab_name: "MPCAT40"
-  area_thr: 500
+  area_thr: 1000
   filter_low_visibility: True
   min_visibility_fraction: 0.15
-  filter_out_classes: [ "appliances", "beam", "blinds", "board_panel", "ceiling", "clothes",
-    "column", "cushion", "door", "floor", "furniture", "gym_equipment", "lighting", "misc",
-    "objects", "railing", "seating", "sink", "stairs", "towel", "wall", "window" ]
+  filter_classes: [ "bathtub", "bed", "cabinet", "chair", "chest_of_drawers", "counter",
+    "curtain", "fireplace", "mirror", "picture", "plant", "shelving", "shower", "sofa", "stool",
+    "table", "toilet", "tv_monitor" ]
 
 train_scenes: [
   "17DRP5sb8fy", "1LXtFkjw3qL", "1pXnuDYAj8r", "29hnd4uzFmX", "2azQ1b91cZZ",

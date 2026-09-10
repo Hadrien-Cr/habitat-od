@@ -1,6 +1,8 @@
+import bisect
 import logging
 import math
 import os, glob
+from typing import Optional
 
 import cv2
 import numpy as np
@@ -24,8 +26,14 @@ from common.env_utils.sense import (
     Sense,
     VisualSense,
     get_class_from_modality_code,
+    is_valid_info,
+    keep_valid_instances,
     _get_info_from_string, get_sense_info
 )
+
+
+def instance_is_empty(instances: Instances) -> bool:
+    return not any(is_valid_info(info) for info in instances.infos)
 
 
 def _mask_more_n(arr, n) -> np.ndarray:
@@ -55,7 +63,7 @@ class SampleLoader:
 
     def _load_paths(self, load_path, samples_paths=None) -> None:
         if samples_paths is None:
-            samples_paths = glob.glob(load_path + "/*.npy")
+            samples_paths = glob.glob(load_path + "/*.npy") + glob.glob(load_path + "/*.jpg")
 
         samples_paths = sorted(samples_paths, key=lambda x: (int(_get_info_from_string(x, "episode")), int(_get_info_from_string(x, "step")), int(_get_info_from_string(x, "id")), _get_info_from_string(x, "modality")))
         
@@ -237,7 +245,7 @@ class HabitatDataset(Dataset):
 
         image = np.ascontiguousarray(rgb_image[:, :, ::-1]) if self.input_format == "BGR" else rgb_image
 
-        gt_instances = data["bbsgt"].get_bbs_as_gt() # type: ignore
+        gt_instances = keep_valid_instances(data["bbsgt"].get_bbs_as_gt()) # type: ignore
 
         transformed_image, transformed_gt_instances = transform_batch(image, gt_instances, self.aug)
 
@@ -365,7 +373,7 @@ class HabitatFullSequentialDataset(HabitatDataset):
 
             image = np.ascontiguousarray(rgb_image[:, :, ::-1]) if self.input_format == "BGR" else rgb_image
 
-            gt_instances = data["bbsgt"].get_bbs_as_gt() # type: ignore
+            gt_instances = keep_valid_instances(data["bbsgt"].get_bbs_as_gt()) # type: ignore
 
             transformed_image, transformed_gt_instances = transform_batch(image, gt_instances, self.aug)
 
@@ -398,7 +406,7 @@ class HabitatFullSequentialDataset(HabitatDataset):
 
         gt = data["bbsgt"]
         file_name = gt.frame.sense_info.get_path()  # type: ignore
-        y = data["bbsgt"].get_bbs_as_gt()  # type: ignore
+        y = keep_valid_instances(data["bbsgt"].get_bbs_as_gt())  # type: ignore
         class_labels = y.gt_classes
 
         annotations = [

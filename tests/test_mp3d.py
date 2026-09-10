@@ -13,9 +13,10 @@ as pure 3D geometry with no occlusion culling, so a box can extend behind whatev
 drawn in front of it. Unlike gibson_semantic, MP3D's world coordinates need no axis rearrangement
 to line up an obb with its rendered geometry (see test_isometric_scene.py's note that MP3D is
 converted to habitat-sim's Y-up convention at load time). _FILTER_OUT_CLASSES drops matching
-category names entirely - same semantics as object_detector_sensors.py's filter_out_classes -
-so their pixels stay untinted and get no box/label; MP3D's house-format "ceiling"/"floor" are
-room-sized planar regions whose boxes/tint otherwise swamp the frame, so they're filtered here.
+category names entirely - a local denylist, opposite of object_detector_sensors.py's
+filter_classes allow-list - so their pixels stay untinted and get no box/label; MP3D's
+house-format "ceiling"/"floor" are room-sized planar regions whose boxes/tint otherwise swamp
+the frame, so they're filtered here.
 
 Requires real MP3D data under HABITAT_DATA/scene_datasets/mp3d/ (mp3d.scene_dataset_config.json
 + per-scene assets) - skipped otherwise.
@@ -56,8 +57,8 @@ _RESOLUTION = [480, 480]
 _HFOV_DEG = 90.0
 _AGENT_HEIGHT = 0.88  # matches common/config/hssd-hab/default.yaml's agent height
 _OVERLAY_ALPHA = 0.5
-_N_POINTS = 10
-_FILTER_OUT_CLASSES: list[str] = ["ceiling", "floor", "misc", "wall", "door", "void", "column", "beam"]  # see object_detector_sensors.py's filter_out_classes
+_N_POINTS = 4
+_FILTER_OUT_CLASSES: list[str] = ["ceiling", "floor", "misc", "wall", "door", "void", "column", "beam"]  # local denylist, opposite of object_detector_sensors.py's filter_classes allow-list
 _TESTDUMP_DIR = os.path.join(os.path.dirname(__file__), "testdump", "test_mp3d")
 os.system(f"rm -rf {_TESTDUMP_DIR}")
 

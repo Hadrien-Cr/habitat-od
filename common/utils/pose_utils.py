@@ -14,6 +14,13 @@ def quaternion_from_rpy(roll, pitch, yaw):
     return quat_from_angle_axis(roll, np.array([1, 0, 0])) * quat_from_angle_axis(yaw, np.array([0, 1, 0])) * quat_from_angle_axis(pitch, np.array([0, 0, 1]))
 
 
+def yaw_to_face(position, target):
+    """Yaw facing `target` from `position` (both xyz) -- note the negated atan2 args:
+    empirically the opposite sign of do_visualize's yaw-from-forward-vector extraction."""
+    direction = target - position
+    return math.atan2(-direction[0], -direction[2])
+
+
 def rpy_from_quaternion(q):
     w, x, y, z = q.w, q.x, q.y, q.z
     

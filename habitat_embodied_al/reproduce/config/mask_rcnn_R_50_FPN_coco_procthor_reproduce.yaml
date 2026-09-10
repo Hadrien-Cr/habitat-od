@@ -1,0 +1,14 @@
+# Training overlay for reproduce/ (see ../README.md) -- same shape as
+# pretrain/config/mask_rcnn_R_50_FPN_coco_procthor.yaml and its siblings
+# (mp3d/gibson6/hssd): COCO-pretrained Mask R-CNN R-50 FPN, box-only head
+# (MASK_ON: False -- kept consistent with the repo's other envs; flip to True to
+# train on the real per-pixel masks ObjectDetectorGTSensor/coco_writer.py
+# produce, since unlike the original AI2Thor/YOLO pipeline this isn't a
+# box-as-polygon approximation). MODEL.ROI_HEADS.NUM_CLASSES is set at runtime by
+# pretrain.py from the registered dataset's thing_classes (49, per classes.py).
+_BASE_: "../../pretrain/config/Base-RCNN-FPN.yaml"
+MODEL:
+  WEIGHTS: "detectron2://COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x/137849600/model_final_f10217.pkl"
+  MASK_ON: False
+  RESNETS:
+    DEPTH: 50

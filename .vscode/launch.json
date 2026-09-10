@@ -14,7 +14,8 @@
         "PYTHONPATH": "/home/hcrassou/habitat-od",
         "PYTHONNOUSERSITE": "1",
         "HABITAT_DATA": "/home/hcrassou/habitat_data/data",
-        "PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION": "python"
+        "PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION": "python",
+        "HABITAT_SIM_LOG": "assets=quiet"
       },
     }
   ]

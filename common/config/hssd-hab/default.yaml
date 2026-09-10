@@ -4,14 +4,12 @@ defaults:
   - habitat/task/lab_sensors:
       - pointgoal_with_gps_compass_sensor
   - /habitat/task: pointnav
-  - /habitat/task/measurements: 
-    - top_down_map
   - /habitat/simulator/sensor_setups@habitat.simulator.agents.main_agent: rgbds_agent
   - _self_
 
 habitat:
   environment:
-    max_episode_steps: 500
+    max_episode_steps: 10_000
     iterator_options:
       shuffle: False
   simulator:
@@ -53,6 +51,8 @@ habitat:
         type: agent_collision_sensor
       position_sensor:
         type: position_sensor
+      colored_tdmap_sensor:
+        type: colored_tdmap_sensor
         
   dataset:
     # ExplorationSynthetic (common/env_utils/dataset.py) synthesizes one
@@ -73,7 +73,7 @@ habitat:
 object_params:
   env_name: "HSSD-HAB"
   vocab_name: "COCO80"
-  area_thr: 250
+  area_thr: 1000
   filter_occluded: true
 
 baseline_params:

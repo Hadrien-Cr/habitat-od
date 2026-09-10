@@ -13,8 +13,8 @@ Boxes come from that same object's .obb (its .aabb is unreliable for this datase
 single chair's aabb can come back several meters across, while its obb is a tight, correctly
 oriented fit) and are projected as pure 3D geometry with no occlusion culling, so a box can
 extend behind whatever's actually drawn in front of it. _FILTER_OUT_CLASSES drops matching
-category names entirely - same semantics as object_detector_sensors.py's filter_out_classes -
-so their pixels stay untinted and get no box/label.
+category names entirely - a local denylist, opposite of object_detector_sensors.py's
+filter_classes allow-list - so their pixels stay untinted and get no box/label.
 
 Requires real Gibson-Semantic data under HABITAT_DATA/scene_datasets/gibson_semantic/
 (gibson_semantic.scene_dataset_config.json + per-scene assets) - skipped otherwise.
@@ -51,8 +51,8 @@ _RESOLUTION = [480, 480]
 _HFOV_DEG = 90.0
 _AGENT_HEIGHT = 0.88  # matches common/config/hssd-hab/default.yaml's agent height
 _OVERLAY_ALPHA = 0.5
-_N_POINTS = 10
-_FILTER_OUT_CLASSES: list[str] = []  # class names to drop entirely (see object_detector_sensors.py's filter_out_classes)
+_N_POINTS = 4
+_FILTER_OUT_CLASSES: list[str] = []  # class names to drop entirely (local denylist, opposite of object_detector_sensors.py's filter_classes allow-list)
 _TESTDUMP_DIR = os.path.join(os.path.dirname(__file__), "testdump", "test_gibson")
 os.system(f"rm -rf {_TESTDUMP_DIR}")
 

@@ -1,3 +1,6 @@
+# Training overlay for pretrain/, MP3D variant -- see mask_rcnn_R_50_FPN_coco.yaml (HSSD) for
+# the shared shape. MODEL.ROI_HEADS.NUM_CLASSES is set at runtime by pretrain.py from the
+# registered dataset's thing_classes (18, per ds_mp3d.yaml's filter_classes).
 _BASE_: "Base-RCNN-FPN.yaml"
 MODEL:
   WEIGHTS: "detectron2://COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x/137849600/model_final_f10217.pkl"

@@ -405,7 +405,8 @@ class ObjectDetectorGTSensorConfig(LabSensorConfig):
     area_thr: float = 1000.0
     filter_low_visibility: bool = True
     min_visibility_fraction: float = 0.3
-    filter_out_classes: List[str] = field(default_factory=list)
+    # Allow-list of classes to keep; None/empty keeps every class (except "unknown", always dropped).
+    filter_classes: Optional[List[str]] = None
 
 @dataclass
 class HumanoidDetectorSensorConfig(LabSensorConfig):

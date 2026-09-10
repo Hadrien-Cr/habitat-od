@@ -1,5 +1,6 @@
 # type: ignore
 import copy
+from typing import Optional
 
 import cv2
 import numpy as np
@@ -358,3 +359,45 @@ def do_plan(
     cv2.circle(curr_img, tuple(nodes[graph.end_node]), 10, (0, 0, 255), 2)
 
     return goals, skel
+
+
+def grid_path(tdmap: np.ndarray, start: tuple, end: tuple, step_size: Optional[float] = None) -> list:
+    """A* over a visibility graph of nodes sampled off tdmap's morphological skeleton
+    (nodesFromImage/edgesFromImage above), with start/end inserted as two extra nodes -- same
+    approach do_plan() uses, just returning a plain (col, row) pixel path instead of also
+    plotting it. A* minimizes cumulative Euclidean distance, so a direct line of sight between
+    two nodes always wins over any indirect route (triangle inequality) -- with no step_size,
+    an obstacle-free start/end collapses to that one direct hop, skipping every point between.
+
+    step_size resamples the node-to-node route into ~step_size-pixel steps instead (each
+    inter-node edge is already a checked-visible straight line, so interpolating along it stays
+    walkable) -- env_base.py's find_shortest_path_waypoints needs a denser sequence than the sparse
+    skeleton/direct hops for its waypoint-facing logic. Returns [] if start/end aren't connected (e.g. two
+    disconnected navmesh islands)."""
+    img = (tdmap * 255).astype(np.uint8) if tdmap.max() <= 1 else tdmap.astype(np.uint8)
+
+    nodes, _ = nodesFromImage(img)
+    nodes = [tuple(start)] + [tuple(n) for n in nodes] + [tuple(end)]
+    start_idx, end_idx = 0, len(nodes) - 1
+
+    edges = edgesFromImage(img, nodes)
+    graph = AStarGraph(nodes, edges)
+    graph.set_start_node(start_idx)
+    graph.set_end_node(end_idx)
+    astar(graph)
+
+    if not graph.path or graph.path[-1] != start_idx:
+        return []
+    node_path = [nodes[i] for i in reversed(graph.path)]
+
+    if step_size is None:
+        return node_path
+
+    dense = [node_path[0]]
+    for a, b in zip(node_path[:-1], node_path[1:]):
+        seg_len = np.linalg.norm(np.array(b) - np.array(a))
+        n_steps = max(1, int(np.ceil(seg_len / step_size)))
+        for i in range(1, n_steps + 1):
+            t = i / n_steps
+            dense.append((round(a[0] + t * (b[0] - a[0])), round(a[1] + t * (b[1] - a[1]))))
+    return dense

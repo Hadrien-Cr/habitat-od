@@ -88,7 +88,7 @@ def sensor():
 
     config = ObjectDetectorGTSensorConfig(
         env_name="HSSD-HAB", vocab_name="HSSD80", area_thr=0.0, filter_low_visibility=False,
-        min_visibility_fraction=0.0, filter_out_classes=[],
+        min_visibility_fraction=0.0, filter_classes=[],
     )
     s = ObjectDetectorGTSensor(sim, config)
     s.setup_semantic_labels()

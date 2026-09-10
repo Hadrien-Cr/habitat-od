@@ -31,6 +31,7 @@ def compute_confusion_matrix(
     out_path: Path,
     iou_threshold: float = 0.5,
     score_threshold: float = 0.5,
+    skip_unseen_classes: bool = True,
 ) -> np.ndarray:
     """Builds a class-confusion matrix from a COCOEvaluator `coco_instances_results.json`
     (predictions, `category_id`s already unmapped to match the GT json's own ids -- see
@@ -42,13 +43,24 @@ def compute_confusion_matrix(
 
     Matching is class-agnostic (IoU-only, greedy by descending score) so misclassifications
     land off-diagonal instead of being silently treated as a missed detection plus an
-    unrelated false positive."""
+    unrelated false positive.
+
+    `skip_unseen_classes` drops categories with zero GT annotations from both axes (e.g. a
+    per-scene val set that only covers a handful of the full vocab -- see
+    dataset.py::build_dataset's mode="separate") instead of leaving them as empty rows/columns;
+    predictions of a dropped class are then out of scope too (there's no row to attribute them
+    to) and are excluded rather than folded into "background"."""
     with open(gt_json) as f:
         gt = json.load(f)
     with open(predictions_json) as f:
         predictions = json.load(f)
 
     categories = sorted(gt["categories"], key=lambda c: c["id"])
+
+    if skip_unseen_classes:
+        seen_ids = {ann["category_id"] for ann in gt["annotations"]}
+        categories = [c for c in categories if c["id"] in seen_ids]
+        
     class_names = [c["name"] for c in categories]
     id_to_index = {c["id"]: i for i, c in enumerate(categories)}
     n = len(class_names)
@@ -62,6 +74,8 @@ def compute_confusion_matrix(
     for pred in predictions:
         if pred["score"] < score_threshold:
             continue
+        if pred["category_id"] not in id_to_index:
+            continue  # a class dropped by skip_unseen_classes -- no row to attribute this to
         preds_by_image.setdefault(pred["image_id"], []).append(
             (id_to_index[pred["category_id"]], _xywh_to_xyxy(pred["bbox"]), pred["score"])
         )

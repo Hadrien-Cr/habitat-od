@@ -19,6 +19,13 @@ HABITAT_DATA = os.environ.get("HABITAT_DATA")
 BASE_DIR = os.environ.get("BASE_DIR")
 assert BASE_DIR is not None, "BASE_DIR environment variable must be set to the repo root"
 
+# ProcTHOR-hab's classes are read straight from the scene dataset's own
+# object_semantic_id_mapping.json (see _load_procthor_classes) rather than one of
+# VOCABULARIES's static lists, so there's no real vocab to name it after -- this is a fixed
+# sentinel callers must pass as vocab_name for ProcTHOR-hab, checked in _setup_procthor/
+# resolve_classes below so a wrong vocab_name is caught instead of silently ignored.
+PROCTHOR_NATIVE_VOCAB = "ProcTHOR-native"
+
 
 def get_obj_from_id(sim: habitat_sim.Simulator, obj_id: int):
     rom = sim.get_rigid_object_manager()
@@ -96,9 +103,9 @@ class ObjectAnnotation:
     setup_semantic_labels() below. classes/obj_id_to_class_id/dimensions_by_obj_id and
     semantic_id_to_classid_obj_id() are what ObjectDetectorGTSensor.decompose_frame needs to
     turn a rendered semantic buffer into per-object detections, for any of the 4 envs.
-    object_info_list/object_occupancy_grid (the top-down occupancy-map debug view used by
-    common/baselines/agents.py's do_visualize) are HSSD-HAB-only - None for the other 3 envs,
-    which have no equivalent handle-based object classification to build them from."""
+    object_info_list/object_occupancy_grid (the top-down occupancy-map debug view exposed via
+    ExplorationEnv.get_object_occupancy/get_tdmap) are HSSD-HAB-only - None for the other 3
+    envs, which have no equivalent handle-based object classification to build them from."""
     env_name: str
     classes: list[str]
     obj_id_to_class_id: dict[int, int]
@@ -224,10 +231,13 @@ def _setup_hssd(sim, vocab_name: str) -> ObjectAnnotation:
     )
 
 
-def _setup_procthor(sim) -> ObjectAnnotation:
+def _setup_procthor(sim, vocab_name: str) -> ObjectAnnotation:
     # Places furniture as real rigid/articulated objects (like HSSD-HAB), each with its own
     # writable visual_scene_nodes - unlike its native per-category semantic id (which merges
     # same-class instances), we can bake a per-instance id here too.
+    assert vocab_name == PROCTHOR_NATIVE_VOCAB, (
+        f"ProcTHOR-hab's vocabulary is data-driven, got vocab_name={vocab_name!r}, expected {PROCTHOR_NATIVE_VOCAB!r}"
+    )
     ai2_root = os.path.dirname(sim.config.sim_cfg.scene_dataset_config_file)
     mapping_path = os.path.join(ai2_root, "configs", "object_semantic_id_mapping.json")
     classes = _load_procthor_classes(mapping_path)
@@ -289,8 +299,30 @@ def setup_semantic_labels(sim, env_name: str, vocab_name: str) -> ObjectAnnotati
     if env_name == "HSSD-HAB":
         return _setup_hssd(sim, vocab_name)
     elif env_name == "ProcTHOR-hab":
-        return _setup_procthor(sim)
+        return _setup_procthor(sim, vocab_name)
     elif env_name in ("MP3D", "Gibson-Semantic"):
         return _setup_native_semantic_scene(sim, env_name, vocab_name)
+    else:
+        raise NotImplementedError(f"Environment {env_name} not supported for object annotations")
+
+
+def resolve_classes(env_name: str, vocab_name: str) -> list[str]:
+    """Class list for (env_name, vocab_name) without needing a live sim, unlike
+    setup_semantic_labels above -- for callers (coco_writer.py, collection.py's
+    visualize_mosaic, agents.py's do_visualize) that only run once collection's simulator
+    has closed. ProcTHOR-hab's vocab_name is data-driven (see PROCTHOR_NATIVE_VOCAB)."""
+    if env_name == "ProcTHOR-hab":
+        assert vocab_name == PROCTHOR_NATIVE_VOCAB, (
+            f"ProcTHOR-hab's vocabulary is data-driven, got vocab_name={vocab_name!r}, expected {PROCTHOR_NATIVE_VOCAB!r}"
+        )
+        mapping_path = os.path.join(
+            str(HABITAT_DATA), "scene_datasets", "ai2thor-hab", "ai2thor-hab", "configs", "object_semantic_id_mapping.json"
+        )
+        return _load_procthor_classes(mapping_path)
+    elif env_name in ("MP3D", "Gibson-Semantic"):
+        return _resolve_native_vocab(env_name, vocab_name)
+    elif env_name == "HSSD-HAB":
+        classes, _, _ = VOCABULARIES[vocab_name]
+        return classes
     else:
         raise NotImplementedError(f"Environment {env_name} not supported for object annotations")

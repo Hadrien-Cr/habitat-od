@@ -52,7 +52,7 @@ _MP3D_SCENE = "17DRP5sb8fy"
 _PROCTHOR_SCENE = "ProcTHOR-Train-9632"
 _PROCTHOR_SCENE_2 = "ProcTHOR-Train-6340"  # multi-room house, exercises the ceiling-stripping across several rooms at once
 
-_RESOLUTION = [2048, 2048]
+_RESOLUTION = [900, 900]
 _HFOV_DEG = 90.0
 _WHITE_WASH_ALPHA = 0.25  # how much a white layer lightens rgb before the semantic color goes on top
 _OVERLAY_ALPHA = 1.0  # semantic color's alpha over the white-washed rgb

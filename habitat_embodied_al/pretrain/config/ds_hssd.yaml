@@ -1,26 +1,17 @@
 # run_name changed from ds_filter_empty -- that's the old 20/4 collection, doesn't have the 5 new scenes
 run_name: hssd
-trainer_name: randomteleportbaseline
 steps_per_episode: 500
-filter_empty: True
+filter_empty: False
 
 object_params:
   env_name: "HSSD-HAB"
   vocab_name: "HSSD80"
-  area_thr: 500
+  area_thr: 1000
   filter_low_visibility: True
   min_visibility_fraction: 0.15
-  filter_out_classes: [ "alarm_clock", "animal", "bench", "bicycle", "blender", "book",
-    "bottle", "bowl", "breadbin", "camera", "candle", "car", "carpet",
-    "ceiling_lamp", "clothing", "coffee_maker", "colander",
-    "couch", "cushion", "dishwasher", "door", "drinkware", "earphone",
-    "exercise_bike", "eyeglasses", "filing_cabinet", "floor_lamp", "flower", "fridge",
-    "grandfather_clock", "kettle", "kitchen_scale", "laptop", "mantel_clock", "microwave",
-    "mixing_bowl", "mobile_phone", "motorcycle", "oven", "pan", "pathway_light", "person", "phone",
-    "picture_frame", "plate", "plush_toy", "pot", "printer", "range_hood",
-    "shoes", "sink", "soap_dispenser", "spicemill", "stand",
-    "table_lamp", "teapot", "toaster", "toiletry", "trashcan", "tray", "treadmill",
-    "tree", "vase", "wall_clock", "wall_lamp", "wardrobe", "washer_dryer", "window"]
+  filter_classes: [ "bathtub", "bed", "cabinet", "chair", "chest_of_drawers", "counter",
+    "curtain", "fireplace", "mirror", "picture", "potted_plant", "shelves", "shower", "stool",
+    "table", "toilet", "tv" ]
 
 train_scenes: [
   "102344022", "102817053", "104348133_171513054", "105515175_173104107", "106366371_174226743",

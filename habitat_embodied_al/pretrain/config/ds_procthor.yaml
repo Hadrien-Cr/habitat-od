@@ -1,37 +1,17 @@
-# vocab_name "unused": ProcTHOR-hab's vocab is data-driven, read straight from the scene dataset
 run_name: procthor
-trainer_name: randomteleportbaseline
 steps_per_episode: 500
-filter_empty: True
+filter_empty: False
 
 object_params:
   env_name: "ProcTHOR-hab"
-  vocab_name: "unused"
-  area_thr: 500
+  vocab_name: "ProcTHOR-native"
+  area_thr: 1000
   filter_low_visibility: True
   min_visibility_fraction: 0.15
-  filter_out_classes: [ "AlarmClock", "AluminumFoil", "Apple", "AppleSliced", "BaseballBat",
-    "BasketBall", "BathtubBasin", "Bench", "Blinds", "Book", "Boots", "Bottle", "Bowl",
-    "BowlDirty", "BowlFilled", "Box", "Bread", "BreadSliced", "ButterKnife", "CD", "Candle",
-    "Cart", "CellPhone", "Cloth", "ClothesDryer", "CoffeeMachine", "Container", "ContainerFull",
-    "CreditCard", "Cup", "Curtains", "DeskLamp", "Desktop", "Dirt", "DishSponge", "DogBed",
-    "Doorframe", "Doorway", "Drawer", "Dumbbell", "Egg", "EggCracked", "EggShell", "Faucet",
-    "Floor", "FloorLamp", "Footstool", "Fork", "GarbageBag", "GarbageCan", "HandTowel",
-    "HandTowelHolder", "HousePlant", "Kettle", "KeyChain", "Knife", "Ladle", "Lamp", "Laptop",
-    "LaundryHamper", "LaundryHamperLid", "Lettuce", "LettuceSliced", "LightSwitch", "Lighter",
-    "MassObjectSpawner", "MassScale", "MiscTableObject", "Mug", "MugFilled", "Newspaper",
-    "Omelette", "Painting", "PaintingHanger", "PaintingHangerLarge", "PaintingHangerMedium",
-    "PaintingHangerSmall", "PaintingLarge", "PaintingMedium", "PaintingSmall", "Pan", "PanLid",
-    "PaperTowelRoll", "Pen", "Pencil", "PepperShaker", "Pillow", "Plate", "Plunger", "Poster",
-    "Pot", "PotLid", "Potato", "PotatoSliced", "RemoteControl", "RoomDecor", "Safe",
-    "SaltShaker", "Sandwich", "ScreenFrame", "ScreenSheet", "ScrubBrush", "ShowerCurtain",
-    "ShowerDoor", "ShowerGlass", "ShowerHead", "Sink", "SinkBasin", "SmallMirror", "SoapBar",
-    "SoapBottle", "SoapBottleFilled", "SoapContainer", "Spatula", "Spoon", "SportsEquipment",
-    "SprayBottle", "Statue", "StoveBurner", "StoveKnob", "TableTopDecor", "TargetCircle",
-    "TeddyBear", "TennisRacket", "Tissue", "TissueBox", "TissueBoxEmpty", "ToiletPaper",
-    "ToiletPaperHanger", "ToiletPaperRoll", "Tomato", "TomatoSliced", "Towel", "TowelHolder",
-    "Undefined", "VacuumCleaner", "Vase", "Wall", "WallMirror", "Watch", "WateringCan", "Window",
-    "WineBottle" ]
+  filter_classes: [ "Toaster", "Microwave", "Fridge", "Cabinet", "Chair", "DiningTable",
+    "CounterTop", "Television", "Toilet", "Bathtub", "Bed", "Mirror", "ArmChair", "Ottoman",
+    "Sofa", "Shelf", "Dresser", "Desk", "SideTable", "TVStand", "CoffeeTable", "ShelvingUnit",
+    "Stool", "WashingMachine" ]
 
 train_scenes: [
   "ProcTHOR-Train-0", "ProcTHOR-Train-1", "ProcTHOR-Train-2", "ProcTHOR-Train-3",

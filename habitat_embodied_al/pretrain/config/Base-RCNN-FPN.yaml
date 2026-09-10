@@ -1,4 +1,11 @@
-# Local copy of detectron2's own configs/Base-RCNN-FPN.yaml 
+# Local copy of detectron2's own configs/Base-RCNN-FPN.yaml, content unmodified except
+# DATASETS.TRAIN/TEST (repointed at the fixed "train"/"val" names
+# habitat_embodied_al.dataset.register_dataset always uses -- see pretrain.py's --ds-config
+# mode) and the added TEST.EVAL_PERIOD. Copied rather than _BASE_-referenced from
+# third_party/detectron2/configs/ so this package's model configs (mask_rcnn_R_50_FPN_coco*.yaml
+# etc.) don't depend on the vendored detectron2 clone's file layout -- any overlay can point
+# _BASE_ at this file the same way the originals point at theirs. reproduce/config/ keeps its
+# own duplicate of this file instead of pointing _BASE_ here, so it stays self-contained too.
 MODEL:
   META_ARCHITECTURE: "GeneralizedRCNN"
   BACKBONE:

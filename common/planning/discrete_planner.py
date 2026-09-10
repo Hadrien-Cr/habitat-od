@@ -183,7 +183,7 @@ class DiscretePlanner:
             closest_goal_map,
             short_term_goal,
             dilated_obstacle_map,
-            could_not_find_path,
+            could_not_find_shortest_path,
             planner_stop
         """
         # Reset timestep using argument; useful when there are timesteps where the discrete planner is not invoked

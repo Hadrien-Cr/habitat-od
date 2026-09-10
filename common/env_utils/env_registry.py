@@ -1,6 +1,6 @@
 """Per-env_name static config needed to collect data for any of
 object_annotations.py's 4 supported env_names from one shared Hydra config
-(see habitat_embodied_al/collection.py::collect_raw and
+(see habitat_embodied_al/collection.py::configure_scene and
 common/config/hssd-hab/default.yaml, which despite its path is now
 env-agnostic). The only thing that genuinely differs per env at the
 habitat-lab config level is which scene_dataset_config.json scenes/episodes

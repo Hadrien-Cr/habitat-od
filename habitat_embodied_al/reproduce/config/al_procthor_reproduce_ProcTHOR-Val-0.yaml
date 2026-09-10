@@ -1,0 +1,37 @@
+# Active-learning run params for main.py -- starts from ds_procthor_reproduce.yaml's own
+# pretrained checkpoint (step 3 of ../README.md) and continues fine-tuning it round by round on
+# freshly explored ProcTHOR-Val-0, scored each round against that same scene's own distinct
+# validation set (datasets/procthor_reproduce_valdistinct_ProcTHOR-Val-0/, step 2 of
+# ../README.md -- derived from scene_name, see main.py's _VALDISTINCT_RUN_NAME).
+run_name: al_procthor_reproduce
+scene_name: "ProcTHOR-Val-0"
+rounds: 5
+timesteps: 400
+samples: 20
+sampler: "random"
+agent: "random"
+
+init_checkpoint: habitat_embodied_al/reproduce/logs/mask_rcnn_R_50_FPN_coco_procthor_reproduce/model_final.pth
+
+object_params:
+  env_name: "ProcTHOR-hab"
+  vocab_name: "ProcTHOR-native"
+  area_thr: 1000
+  filter_low_visibility: True
+  min_visibility_fraction: 0.15
+  filter_classes: [
+    "Apple", "Tomato", "Bread", "Pot", "Knife", "Fork", "Spoon", "Bowl", "Egg", "Lettuce",
+    "Potato", "Mug", "Plate", "Cup", "ButterKnife", "Statue", "TissueBox", "Laptop",
+    "RemoteControl", "Box", "Newspaper", "KeyChain", "CellPhone", "CreditCard", "Candle",
+    "Plunger", "ToiletPaper", "SoapBottle", "SprayBottle", "Book", "AlarmClock", "Pen",
+    "Pencil", "Watch", "BaseballBat", "BasketBall", "Bottle", "DishSponge", "PaperTowelRoll",
+    "PepperShaker", "SaltShaker", "Spatula", "TeddyBear", "TennisRacket", "Vase", "Pillow",
+    "DeskLamp", "CD", "WineBottle" ]
+
+MODEL:
+  SOLVER:
+    IMS_PER_BATCH: 32
+    BASE_LR: 0.001
+    STEPS: (70, 90)
+    MAX_ITER: 100
+    WARMUP_ITERS: 0

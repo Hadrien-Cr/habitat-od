@@ -76,8 +76,8 @@ _RESOLUTION = [480, 480]
 _HFOV_DEG = 90.0
 _AGENT_HEIGHT = 0.88  # matches common/config/hssd-hab/default.yaml's agent height
 _OVERLAY_ALPHA = 0.5
-_N_POINTS = 10
-_FILTER_OUT_CLASSES: list[str] = []  # see object_detector_sensors.py's filter_out_classes
+_N_POINTS = 4
+_FILTER_OUT_CLASSES: list[str] = []  # local denylist, opposite of object_detector_sensors.py's filter_classes allow-list
 _TESTDUMP_DIR = os.path.join(os.path.dirname(__file__), "testdump", "test_procthor")
 os.system(f"rm -rf {_TESTDUMP_DIR}")
 

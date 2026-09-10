@@ -4,6 +4,7 @@ __pycache__/
 data
 data/
 *.zip
+*.out
 *.pt
 *.pth
 datasets/

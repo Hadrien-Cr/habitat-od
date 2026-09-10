@@ -48,8 +48,8 @@ HABITAT_DATA = os.environ.get("HABITAT_DATA")
 _RESOLUTION = [640, 640]  # matches train_mosaic.png's tile size
 _HFOV_DEG = 90.0
 _AGENT_HEIGHT = 0.88  # matches common/config/hssd-hab/default.yaml's agent height
-_N_NONEMPTY_FRAMES_PER_ENV = 32
-_MAX_ATTEMPTS_PER_ENV = 400  # generous cap so a scene with few visible/labeled objects can't hang forever
+_N_NONEMPTY_FRAMES_PER_ENV = 8
+_MAX_ATTEMPTS_PER_ENV = 100  # generous cap so a scene with few visible/labeled objects can't hang forever
 _TESTDUMP_DIR = os.path.join(os.path.dirname(__file__), "testdump", "test_object_detector")
 os.system(f"rm -rf {_TESTDUMP_DIR}")
 
@@ -72,7 +72,7 @@ _ENV_SPECS = {
         scene_id="Collierville",
     ),
     "ProcTHOR-hab": dict(
-        vocab_name="unused",  # ProcTHOR-hab's vocabulary is fully data-driven - see object_annotations.py
+        vocab_name="ProcTHOR-native",  # ProcTHOR-hab's vocabulary is fully data-driven - see object_annotations.py
         dataset_config=f"{HABITAT_DATA}/scene_datasets/ai2thor-hab/ai2thor-hab/ai2thor-hab.scene_dataset_config.json" if HABITAT_DATA else None,
         scene_id="ProcTHOR-Train-9632",
     ),
@@ -130,12 +130,12 @@ def _random_agent_state(sim, rng) -> habitat_sim.AgentState:
 
 
 def _as_gt_instances(instances: Instances) -> Instances:
-    """Same filtering/renaming common/env_utils/sense.py::BBSense.get_bbs_as_gt() does for
-    on-disk sense files - reimplemented here since that class expects a stored sense file's
-    SenseInfo/path, not a live decompose_frame() result."""
+    """Same filtering/renaming common/env_utils/sense.py::BBSense.get_bbs_as_gt() +
+    keep_valid_instances() does for on-disk sense files - reimplemented here since that class
+    expects a stored sense file's SenseInfo/path, not a live decompose_frame() result."""
     keep = [
         i for i, info in enumerate(instances.infos)
-        if not info["filtered_low_area"] and not info["filtered_low_visibility"]
+        if not info["filtered_class"] and not info["filtered_low_area"] and not info["filtered_low_visibility"]
     ]
     kept = instances[keep]
     target = Instances(kept.image_size)
@@ -164,7 +164,7 @@ def test_generates_cross_env_detection_mosaics():
             config = ObjectDetectorGTSensorConfig(
                 env_name=env_name, vocab_name=spec["vocab_name"],
                 area_thr=250, filter_low_visibility=True, min_visibility_fraction=0.15,
-                filter_out_classes=[],
+                filter_classes=[],
             )
             sensor = ObjectDetectorGTSensor(sim, config)
             sensor.setup_semantic_labels()

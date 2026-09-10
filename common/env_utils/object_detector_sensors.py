@@ -1,5 +1,5 @@
 import logging
-from typing import Any
+from typing import Any, Optional
 
 import cv2
 from habitat_sim.agent.agent import AgentState
@@ -27,7 +27,7 @@ class ObjectDetectorGTSensor(habitat.Sensor): # type: ignore
     area_thr: float
     filter_low_visibility: bool
     min_visibility_fraction: float
-    filter_out_classes: set[str]
+    filter_classes: Optional[set[str]]
     annotation: ObjectAnnotation
 
     def __init__(self, sim, config: ObjectDetectorGTSensorConfig, **kwargs: Any) -> None:
@@ -41,7 +41,8 @@ class ObjectDetectorGTSensor(habitat.Sensor): # type: ignore
         self.area_thr = config.area_thr
         self.filter_low_visibility = config.filter_low_visibility
         self.min_visibility_fraction = config.min_visibility_fraction
-        self.filter_out_classes = set(config.filter_out_classes)
+        # None means keep every class (except "unknown", always dropped) - see decompose_frame.
+        self.filter_classes = set(config.filter_classes) if config.filter_classes else None
         self.camera_hfov = next(
             float(spec.hfov)
             for spec in self._sim.config.agents[0].sensor_specifications
@@ -88,8 +89,7 @@ class ObjectDetectorGTSensor(habitat.Sensor): # type: ignore
 
             assert class_id < len(classes), f"Class id {class_id} for semantic id {semantic_id} is out of range for vocabulary {classes}"
 
-            if classes[class_id] == "unknown" or classes[class_id] in self.filter_out_classes:
-                continue
+            filtered_class = classes[class_id] == "unknown" or (self.filter_classes is not None and classes[class_id] not in self.filter_classes)
 
             x, y, w, h = cv2.boundingRect(mask)
             mask_area = np.sum(mask)
@@ -114,11 +114,11 @@ class ObjectDetectorGTSensor(habitat.Sensor): # type: ignore
 
             detections.append({
                 "class_id": torch.tensor(class_id).unsqueeze(0),
-                "mask": torch.from_numpy(mask.squeeze()).bool().unsqueeze(0),
                 "bounding_box": torch.tensor([x, y, x + w, y + h]).unsqueeze(0),
                 "info": {
                     "object_id": obj_id,
                     "env_name": self.env_name,
+                    "filtered_class": filtered_class,
                     "filtered_low_area": filtered_low_area,
                     "filtered_low_visibility": filtered_low_visibility,
                     "visibility_fraction": visibility_fraction
@@ -131,7 +131,6 @@ class ObjectDetectorGTSensor(habitat.Sensor): # type: ignore
                 pred_boxes=Boxes(torch.zeros((0,4))),
                 pred_classes=torch.zeros((0,)).long(),
                 scores=torch.zeros((0,)),
-                pred_masks=torch.zeros((0, semantic_obs.shape[0], semantic_obs.shape[1])).bool(),
                 infos=np.zeros((0,), dtype=object),
             )}
 
@@ -139,7 +138,6 @@ class ObjectDetectorGTSensor(habitat.Sensor): # type: ignore
         sorted_detections = sorted(detections, key=lambda d: get_center(d["bounding_box"][0])[0] + get_center(d["bounding_box"][0])[1], reverse=False)
         pred_boxes = torch.cat([d["bounding_box"] for d in sorted_detections])
         pred_classes = torch.cat([d["class_id"] for d in sorted_detections])
-        pred_masks = torch.cat([d["mask"] for d in sorted_detections])
         infos = np.array([d["info"] for d in sorted_detections], dtype=object)
 
         return {'instances': Instances(
@@ -147,7 +145,6 @@ class ObjectDetectorGTSensor(habitat.Sensor): # type: ignore
             pred_boxes=Boxes(pred_boxes),
             pred_classes=pred_classes,
             scores=torch.ones(len(sorted_detections)),
-            pred_masks=pred_masks,
             infos=infos,
         )}
 

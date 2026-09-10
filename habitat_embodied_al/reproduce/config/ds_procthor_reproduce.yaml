@@ -1,0 +1,49 @@
+# Pretraining (train+val) collection config for reproduce/ (see ../README.md).
+# 80 ProcTHOR-hab train-pool scenes (ProcTHOR-Train-0..79), split 64/16 -- same
+# scene count and split ratio as the original embodied-active-learning-od repo's
+# pretraining_data_create.py --scene-type procthor (PROCTHOR_TRAIN_SCENES, 80
+# scenes, 80/20 split). Consume with:
+#   PYTHONPATH=. python habitat_embodied_al/collect_dataset.py \
+#       --config habitat_embodied_al/reproduce/config/ds_procthor_reproduce.yaml
+run_name: procthor_reproduce
+steps_per_episode: 500
+filter_empty: False
+
+object_params:
+  env_name: "ProcTHOR-hab"
+  vocab_name: "ProcTHOR-native"
+  area_thr: 1000
+  filter_low_visibility: True
+  min_visibility_fraction: 0.15
+  # classes.py::PROCTHOR_SHORT_CLASSES -- the 49-class shortlist reproduced from
+  # the original repo's OBJECTS_PROCTHOR_SHORT.
+  filter_classes: [
+    "Apple", "Tomato", "Bread", "Pot", "Knife", "Fork", "Spoon", "Bowl", "Egg", "Lettuce",
+    "Potato", "Mug", "Plate", "Cup", "ButterKnife", "Statue", "TissueBox", "Laptop",
+    "RemoteControl", "Box", "Newspaper", "KeyChain", "CellPhone", "CreditCard", "Candle",
+    "Plunger", "ToiletPaper", "SoapBottle", "SprayBottle", "Book", "AlarmClock", "Pen",
+    "Pencil", "Watch", "BaseballBat", "BasketBall", "Bottle", "DishSponge", "PaperTowelRoll",
+    "PepperShaker", "SaltShaker", "Spatula", "TeddyBear", "TennisRacket", "Vase", "Pillow",
+    "DeskLamp", "CD", "WineBottle" ]
+
+train_scenes: [
+  "ProcTHOR-Train-0", "ProcTHOR-Train-1", "ProcTHOR-Train-2", "ProcTHOR-Train-3", "ProcTHOR-Train-4",
+  "ProcTHOR-Train-5", "ProcTHOR-Train-6", "ProcTHOR-Train-7", "ProcTHOR-Train-8", "ProcTHOR-Train-9",
+  "ProcTHOR-Train-10", "ProcTHOR-Train-11", "ProcTHOR-Train-12", "ProcTHOR-Train-13", "ProcTHOR-Train-14",
+  "ProcTHOR-Train-15", "ProcTHOR-Train-16", "ProcTHOR-Train-17", "ProcTHOR-Train-18", "ProcTHOR-Train-19",
+  "ProcTHOR-Train-20", "ProcTHOR-Train-21", "ProcTHOR-Train-22", "ProcTHOR-Train-23", "ProcTHOR-Train-24",
+  "ProcTHOR-Train-25", "ProcTHOR-Train-26", "ProcTHOR-Train-27", "ProcTHOR-Train-28", "ProcTHOR-Train-29",
+  "ProcTHOR-Train-30", "ProcTHOR-Train-31", "ProcTHOR-Train-32", "ProcTHOR-Train-33", "ProcTHOR-Train-34",
+  "ProcTHOR-Train-35", "ProcTHOR-Train-36", "ProcTHOR-Train-37", "ProcTHOR-Train-38", "ProcTHOR-Train-39",
+  "ProcTHOR-Train-40", "ProcTHOR-Train-41", "ProcTHOR-Train-42", "ProcTHOR-Train-43", "ProcTHOR-Train-44",
+  "ProcTHOR-Train-45", "ProcTHOR-Train-46", "ProcTHOR-Train-47", "ProcTHOR-Train-48", "ProcTHOR-Train-49",
+  "ProcTHOR-Train-50", "ProcTHOR-Train-51", "ProcTHOR-Train-52", "ProcTHOR-Train-53", "ProcTHOR-Train-54",
+  "ProcTHOR-Train-55", "ProcTHOR-Train-56", "ProcTHOR-Train-57", "ProcTHOR-Train-58", "ProcTHOR-Train-59",
+  "ProcTHOR-Train-60", "ProcTHOR-Train-61", "ProcTHOR-Train-62", "ProcTHOR-Train-63",
+]
+val_scenes: [
+  "ProcTHOR-Train-64", "ProcTHOR-Train-65", "ProcTHOR-Train-66", "ProcTHOR-Train-67", "ProcTHOR-Train-68",
+  "ProcTHOR-Train-69", "ProcTHOR-Train-70", "ProcTHOR-Train-71", "ProcTHOR-Train-72", "ProcTHOR-Train-73",
+  "ProcTHOR-Train-74", "ProcTHOR-Train-75", "ProcTHOR-Train-76", "ProcTHOR-Train-77", "ProcTHOR-Train-78",
+  "ProcTHOR-Train-79",
+]

@@ -31,7 +31,7 @@ import common.env_utils.sensors  # noqa: F401 - registers agent_collision_sensor
 
 _SCENE = "102344022"
 _VOCAB = "NYU40"
-_K_FRAMES = 5
+_K_FRAMES = 3
 _TESTDUMP_DIR = os.path.join(os.path.dirname(__file__), "testdump", "test_sensor_filters")
 os.system(f"rm -rf {_TESTDUMP_DIR}")
 

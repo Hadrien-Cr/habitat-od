@@ -13,6 +13,7 @@ from detectron2.structures import BitMasks
 from detectron2.structures.instances import Instances
 from detectron2.utils.visualizer import ColorMode, Visualizer
 from habitat.utils.visualizations import maps # type: ignore[import]
+from PIL import Image
 from typing import Any
 
 
@@ -54,9 +55,10 @@ class SenseInfo:
     step: int = 0
 
     def get_path(self) -> str:
+        ext = "jpg" if self.mod == RGBSense.CODE else "npy"
         return os.path.join(
             self.base_path,
-            f"episode_{self.episode:06d}_modality_{self.mod}_step_{self.step:05d}_id_{self.camera_id}.npy",
+            f"episode_{self.episode:06d}_modality_{self.mod}_step_{self.step:05d}_id_{self.camera_id}.{ext}",
         )
     
 class Sense(abc.ABC):
@@ -233,8 +235,7 @@ class RGBSense(VisualSense):
 
     @staticmethod
     def load(path):
-        rgb_image = np.load(path)
-        rgb_image = rgb_image[:, :, 0:3]  # remove alpha channel
+        rgb_image = np.array(Image.open(path).convert("RGB"))
         return RGBSense(rgb_image, path, sense_info=get_sense_info(path))
 
 
@@ -300,22 +301,24 @@ class BBSense(VisualSense):
         res = np.load(path_bb, allow_pickle=True).item()
         return BBSense(path=path_bb, bbs=res["instances"], frame=None, sense_info=get_sense_info(path_bb))
 
-    def get_bbs_as_gt(self, filter_low_area=True, filter_low_visibility=True):
-        indices_to_remove = []
-        for i, info in enumerate(self.bbs.infos):
-            if info['filtered_low_area'] and filter_low_area:
-                indices_to_remove.append(i)
-            elif info['filtered_low_visibility'] and filter_low_visibility:
-                indices_to_remove.append(i)
-            
-        keep_idx = [i for i in range(len(self.bbs)) if i not in indices_to_remove]
-        self.bbs = self.bbs[keep_idx]
-
+    def get_bbs_as_gt(self):
+        """Renames pred_* fields to gt_*, keeping every detection (including ones flagged
+        filtered_class/filtered_low_area/filtered_low_visibility in infos) - callers that
+        need only the kept ones should use keep_valid_instances()."""
         target = Instances(self.bbs.image_size)
         target.gt_boxes = self.bbs.pred_boxes
         target.gt_classes = self.bbs.pred_classes
+        target.infos = self.bbs.infos
 
         if hasattr(self.bbs, "pred_masks"):
             target.gt_masks = self.bbs.pred_masks
 
         return target
+
+
+def is_valid_info(info: dict) -> bool:
+    return not (info["filtered_class"] or info["filtered_low_area"] or info["filtered_low_visibility"])
+
+def keep_valid_instances(instances: Instances) -> Instances:
+    keep_idx = [i for i, info in enumerate(instances.infos) if is_valid_info(info)]
+    return instances[keep_idx]

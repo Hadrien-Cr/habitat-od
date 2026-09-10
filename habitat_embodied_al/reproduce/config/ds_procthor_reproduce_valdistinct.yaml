@@ -1,0 +1,38 @@
+# Distinct validation-set collection config for reproduce/ (see ../README.md) --
+# the counterpart of the original repo's validation_data_create.py. Draws from
+# ProcTHOR-hab's own held-out ProcTHOR-Val-* scene pool (never touched by
+# ds_procthor_reproduce.yaml's train/val scenes, which only use ProcTHOR-Train-*),
+# same as the original repo drawing PROCTHOR_VAL_SCENES (HousePlan81-90) from
+# prior's separate "val" split rather than just holding out more train scenes.
+#
+# train_scenes is intentionally omitted -- this only ever produces a val.json/val/
+# under datasets/procthor_reproduce_valdistinct/, meant purely to score an already
+# fine-tuned checkpoint against, not to train further. No trainer_name: collected via
+# collect_validation (collection.py), not a habitat-baselines trainer. Consume with:
+#   PYTHONPATH=. python habitat_embodied_al/collect_validation_dataset.py \
+#       --config habitat_embodied_al/reproduce/config/ds_procthor_reproduce_valdistinct.yaml
+run_name: procthor_reproduce_valdistinct
+steps_per_episode: 1000
+filter_empty: False
+
+object_params:
+  env_name: "ProcTHOR-hab"
+  vocab_name: "ProcTHOR-native"
+  area_thr: 1000
+  filter_low_visibility: True
+  min_visibility_fraction: 0.15
+  # kept identical to ds_procthor_reproduce.yaml's filter_classes so both
+  # datasets share the exact same 49-class category space.
+  filter_classes: [
+    "Apple", "Tomato", "Bread", "Pot", "Knife", "Fork", "Spoon", "Bowl", "Egg", "Lettuce",
+    "Potato", "Mug", "Plate", "Cup", "ButterKnife", "Statue", "TissueBox", "Laptop",
+    "RemoteControl", "Box", "Newspaper", "KeyChain", "CellPhone", "CreditCard", "Candle",
+    "Plunger", "ToiletPaper", "SoapBottle", "SprayBottle", "Book", "AlarmClock", "Pen",
+    "Pencil", "Watch", "BaseballBat", "BasketBall", "Bottle", "DishSponge", "PaperTowelRoll",
+    "PepperShaker", "SaltShaker", "Spatula", "TeddyBear", "TennisRacket", "Vase", "Pillow",
+    "DeskLamp", "CD", "WineBottle" ]
+
+val_scenes: [
+  "ProcTHOR-Val-0", "ProcTHOR-Val-1", "ProcTHOR-Val-2", "ProcTHOR-Val-3", "ProcTHOR-Val-4",
+  "ProcTHOR-Val-5", "ProcTHOR-Val-6", "ProcTHOR-Val-7", "ProcTHOR-Val-8", "ProcTHOR-Val-9",
+]
