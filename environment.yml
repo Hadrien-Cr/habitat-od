@@ -36,6 +36,7 @@ dependencies:
     - torch==1.13.1
     - pytorch-lightning[extra]
     - tensorboard
+    - optuna
     - cloudpickle
     - pycocotools
     - ipykernel

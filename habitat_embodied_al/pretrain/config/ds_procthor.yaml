@@ -5,7 +5,7 @@ filter_empty: False
 object_params:
   env_name: "ProcTHOR-hab"
   vocab_name: "ProcTHOR-native"
-  area_thr: 1000
+  area_thr: 400
   filter_low_visibility: True
   min_visibility_fraction: 0.15
   filter_classes: [ "Toaster", "Microwave", "Fridge", "Cabinet", "Chair", "DiningTable",

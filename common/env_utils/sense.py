@@ -58,7 +58,7 @@ class SenseInfo:
         ext = "jpg" if self.mod == RGBSense.CODE else "npy"
         return os.path.join(
             self.base_path,
-            f"episode_{self.episode:06d}_modality_{self.mod}_step_{self.step:05d}_id_{self.camera_id}.{ext}",
+            f"episode_{self.episode:04d}_modality_{self.mod}_step_{self.step:04d}_id_{self.camera_id}.{ext}",
         )
     
 class Sense(abc.ABC):
@@ -302,18 +302,25 @@ class BBSense(VisualSense):
         return BBSense(path=path_bb, bbs=res["instances"], frame=None, sense_info=get_sense_info(path_bb))
 
     def get_bbs_as_gt(self):
-        """Renames pred_* fields to gt_*, keeping every detection (including ones flagged
-        filtered_class/filtered_low_area/filtered_low_visibility in infos) - callers that
-        need only the kept ones should use keep_valid_instances()."""
-        target = Instances(self.bbs.image_size)
-        target.gt_boxes = self.bbs.pred_boxes
-        target.gt_classes = self.bbs.pred_classes
-        target.infos = self.bbs.infos
+        """Keeps every detection (including ones flagged filtered_class/filtered_low_area/
+        filtered_low_visibility in infos) - callers that need only the kept ones should use
+        keep_valid_instances()."""
+        return bbs_instances_as_gt(self.bbs)
 
-        if hasattr(self.bbs, "pred_masks"):
-            target.gt_masks = self.bbs.pred_masks
 
-        return target
+def bbs_instances_as_gt(instances: Instances) -> Instances:
+    """Renames the raw ObjectDetectorGTSensor's pred_* fields (see object_detector_sensors.py)
+    to gt_* -- plot_utils.py's plot_segmentation_gt/plot_segmentation expect gt_boxes/
+    gt_classes, not the sensor's own pred_boxes/pred_classes naming."""
+    target = Instances(instances.image_size)
+    target.gt_boxes = instances.pred_boxes
+    target.gt_classes = instances.pred_classes
+    target.infos = instances.infos
+
+    if instances.has("pred_masks"):
+        target.gt_masks = instances.pred_masks
+
+    return target
 
 
 def is_valid_info(info: dict) -> bool:

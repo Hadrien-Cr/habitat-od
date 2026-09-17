@@ -15,6 +15,7 @@ from gym import spaces
 from hydra.core.config_store import ConfigStore
 from habitat.tasks.nav.nav import NavigationGoal, NavigationTask, NavigationEpisode # type: ignore
 
+from common.env_utils.lighting import AI2THOR_BRIGHT_LIGHTS
 from common.env_utils.object_annotations import get_all_objects
 from common.planning.skeleton import grid_path
 from common.utils.pose_utils import quaternion_from_rpy
@@ -69,6 +70,11 @@ class ExplorationEnv(RLEnv):
 
         assert self._env._current_episode is not None, "Reset requires an episode"
         self._env.reconfigure(self._env._config)
+        # Simulator.reset() (called above when the sim config is unchanged) unconditionally
+        # rewrites DEFAULT_LIGHTING_KEY back to habitat-sim's stock rig, so any override has to
+        # be re-applied every reset, not just once at construction.
+        if self.get_env_name() == "ProcTHOR-hab":
+            self.set_light_setup(AI2THOR_BRIGHT_LIGHTS)
 
         agent_state = habitat_sim.AgentState()
         agent_state.position = self.get_random_point(rng)
@@ -103,6 +109,13 @@ class ExplorationEnv(RLEnv):
     def set_goals(self, data):
         self._env.current_episode.goals = data.copy()
 
+    def get_legal_actions(self) -> list[str]:
+        legal_actions = []
+        for action in self._env.action_space.spaces.keys():
+            if self._env.task.is_action_allowed(action):
+                legal_actions.append(action)
+        return legal_actions
+
     def set_done(self, done) -> None:
         self._env.current_episode.episode_over = done
 
@@ -122,22 +135,41 @@ class ExplorationEnv(RLEnv):
     _GROUND_FLOOR_MPP = 0.125  # meters/cell, matches HabitatObjOccupancyGrid's own resolution
     _STEP_WALK_METERS = 0.25  # waypoint spacing along find_shortest_path_waypoints's route (embodied-active-learning-od's own grid spacing)
 
+    def get_navmesh_grid(self) -> np.ndarray:
+        r"""Boolean navigable-cell mask at _GROUND_FLOOR_MPP resolution, lazily built and
+        cached per scene (reset on reset()/change_scene()) -- shared by get_random_point/
+        find_shortest_path_waypoints below and by grid-based exploration agents
+        (common/agents/frontier_agent.py, sweep_agent.py, via common/agents/grid.py)."""
+        if self._tdmap is None:
+            lower_bound, _ = self._env.sim.pathfinder.get_bounds()
+            self._tdmap = self._env.sim.pathfinder.get_topdown_view(
+                meters_per_pixel=self._GROUND_FLOOR_MPP, height=lower_bound[1]
+            ).astype(np.uint8)
+        return self._tdmap
+
+    def world_to_cell(self, position: np.ndarray) -> tuple[int, int]:
+        r"""(row, col) into get_navmesh_grid() for a world xyz position."""
+        return maps.to_grid(position[2], position[0], self.get_navmesh_grid().shape, pathfinder=self._env.sim.pathfinder)
+
+    def cell_to_world(self, row: int, col: int) -> np.ndarray:
+        r"""World xyz (snapped onto the navmesh) for a get_navmesh_grid() (row, col) cell."""
+        pathfinder = self._env.sim.pathfinder
+        lower_bound, _ = pathfinder.get_bounds()
+        z, x = maps.from_grid(row, col, self.get_navmesh_grid().shape, pathfinder=pathfinder)
+        return np.array(pathfinder.snap_point(mn.Vector3(x, lower_bound[1], z)))
+
     def get_random_point(self, rng: Optional[np.random.Generator] = None, min_distance: float = 0.0, max_retries: int = 100) -> np.ndarray:
         pathfinder = self._env.sim.pathfinder
         lower_bound, _ = pathfinder.get_bounds()
-        
-        if self._tdmap is None:
-            self._tdmap = pathfinder.get_topdown_view(
-                meters_per_pixel=self._GROUND_FLOOR_MPP, height=lower_bound[1]
-            ).astype(np.uint8)
+        tdmap = self.get_navmesh_grid()
 
-        rows, cols = np.nonzero(self._tdmap)
+        rows, cols = np.nonzero(tdmap)
 
         k = 0
 
         while k < max_retries:
             idx = rng.integers(len(rows)) if rng is not None else np.random.randint(len(rows))
-            z, x = maps.from_grid(rows[idx], cols[idx], self._tdmap.shape, pathfinder=pathfinder)
+            z, x = maps.from_grid(rows[idx], cols[idx], tdmap.shape, pathfinder=pathfinder)
             snapped = pathfinder.snap_point(mn.Vector3(x, lower_bound[1], z))
 
             if min_distance > 0:
@@ -149,6 +181,12 @@ class ExplorationEnv(RLEnv):
 
         return np.array(snapped)
     
+    def get_turn_angle(self) -> int:
+        return self._env.sim.habitat_config.turn_angle
+
+    def get_pitch_angle(self) -> int:
+        return self._env._config.habitat.task.actions.look_down.tilt_angle
+
     def get_random_rotation(self, rng: Optional[np.random.Generator] = None) -> np.ndarray:
         if rng is None:
             rng = np.random.default_rng()
@@ -196,16 +234,13 @@ class ExplorationEnv(RLEnv):
     def find_shortest_path_waypoints(self, start: np.ndarray, end: np.ndarray) -> Optional[list[np.ndarray]]:
         pathfinder = self._env.sim.pathfinder
         lower_bound, _ = pathfinder.get_bounds()
-        if self._tdmap is None:
-            self._tdmap = pathfinder.get_topdown_view(
-                meters_per_pixel=self._GROUND_FLOOR_MPP, height=lower_bound[1]
-            ).astype(np.uint8)
+        tdmap = self.get_navmesh_grid()
 
-        start_row, start_col = maps.to_grid(start[2], start[0], self._tdmap.shape, pathfinder=pathfinder)
-        end_row, end_col = maps.to_grid(end[2], end[0], self._tdmap.shape, pathfinder=pathfinder)
+        start_row, start_col = maps.to_grid(start[2], start[0], tdmap.shape, pathfinder=pathfinder)
+        end_row, end_col = maps.to_grid(end[2], end[0], tdmap.shape, pathfinder=pathfinder)
 
         path_px = grid_path(
-            self._tdmap, (start_col, start_row), (end_col, end_row),
+            tdmap, (start_col, start_row), (end_col, end_row),
             step_size=self._STEP_WALK_METERS / self._GROUND_FLOOR_MPP,
         )
         if len(path_px) < 2:
@@ -256,6 +291,9 @@ class ExplorationEnv(RLEnv):
 
     def get_step(self) -> int:
         return self._elapsed_steps
+
+    def set_light_setup(self, lights: list, key: str = habitat_sim.gfx.DEFAULT_LIGHTING_KEY) -> None:
+        self._env.sim.set_light_setup(lights, key)
 
     @property
     def original_action_space(self) -> spaces.space: # type: ignore

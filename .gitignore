@@ -5,6 +5,7 @@ data
 data/
 *.zip
 *.out
+*.log
 *.pt
 *.pth
 datasets/
@@ -15,4 +16,5 @@ outputs/
 third_party/
 habitat_embodied_al_data/
 tests/testdump/
+scripts/_td_noceil/
 **/logs/*

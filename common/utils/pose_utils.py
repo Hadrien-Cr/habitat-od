@@ -9,6 +9,11 @@ def get_yaw(w, x, y, z):
     return ((2 * math.atan2(y, w) + 2 * math.pi ) % (2 * math.pi))
 
 
+def forward_vector(yaw: float) -> np.ndarray:
+    """Unit world-space heading for `yaw`, in get_yaw/yaw_to_face's own convention."""
+    return np.array([-np.sin(yaw), 0.0, -np.cos(yaw)])
+
+
 def quaternion_from_rpy(roll, pitch, yaw):
     """Inputs in radians"""
     return quat_from_angle_axis(roll, np.array([1, 0, 0])) * quat_from_angle_axis(yaw, np.array([0, 1, 0])) * quat_from_angle_axis(pitch, np.array([0, 0, 1]))

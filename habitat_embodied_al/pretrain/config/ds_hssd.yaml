@@ -6,7 +6,7 @@ filter_empty: False
 object_params:
   env_name: "HSSD-HAB"
   vocab_name: "HSSD80"
-  area_thr: 1000
+  area_thr: 400
   filter_low_visibility: True
   min_visibility_fraction: 0.15
   filter_classes: [ "bathtub", "bed", "cabinet", "chair", "chest_of_drawers", "counter",

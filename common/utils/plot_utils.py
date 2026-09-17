@@ -84,6 +84,27 @@ def plot_metrics(metrics_json: Path, out_path: Path, keys: Optional[list[str]] =
     plt.close(fig)
     return out_path
 
+def plot_al_history(history: list[dict], out_path: Path) -> Path:
+    rounds, maps = [], []
+    for entry in history:
+        ap = entry.get("eval", {}).get("bbox", {}).get("AP")
+        if ap is None or np.isnan(ap):
+            continue
+        rounds.append(0 if entry["round"] == "init" else entry["round"])
+        maps.append(ap)
+
+    fig, ax = plt.subplots(figsize=(5, 4))
+    ax.plot(rounds, maps, color=_SERIES_COLORS[0], linewidth=2, marker="o", markersize=4)
+    ax.set_xlabel("round")
+    ax.set_ylabel("mAP")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    return out_path
+
+
 def plot_semantic_2d_map(
     bg_grid,
     sem_grid,
@@ -198,7 +219,7 @@ def plot_segmentation_pred(rgb: np.ndarray, pred_instances, classes: list[str], 
         rgb,
         scale=scale,
         instance_mode=ColorMode.SEGMENTATION,
-        font_size_scale=0.8
+        font_size_scale=1.0
     )
 
     for i, (box, class_id, score) in enumerate(zip(
@@ -235,7 +256,7 @@ def plot_segmentation_gt(rgb: np.ndarray, gt_instances, classes: list[str], colo
         rgb,
         scale=1.0,
         instance_mode=ColorMode.SEGMENTATION,
-        font_size_scale=0.8
+        font_size_scale=1.0
     )
 
     for i, (box, class_id, info) in enumerate(zip(
@@ -302,7 +323,8 @@ def plot_segmentation(
 def make_mosaic(
     list_fnames_images: list[tuple[str, np.ndarray]],
     target_size: int = 1_000_000,
-    N_cols: int = 4
+    N_cols: int = 4,
+    tile_colors: Optional[list[Optional[tuple[int, int, int]]]] = None,
 ) -> Image.Image:
     n =  len(list_fnames_images)
     processed_images = []
@@ -314,11 +336,13 @@ def make_mosaic(
             filename,
             (5, 25),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.9,
+            0.5,
             (255, 255, 255),
             2,
             cv2.LINE_AA,
         )
+        if tile_colors and tile_colors[i] is not None:
+            cv2.rectangle(img, (0, 0), (img.shape[1] - 1, img.shape[0] - 1), tile_colors[i], 10)
         processed_images.append(img)
 
 

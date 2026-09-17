@@ -10,7 +10,7 @@ ExplorationEnv driven directly in a plain loop -- no habitat-baselines
 trainer/VectorEnv involved."""
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 from tqdm import tqdm  # type: ignore
 
 import numpy as np
@@ -25,11 +25,13 @@ from common.env_utils.env_base import *  # noqa: F401,F403
 from common.env_utils.env_base import ExplorationEnv
 from common.env_utils.dataset import *  # noqa: F401,F403 registers "ExplorationSynthetic"
 from common.env_utils.env_registry import resolve_env
-from common.env_utils.sense import keep_valid_instances
+from common.env_utils.sense import bbs_instances_as_gt, keep_valid_instances
 from common.env_utils.vocab_constants import make_colors
+from common.samplers.greedy_sampler import GreedySampler
 from common.utils.data_utils import save_obs
 from common.utils.dataset_utils import SampleLoader, instance_is_empty
-from common.utils.plot_utils import make_mosaic, plot_segmentation_gt
+from common.utils.interface import Candidate
+from common.utils.plot_utils import make_mosaic, plot_segmentation_gt, plot_segmentation_pred
 # Imported last, deliberately: common.env_utils.sensors's own `import *` above brings in
 # habitat.core.simulator.AgentState (a different, incompatible class -- requires `position`
 # positionally, unlike habitat_sim.AgentState's all-optional fields), which would otherwise
@@ -40,7 +42,6 @@ from common.utils.pose_utils import quaternion_from_rpy, yaw_to_face
 
 def _reset_raw_dir(out_dir: Path) -> None:
     if out_dir.exists():
-        input(f"WARNING: {out_dir} already exists, will delete and overwrite. Press Enter to continue...")
         os.system(f"rm -rf {out_dir}")
     os.makedirs(out_dir, exist_ok=True)
 
@@ -67,6 +68,33 @@ def _write_mosaic(out_dir: Path, object_params: dict, n_samples: int = 32) -> No
         out_dir, object_params["env_name"], object_params["vocab_name"], mosaic_path,
         n_samples=n_samples, shuffle=True, non_empty=True,
     )
+
+
+def write_selection_mosaic(
+    top_n: list[Candidate], selected: list[Candidate], gt_classes: list, pred_classes: list,
+    scorer: GreedySampler, classwise_ap: Optional[dict], out_path: Path, pool: list[Candidate],
+) -> None:
+    """Visualizes what a TwoStageSampler round picked: `top_n` (its first stage's own ranked
+    output, see TwoStageSampler.top_n) sorted by descending score, with a red border on
+    whichever of those the second stage actually `selected`. `pool` is the same candidate pool
+    `top_n` was ranked from (see TwoStageSampler.top_n's own `candidates` arg), needed to
+    re-derive discrepancy scoring's neighbor lookups (common/samplers/scoring.py)."""
+    gt_colors = make_colors(len(gt_classes), seed=0, ctype=0)
+    pred_colors = make_colors(len(pred_classes), seed=0, ctype=0)
+    selected_ids = {id(c) for c in selected}
+
+    tiles, tile_colors = [], []
+    for candidate in top_n:
+        score = scorer.score(candidate, pool, classwise_ap)
+        gt = bbs_instances_as_gt(keep_valid_instances(candidate.bbsgt["instances"]))
+        im = plot_segmentation_pred(candidate.rbg, candidate.pred_instances, pred_classes, pred_colors)
+        im = plot_segmentation_gt(np.array(im), gt, gt_classes, gt_colors)
+        tiles.append((f"{candidate.filename} ({score:.2f})", np.array(im)))
+        tile_colors.append((255, 0, 0) if id(candidate) in selected_ids else None)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    make_mosaic(tiles, N_cols=4, tile_colors=tile_colors).save(out_path)
+    print(f"Wrote top-{len(top_n)} selection mosaic ({len(selected)} selected) to {out_path}")
 
 
 def collect_random(habitat_cfg: Any, ds_cfg: Any, split_name: str, scene_name: str) -> None:

@@ -6,7 +6,7 @@ filter_empty: False
 object_params:
   env_name: "Gibson-Semantic"
   vocab_name: "COCO80"
-  area_thr: 1000
+  area_thr: 400
   filter_low_visibility: True
   min_visibility_fraction: 0.15
   filter_classes: [ "couch", "potted plant", "bed", "dining table", "toilet", "tv" ]

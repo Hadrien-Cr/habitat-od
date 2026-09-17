@@ -21,18 +21,7 @@ class RandomAgent(Agent):
         self._trajectory: list = []
 
     def act(self, env: ExplorationEnv) -> str:
-        if not self._trajectory:
-            self._trajectory = self._plan_to_random_goal(env)
-
-        return self._trajectory.pop(0)
-
-    def _plan_to_random_goal(self, env: ExplorationEnv) -> list:
-        for _ in range(_MAX_GOAL_RETRIES):
-            goal = env.get_random_point(self.rng, min_distance=1.0, max_retries=100)
-            trajectory = env.find_shortest_path(goal)
-  
-            if trajectory:
-                self.goal = goal
-                return trajectory
-        
-        raise RuntimeError(f"Failed to find a random goal after {_MAX_GOAL_RETRIES} retries")
+        legal_actions = env.get_legal_actions()
+        if not legal_actions:
+            raise RuntimeError("No legal actions available in the environment")
+        return self.rng.choice(legal_actions)

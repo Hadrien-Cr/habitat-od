@@ -1,4 +1,6 @@
 """Uniform-random sample selection -- the simplest baseline (see abstract_sampler.py)."""
+from typing import Optional
+
 import numpy as np
 
 from common.samplers.abstract_sampler import Sampler
@@ -10,7 +12,7 @@ class RandomSampler(Sampler):
     def __init__(self, rng: np.random.Generator):
         self.rng = rng
 
-    def select(self, candidates: list[Candidate], budget: int) -> list:
+    def select(self, candidates: list[Candidate], budget: int, *, annotated: Optional[list] = None, classwise_ap: Optional[dict] = None) -> list:
         non_empty_candidates = [c for c in candidates if not instance_is_empty(c.bbsgt["instances"])]
 
         idx = self.rng.choice(len(non_empty_candidates), size=budget, replace=False)

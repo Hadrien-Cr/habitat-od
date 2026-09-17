@@ -31,18 +31,18 @@ def save_obs(dataset_path: str, episode_id: int, observations: list, timestamp: 
 def _remove_data(dataset_path: str, episode_id: int, camera_id: int, timestamp: int, modalities: list[str]) -> None:
     for modality in modalities:
         ext = "jpg" if modality in _JPG_MODALITIES else "npy"
-        path = f"{dataset_path}/episode_{episode_id:06d}_modality_{modality}_step_{timestamp:05d}_id_{camera_id}.{ext}"
+        path = f"{dataset_path}/episode_{episode_id:04d}_modality_{modality}_step_{timestamp:04d}_id_{camera_id}.{ext}"
         if os.path.exists(path):
             os.remove(path)
 
 def _save_data(dataset_path: str, episode_id: int, modality: str, camera_id: int, timestamp: int, data) -> str:
     if modality in _JPG_MODALITIES:
         data = data[:, :, :3]  # drop the alpha channel -- RGBSense.load only ever reads RGB
-        path = f"{dataset_path}/episode_{episode_id:06d}_modality_{modality}_step_{timestamp:05d}_id_{camera_id}.jpg"
+        path = f"{dataset_path}/episode_{episode_id:04d}_modality_{modality}_step_{timestamp:04d}_id_{camera_id}.jpg"
         Image.fromarray(data).save(path, quality=95)
         return path
     
-    path = f"{dataset_path}/episode_{episode_id:06d}_modality_{modality}_step_{timestamp:05d}_id_{camera_id}.npy"
+    path = f"{dataset_path}/episode_{episode_id:04d}_modality_{modality}_step_{timestamp:04d}_id_{camera_id}.npy"
     np.save(
         path,
         data,

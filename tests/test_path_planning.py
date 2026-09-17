@@ -8,10 +8,10 @@ in exactly one "stop" that actually walks the agent to the goal when executed vi
 repeated calls from a fixed pose are deterministic; an unreachable goal returns [] instead of
 raising.
 
-Visual check: drives RandomAgent for one horizon (RandomAgent.HORIZON actions), stepping the env
-with each returned action (rotations/move_forward only, never teleporting) and dumping a rgb |
-top-down map side-by-side GIF to tests/testdump/test_path_planning/ for visual inspection of the
-walk towards the agent's randomly sampled destination (red circle on the map; blue dot+line is
+Visual check: drives RandomAgent for _N_STEPS actions, stepping the env with each returned
+action (rotations/move_forward only, never teleporting) and dumping a rgb | top-down map
+side-by-side GIF to tests/testdump/test_path_planning/ for visual inspection of the walk
+towards the agent's randomly sampled destination (red circle on the map; blue dot+line is
 the agent's position/heading; yellow trail is the path walked so far).
 
 Requires HABITAT_DATA pointing at a real hssd-hab dataset (see INSTALL.MD) -- skipped otherwise.
@@ -31,17 +31,18 @@ import habitat  # type: ignore
 from habitat.config import read_write  # type: ignore
 from habitat.utils.visualizations import maps  # type: ignore
 
-from common.agents.random_agent import HORIZON, RandomAgent
+from common.agents.random_agent import RandomAgent
 from common.env_utils.dataset import ExplorationNavDataset  # noqa: F401 - registers "ExplorationSynthetic"
 from common.env_utils.env_base import ExplorationEnv
 from common.env_utils.object_detector_sensors import ObjectDetectorGTSensorConfig  # registers "bbsgt", required by ExplorationEnv.reset()
 import common.env_utils.sensors  # noqa: F401 - registers agent_collision_sensor/position_sensor
-from common.utils.pose_utils import get_yaw
+from common.utils.pose_utils import forward_vector, get_yaw
 
 _SCENE = "102344022"  # same smoke-test scene as test_sensor_filters.py
 _GOAL_TOLERANCE_M = 1.0  # generous vs. the follower's own goal_radius (0.75 * forward_step_size)
 _MAP_SIZE = 480
 _FRAME_DURATION_MS = 200
+_N_STEPS = 100  # upper bound on how long the GIF runs -- the walk stops early if RandomAgent reaches its first goal and replans a new one (see test_random_agent_walks_one_horizon_to_gif), so this doesn't need to match any particular path length
 _TESTDUMP_DIR = os.path.join(os.path.dirname(__file__), "testdump", "test_path_planning")
 os.system(f"rm -rf {_TESTDUMP_DIR}")
 
@@ -110,17 +111,8 @@ def test_unreachable_goal_returns_empty_list(env):
     assert env.find_shortest_path(far_outside_navmesh) == []
 
 
-def _forward_vector(yaw: float) -> np.ndarray:
-    """Unit world-space heading for `yaw`, in pose_utils.get_yaw/yaw_to_face's own convention."""
-    return np.array([-np.sin(yaw), 0.0, -np.cos(yaw)])
-
-
 def _topdown_map(env) -> np.ndarray:
-    pathfinder = env._env.sim.pathfinder
-    lower_bound, _ = pathfinder.get_bounds()
-    return pathfinder.get_topdown_view(
-        meters_per_pixel=env._GROUND_FLOOR_MPP, height=lower_bound[1]
-    ).astype(np.uint8)
+    return env.get_navmesh_grid()
 
 
 def _render_frame(env, tdmap: np.ndarray, rgb: np.ndarray, trail: list, goal, step: int, action: str) -> Image.Image:
@@ -153,13 +145,13 @@ def _render_frame(env, tdmap: np.ndarray, rgb: np.ndarray, trail: list, goal, st
     # the real yaw hasn't changed at all (see sensors.py's ColoredTDMapSensor, same bug).
     # Fixed on-screen length (not a fixed world-space length through px()) since sx != sy for
     # non-square rooms would otherwise stretch/shrink the line with heading too.
-    dx, dy = -_forward_vector(yaw)[0] * sx, -_forward_vector(yaw)[2] * sy
+    dx, dy = -forward_vector(yaw)[0] * sx, -forward_vector(yaw)[2] * sy
     norm = np.hypot(dx, dy) or 1.0
     tx, ty = ax + dx / norm * 20, ay + dy / norm * 20
     draw.line([ax, ay, tx, ty], fill=(30, 120, 220), width=3)
     draw.ellipse([ax - 5, ay - 5, ax + 5, ay + 5], fill=(30, 120, 220))
 
-    caption = f"step {step}/{HORIZON}  action={action}"
+    caption = f"step {step}/{_N_STEPS}  action={action}"
     if dist_to_goal is not None:
         caption += f"  dist_to_goal={dist_to_goal:.2f}m"
     draw.rectangle([0, 0, _MAP_SIZE, 16], fill=(0, 0, 0))
@@ -183,23 +175,27 @@ def test_random_agent_walks_one_horizon_to_gif(env):
     trail = [_agent_pose(env)]
     frames = []
     dists_to_goal = []
+    first_goal = None
 
-    for step in range(1, HORIZON + 1):
+    for step in range(1, _N_STEPS + 1):
         action = agent.act(env)
         obs, _, _, _ = env.step(action)
         trail.append(_agent_pose(env))
         frames.append(_render_frame(env, tdmap, obs["rgb"], trail, agent.goal, step, action))
-        if agent.goal is not None:
-            dists_to_goal.append(np.hypot(trail[-1][0][0] - agent.goal[0], trail[-1][0][2] - agent.goal[2]))
+        if first_goal is None:
+            first_goal = agent.goal
+        dists_to_goal.append(np.hypot(trail[-1][0][0] - first_goal[0], trail[-1][0][2] - first_goal[2]))
+        if not np.allclose(agent.goal, first_goal):
+            break  # reached the first goal and replanned a new one -- stop so the progress check below stays about a single approach
 
-    assert len(frames) == HORIZON
-    assert agent.goal is not None, "RandomAgent never found a reachable destination -- check the navmesh"
+    assert frames
+    assert first_goal is not None, "RandomAgent never found a reachable destination -- check the navmesh"
     assert dists_to_goal[-1] < dists_to_goal[0], (
-        f"walked away from the goal over the horizon: {dists_to_goal[0]:.2f}m -> {dists_to_goal[-1]:.2f}m"
+        f"walked away from the goal: {dists_to_goal[0]:.2f}m -> {dists_to_goal[-1]:.2f}m"
     )
 
     os.makedirs(_TESTDUMP_DIR, exist_ok=True)
-    out_path = os.path.join(_TESTDUMP_DIR, f"{_SCENE}_horizon{HORIZON}.gif")
+    out_path = os.path.join(_TESTDUMP_DIR, f"{_SCENE}_horizon{len(frames)}.gif")
     frames[0].save(out_path, save_all=True, append_images=frames[1:], duration=_FRAME_DURATION_MS, loop=0)
     print(f"wrote {len(frames)}-frame gif to {out_path}")
 
