@@ -133,10 +133,10 @@ def _reset_scene(sim, donut, cube, thin_panel):
 
 
 def _frame(sim):
-    """Renders the current scene state and returns (semantic_obs, depth_obs, agent_state),
+    """Renders the current scene state and returns (semantic_obs, depth_obs),
     matching what ObjectDetectorGTSensor.decompose_frame is called with."""
     obs = sim.get_sensor_observations()
-    return obs[_SENSOR_UUID], obs[_DEPTH_UUID], sim.get_agent(0).get_state()
+    return obs[_SENSOR_UUID], obs[_DEPTH_UUID]
 
 
 def _save_scene_snapshot(sim, name, fraction):
@@ -156,10 +156,10 @@ def _save_scene_snapshot(sim, name, fraction):
 
 
 def test_donut_fully_visible(sim, donut, request):
-    semantic_obs, depth_obs, agent_state = _frame(sim)
+    semantic_obs, depth_obs = _frame(sim)
     mask = semantic_obs == donut.semantic_id
 
-    fraction = mesh_visibility_fraction(compute_obj_dimensions(donut), mask, agent_state, depth_obs)
+    fraction = mesh_visibility_fraction(compute_obj_dimensions(donut), mask, depth_obs)
     _save_scene_snapshot(sim, request.node.name, fraction)
 
     # A torus's AABB is mostly empty space (the hole, the gaps around the ring), so even a
@@ -170,10 +170,10 @@ def test_donut_fully_visible(sim, donut, request):
 
 def test_donut_half_in_border(sim, donut, request):
     donut.translation = _BORDER_DONUT_POS
-    semantic_obs, depth_obs, agent_state = _frame(sim)
+    semantic_obs, depth_obs = _frame(sim)
     mask = semantic_obs == donut.semantic_id
 
-    fraction = mesh_visibility_fraction(compute_obj_dimensions(donut), mask, agent_state, depth_obs)
+    fraction = mesh_visibility_fraction(compute_obj_dimensions(donut), mask, depth_obs)
     _save_scene_snapshot(sim, request.node.name, fraction)
 
     assert 0.08 <= fraction <= 0.16, f"expected roughly half the donut to be cropped, got {fraction:.3f}"
@@ -181,10 +181,10 @@ def test_donut_half_in_border(sim, donut, request):
 
 def test_donut_half_occluded_by_cube(sim, donut, cube, request):
     cube.translation = _OCCLUDER_POS
-    semantic_obs, depth_obs, agent_state = _frame(sim)
+    semantic_obs, depth_obs = _frame(sim)
     mask = semantic_obs == donut.semantic_id
 
-    fraction = mesh_visibility_fraction(compute_obj_dimensions(donut), mask, agent_state, depth_obs)
+    fraction = mesh_visibility_fraction(compute_obj_dimensions(donut), mask, depth_obs)
     _save_scene_snapshot(sim, request.node.name, fraction)
 
     assert 0.05 <= fraction <= 0.12, f"expected roughly half the donut to be occluded, got {fraction:.3f}"
@@ -199,15 +199,15 @@ def test_thin_panel_tilted_edge_on_is_foreshortened(sim, thin_panel, request):
 
     thin_panel.translation = _PANEL_POS
     thin_panel.rotation = mn.Quaternion()
-    semantic_obs, depth_obs, agent_state = _frame(sim)
+    semantic_obs, depth_obs = _frame(sim)
     mask = semantic_obs == thin_panel.semantic_id
-    flat_fraction = mesh_visibility_fraction(dims, mask, agent_state, depth_obs)
+    flat_fraction = mesh_visibility_fraction(dims, mask, depth_obs)
     _save_scene_snapshot(sim, f"{request.node.name}_flat", flat_fraction)
 
     thin_panel.rotation = mn.Quaternion.rotation(mn.Deg(_PANEL_TILT_DEG), mn.Vector3.y_axis())
-    semantic_obs, depth_obs, agent_state = _frame(sim)
+    semantic_obs, depth_obs = _frame(sim)
     mask = semantic_obs == thin_panel.semantic_id
-    tilted_fraction = mesh_visibility_fraction(dims, mask, agent_state, depth_obs)
+    tilted_fraction = mesh_visibility_fraction(dims, mask, depth_obs)
     _save_scene_snapshot(sim, f"{request.node.name}_tilted", tilted_fraction)
 
     assert tilted_fraction < 0.2, (

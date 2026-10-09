@@ -112,27 +112,24 @@ a `history.json` (per-round candidate/selected counts, checkpoint path, eval AP)
 
 Exploration policy (`common/agents/`, `--agent`) supports:
 
-- `random` — walks to a random navmesh point, replans once it arrives.
-- `fbe` — frontier-based exploration: walks to the nearest not-yet-seen navmesh cell
-  (a forward vision cone around the agent's live pose marks cells "seen" each step), replanning
-  once it arrives or once that cell gets seen first from elsewhere; degrades to `random`'s
-  behavior once every reachable cell has been seen (`common/agents/frontier_agent.py`).
-- `sweep` — jumps to a random not-yet-visited navmesh cell and does a full rotation
-  there, repeating (resets once every reachable cell has been swept once) —
-  `common/agents/sweep_agent.py`.
+- `random` — uniformly random action among the env's legal actions (except `stop`).
+- `fbe` — frontier-based exploration ported from
+  [naokiyokoyama/frontier_exploration](https://github.com/naokiyokoyama/frontier_exploration):
+  reveals the field of view on the navmesh's top-down map, picks the frontier with the lowest
+  point-turn completion time along its navmesh shortest path, and point-turns towards it with
+  vanilla `move_forward`/`turn_left`/`turn_right` actions; ends the round early once no frontier
+  is left (`common/agents/frontier_agent.py`).
+
+A fresh agent is built every round, starting from wherever the previous round left off.
 
 `ada` (the reference's learned/Bayesian-optimization navigation policy) isn't ported — it needs
 an online-fit value model and a reward signal, not just a geometric planner, so it's a
-different scope of work than `fbe`/`sweep`. Sample selection (`common/samplers/`, `--sampler`)
+different scope of work than `fbe`. Sample selection (`common/samplers/`, `--sampler`)
 supports:
 
 - `random` — uniform random pick, no other flags needed.
 - `greedy` — ranks the pool by `--scoring` and takes the top `--samples`. `--scoring` is
-  one of `count` (raw predicted-instance count), `discrepancy-total-count`
-  (mean predicted-instance-count discrepancy, at select time, against every other pool
-  candidate one action away from it in the same collection round, each restricted to their
-  overlapping field of view — `common/samplers/discrepancy.py`,
-  `common/samplers/scoring.py::score_count_discrepancy`), `entropy-mean`/`entropy-total` (per-box softmax
+  one of `count` (raw predicted-instance count), `entropy-mean`/`entropy-total` (per-box softmax
   entropy, averaged or summed over the frame — `common/samplers/scoring.py`), or `oracle`
   (ground-truth difficulty, weighted by `1 - AP` of each GT box's class from the *previous*
   round's eval — needs the distinct validation set from step 2 to produce non-trivial AP).

@@ -1,7 +1,10 @@
 import cv2
 import numpy as np
 import quaternion
-from habitat_sim.agent.agent import AgentState
+
+
+def focal_length_px(width: int, camera_hfov: float) -> float:
+    return (width / 2.0) / np.tan(np.deg2rad(camera_hfov / 2.0))
 
 
 def camera_basis(camera_rot: quaternion.quaternion, width: int, camera_hfov: float):
@@ -11,8 +14,7 @@ def camera_basis(camera_rot: quaternion.quaternion, width: int, camera_hfov: flo
         quaternion.rotate_vectors(camera_rot, axis) for axis in axes
     )
     forward, right, up = (v / np.linalg.norm(v) for v in (forward, right, up))
-    focal = (width / 2.0) / np.tan(np.deg2rad(camera_hfov / 2.0))
-    return forward, right, up, focal
+    return forward, right, up, focal_length_px(width, camera_hfov)
 
 def compute_dimensions_from_aabb(aabb) -> np.ndarray:
     min_v = aabb.min
@@ -35,8 +37,8 @@ def compute_dimensions_from_obb(obb) -> np.ndarray:
 def mesh_visibility_fraction(
     obj_dimensions: np.ndarray,
     object_mask: np.ndarray,
-    agent_state: AgentState,
     depth_obs: np.ndarray,
+    camera_hfov: float = 90.0,
 ) -> float:
     obj_depth = depth_obs[object_mask].mean()
     if obj_depth <= 0:
@@ -45,12 +47,7 @@ def mesh_visibility_fraction(
         # against, so treat it as unverifiable/fully occluded rather than dividing by zero.
         return 0.0
 
-    sensor_state = agent_state.sensor_states["rgb"]
-    camera_rot = sensor_state.rotation
-
-    forward, right, up, focal = camera_basis(
-        camera_rot, depth_obs.shape[1], 90.0
-    )
+    focal = focal_length_px(depth_obs.shape[1], camera_hfov)
 
     # Compute the pixels occupied by the object if not occluded
 

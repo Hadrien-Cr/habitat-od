@@ -116,7 +116,7 @@ def test_dining_set_classified_and_separated_by_real_sensor(sensor, set_name, ta
     sim.get_agent(0).set_state(state)
 
     obs = sim.get_sensor_observations()
-    result = sensor.decompose_frame(obs["semantic"], sim.get_agent(0).get_state(), obs["depth"])
+    result = sensor.decompose_frame(obs["semantic"], obs["depth"])
     instances = result["instances"]
 
     detections = [

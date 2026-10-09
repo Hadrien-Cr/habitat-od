@@ -72,20 +72,18 @@ def _write_mosaic(out_dir: Path, object_params: dict, n_samples: int = 32) -> No
 
 def write_selection_mosaic(
     top_n: list[Candidate], selected: list[Candidate], gt_classes: list, pred_classes: list,
-    scorer: GreedySampler, classwise_ap: Optional[dict], out_path: Path, pool: list[Candidate],
+    scorer: GreedySampler, classwise_ap: Optional[dict], out_path: Path,
 ) -> None:
     """Visualizes what a TwoStageSampler round picked: `top_n` (its first stage's own ranked
     output, see TwoStageSampler.top_n) sorted by descending score, with a red border on
-    whichever of those the second stage actually `selected`. `pool` is the same candidate pool
-    `top_n` was ranked from (see TwoStageSampler.top_n's own `candidates` arg), needed to
-    re-derive discrepancy scoring's neighbor lookups (common/samplers/scoring.py)."""
+    whichever of those the second stage actually `selected`."""
     gt_colors = make_colors(len(gt_classes), seed=0, ctype=0)
     pred_colors = make_colors(len(pred_classes), seed=0, ctype=0)
     selected_ids = {id(c) for c in selected}
 
     tiles, tile_colors = [], []
     for candidate in top_n:
-        score = scorer.score(candidate, pool, classwise_ap)
+        score = scorer.score(candidate, classwise_ap)
         gt = bbs_instances_as_gt(keep_valid_instances(candidate.bbsgt["instances"]))
         im = plot_segmentation_pred(candidate.rbg, candidate.pred_instances, pred_classes, pred_colors)
         im = plot_segmentation_gt(np.array(im), gt, gt_classes, gt_colors)
@@ -123,7 +121,7 @@ def collect_random(habitat_cfg: Any, ds_cfg: Any, split_name: str, scene_name: s
 def collect_validation(habitat_cfg: Any, ds_cfg: Any, split_name: str, scene_name: str, view_radius: float = 1.5) -> None:
     """Counterpart of embodied-active-learning-od's validation_data_create.py, for one scene:
     walks straight to each target object in turn (get_target_object_positions ->
-    get_point_near -> find_shortest_path), teleporting through the navmesh path one waypoint per frame
+    get_point_near -> find_shortest_path_waypoints), teleporting through the navmesh path one waypoint per frame
     and facing the object on arrival -- a single ExplorationEnv driven directly, no
     trainer/VectorEnv. Objects are revisited (reshuffled) until ds_cfg.steps_per_episode frames
     are collected. Writes DATA_ROOT/run_name/{split_name}/{scene_name}/raw/ -- call once per

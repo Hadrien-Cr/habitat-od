@@ -2,7 +2,6 @@ import logging
 from typing import Any, Optional
 
 import cv2
-from habitat_sim.agent.agent import AgentState
 import torch
 import habitat # type: ignore
 import numpy as np
@@ -70,10 +69,10 @@ class ObjectDetectorGTSensor(habitat.Sensor): # type: ignore
         semantic_obs = kwargs['observations']['semantic']
         depth_obs = kwargs['observations']['depth']
         assert self.scene == self._sim.curr_scene_name, "Scene has changed since last setup of semantic labels. This should not happen, make sure to call setup_semantic_labels on the environment wrapper when changing scenes."
-        return self.decompose_frame(semantic_obs, self._sim.get_agent_state(), depth_obs=depth_obs)
+        return self.decompose_frame(semantic_obs, depth_obs=depth_obs)
 
     def decompose_frame(
-        self, semantic_obs: np.ndarray, agent_state: AgentState, depth_obs: np.ndarray
+        self, semantic_obs: np.ndarray, depth_obs: np.ndarray
     ) -> dict:
         detections = []
         classes = self.annotation.classes
@@ -106,7 +105,6 @@ class ObjectDetectorGTSensor(habitat.Sensor): # type: ignore
                 visibility_fraction = mesh_visibility_fraction(
                     self.annotation.dimensions_by_obj_id[obj_id],
                     mask.astype(bool),
-                    agent_state,
                     depth_obs,
                 )
                 if visibility_fraction < self.min_visibility_fraction:

@@ -320,6 +320,26 @@ def plot_segmentation(
         im = Image.fromarray(rgb)
     return im
 
+def plot_exploration_map(top_down_map: np.ndarray, revealed_mask: np.ndarray, trajectory_px: list, frontier_px: Optional[np.ndarray] = None) -> np.ndarray:
+    """BGR top-down map: unrevealed navigable area gray, revealed green, non-navigable black, (row, col) trajectory as red dots linked by arrows,
+    current position circled in red, frontier_px as a purple cross."""
+    image = np.full(top_down_map.shape + (3,), 100, dtype=np.uint8)
+    image[(revealed_mask > 0) & (top_down_map > 0)] = (127, 200, 127)
+    image[top_down_map == 0] = (0, 0, 0)
+    points = [(int(col), int(row)) for row, col in trajectory_px]
+
+    for point in points:
+        cv2.circle(image, point, 1, (0, 0, 255), -1)
+
+    for start, end in zip(points, points[1:]):
+        cv2.arrowedLine(image, start, end, (255, 255, 0), 2, tipLength=0.2)
+    if points:
+        cv2.circle(image, points[-1], 5, (0, 0, 255), 2)
+    if frontier_px is not None:
+        cv2.drawMarker(image, (int(frontier_px[1]), int(frontier_px[0])), (128, 0, 128), cv2.MARKER_CROSS, 10, 2)
+    return image
+
+
 def make_mosaic(
     list_fnames_images: list[tuple[str, np.ndarray]],
     target_size: int = 1_000_000,

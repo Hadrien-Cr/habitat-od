@@ -1,36 +1,17 @@
 """Per-candidate scoring rules for GreedySampler/TwoStageSampler (common/samplers/
 greedy_sampler.py) -- ported from habitat_embodied_al/third_party/embodied-active-learning-od's
-uutils/ranking_utils.py::get_state_value (the "count"/"discrepancy-total-count"/
-"mean-entropy"/"total-entropy"/"oracle" branches)."""
+uutils/ranking_utils.py::get_state_value (the "count"/"mean-entropy"/"total-entropy"/"oracle"
+branches)."""
 from typing import Optional
 
 import numpy as np
 
 from common.env_utils.sense import keep_valid_instances
-from common.samplers.discrepancy import count_discrepancy, is_neighbor
 from common.utils.interface import Candidate
 
 
 def score_count(candidate: Candidate) -> float:
     return float(len(candidate.pred_instances))
-
-
-def score_count_discrepancy(
-    candidate: Candidate, pool: list[Candidate], width: int, height: int, grid_size: float, num_yaw: int, min_area: float,
-) -> float:
-    """Mean count_discrepancy (common/samplers/discrepancy.py) against every other candidate
-    in `pool` that's a single-action pose neighbor of `candidate` within the same collection
-    round -- not just the frame collected immediately before it."""
-    deltas = [
-        count_discrepancy(
-            candidate.pred_instances, other.pred_instances, candidate.disc_pose, other.disc_pose,
-            width, height, grid_size, num_yaw, min_area,
-        )
-        for other in pool
-        if other is not candidate and other.round_idx == candidate.round_idx
-        and is_neighbor(candidate.disc_pose, other.disc_pose, num_yaw)
-    ]
-    return float(np.mean(deltas)) if deltas else 0.0
 
 
 def score_entropy(candidate: Candidate, mode: str = "mean") -> float:

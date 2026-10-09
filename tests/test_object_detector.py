@@ -171,7 +171,7 @@ def test_generates_cross_env_detection_mosaics():
                 agent.set_state(_random_agent_state(sim, rng))
 
                 obs = sim.get_sensor_observations()
-                instances = sensor.decompose_frame(obs["semantic"], agent.get_state(), obs["depth"])["instances"]
+                instances = sensor.decompose_frame(obs["semantic"], obs["depth"])["instances"]
                 gt_instances = _as_gt_instances(instances)
                 if len(gt_instances) == 0:
                     continue

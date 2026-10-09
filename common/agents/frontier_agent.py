@@ -1,103 +1,123 @@
-"""Frontier-based exploration: walks to the nearest not-yet-seen navmesh cell, replanning once
-it arrives or once that cell gets marked seen first. Ported from
-habitat_embodied_al/third_party/embodied-active-learning-od's agent_fbe.py::FrontierAgent,
-adapted from AI2Thor's discretized 8-way transition-graph pathing + integer vision-cone grid
-onto habitat-sim's real navmesh: "seen" cells are marked via a continuous distance/angle check
-around the agent's live world pose (no 8-way lattice needed, unlike the reference's
-YAW_TO_DX_DZ-indexed cone), and cell-to-cell travel reuses ExplorationEnv.find_shortest_path's
-real navmesh geodesic path (GreedyGeodesicFollower) instead of a custom A* over a hand-rolled
-transition graph -- so no fake terminal yaw/height is needed for a goal either, unlike the
-reference (find_shortest_path takes a bare world position)."""
-from typing import Optional
+"""Frontier-based exploration, ported from naokiyokoyama/frontier_exploration (MIT, commit 8523aa8):
+base_explorer.py::BaseExplorer. The field of view is revealed on the top-down map of the agent's own
+navmesh island (the reference uses the whole navmesh slab at the agent's height), the
+frontier midpoint with the lowest point-turn completion time along its navmesh shortest path is
+picked, and the agent point-turns towards that path's next point with vanilla
+move_forward/turn_left/turn_right actions, from its continuous pose. Spins in place until a first
+frontier shows up, and stops once none is left."""
+from dataclasses import dataclass, field
+from typing import Optional, Tuple
 
+import habitat_sim
+import magnum as mn
 import numpy as np
+from habitat.tasks.nav.nav import TopDownMap  # type: ignore
+from habitat.utils.visualizations import maps  # type: ignore
 
 from common.agents.abstract_agent import Agent
-from common.agents.grid import reachable_cells
-from common.env_utils.env_base import ExplorationEnv
-from common.utils.pose_utils import forward_vector, get_yaw
+from common.planning.frontier_paths import (
+    PointTurnSpeeds, best_first_search, completion_time_lower_bounds, find_path, heading_error, path_time_cost,
+)
+from common.planning.frontiers import detect_frontier_waypoints, reveal_fog_of_war
+from common.utils.plot_utils import plot_exploration_map
 
-_MAX_GOAL_RETRIES = 10
+
+@dataclass
+class FrontierAgentConfig:
+    fov_deg: float
+    turn_angle_deg: float
+    map_resolution: int = 256
+    visibility_dist_m: float = 4.5
+    area_thresh_m: float = 3.0
+    speeds: PointTurnSpeeds = field(default_factory=lambda: PointTurnSpeeds(0.25, np.deg2rad(10.0)))
 
 
 class FrontierAgent(Agent):
-    def __init__(self, rng: np.random.Generator, cone_depth_m: float = 1.0, cone_half_angle_deg: float = 45.0):
+    def __init__(self, pathfinder: habitat_sim.PathFinder, config: FrontierAgentConfig, rng: np.random.Generator):
+        self.pathfinder = pathfinder
+        self.config = config
         self.rng = rng
-        self.cone_depth_m = cone_depth_m
-        self.cone_half_angle_rad = np.deg2rad(cone_half_angle_deg)
-        self._reachable: Optional[set] = None
-        self._unexplored: Optional[set] = None
-        self._goal_cell: Optional[tuple] = None
-        self._trajectory: list = []
+        self.top_down_map: Optional[np.ndarray] = None
+        self.fog_of_war_mask: Optional[np.ndarray] = None
+        self.frontier_waypoints = np.empty((0, 2))
+        self.trajectory: list = []
+        self.closest_frontier_waypoint: Optional[np.ndarray] = None
+        self._found_frontier = False
+        self._spin_action: Optional[str] = None
 
-    def act(self, env: ExplorationEnv) -> str:
-        if self._reachable is None:
-            self._reachable = reachable_cells(env.get_navmesh_grid())
-            self._unexplored = set(self._reachable)
+    def act(self, agent_state: habitat_sim.AgentState) -> str:
+        position = np.array(agent_state.position)
+        self.trajectory.append(position)
+        if self.top_down_map is None:
+            self.top_down_map = self._own_island_map(position)
+            self.fog_of_war_mask = np.zeros_like(self.top_down_map)
+        heading = float(TopDownMap.get_polar_angle(agent_state))
+        self._update_frontiers(position, heading)
+        self.closest_frontier_waypoint = self._closest_frontier(position, heading)
+        if self.closest_frontier_waypoint is None:
+            return "stop" if self._found_frontier else self._spin()
+        self._found_frontier = True
+        return self._point_turn_action(position, heading, self.closest_frontier_waypoint)
 
-        state = env.get_agent_state()
-        agent_cell = env.world_to_cell(state.position)
-        self._update_explored(env, state, agent_cell)
+    def _meters_per_pixel(self) -> float:
+        return maps.calculate_meters_per_pixel(self.config.map_resolution, pathfinder=self.pathfinder)
 
-        if not self._trajectory or self._goal_cell is None:
-            self._trajectory = self._plan_to_goal(env, agent_cell)
+    def _pixels(self, meters: float) -> int:
+        return int(meters / self._meters_per_pixel())
 
-        return self._trajectory.pop(0)
+    def _own_island_map(self, position: np.ndarray) -> np.ndarray:
+        """Navigable mask of the agent's own navmesh island only - get_topdown_view's +-0.5 m slab would also count furniture tops (e.g. a mattress) as floor."""
+        islands = self.pathfinder.get_topdown_island_view(self._meters_per_pixel(), position[1])
+        return np.ascontiguousarray(islands == self.pathfinder.get_island(mn.Vector3(*position)), dtype=np.uint8)
 
-    def _update_explored(self, env: ExplorationEnv, state, agent_cell: tuple) -> None:
-        if not self._unexplored:
-            return
+    def to_pixel(self, position: np.ndarray) -> np.ndarray:
+        """(row, col) of a world position on top_down_map."""
+        return np.array(maps.to_grid(position[2], position[0], self.top_down_map.shape, pathfinder=self.pathfinder))
 
-        yaw = get_yaw(state.rotation.w, state.rotation.x, state.rotation.y, state.rotation.z)
-        heading = forward_vector(yaw)
-        cos_half_angle = np.cos(self.cone_half_angle_rad)
+    def _to_world(self, pixels: np.ndarray, height: float) -> np.ndarray:
+        """Navmesh-snapped world points of (row, col) map pixels."""
+        zs, xs = maps.from_grid(pixels[:, 0], pixels[:, 1], self.top_down_map.shape, pathfinder=self.pathfinder)
+        return np.array([self.pathfinder.snap_point(mn.Vector3(x, height, z)) for x, z in zip(xs, zs)])
 
-        radius_cells = int(np.ceil(self.cone_depth_m / env._GROUND_FLOOR_MPP))
-        for row in range(agent_cell[0] - radius_cells, agent_cell[0] + radius_cells + 1):
-            for col in range(agent_cell[1] - radius_cells, agent_cell[1] + radius_cells + 1):
-                cell = (row, col)
-                if cell not in self._unexplored:
-                    continue
+    def _update_frontiers(self, position: np.ndarray, heading: float) -> None:
+        previous = self.fog_of_war_mask.copy()
+        self.fog_of_war_mask = reveal_fog_of_war(
+            self.top_down_map, self.fog_of_war_mask, self.to_pixel(position), heading,
+            self.config.fov_deg, self._pixels(self.config.visibility_dist_m),
+        )
+        if not np.array_equal(previous, self.fog_of_war_mask):
+            self.frontier_waypoints = detect_frontier_waypoints(self.top_down_map, self.fog_of_war_mask, self._pixels(self.config.area_thresh_m ** 2))
 
-                delta = env.cell_to_world(row, col) - state.position
-                dist = float(np.hypot(delta[0], delta[2]))
-                if dist > self.cone_depth_m:
-                    continue
+    def _closest_frontier(self, position: np.ndarray, heading: float) -> Optional[np.ndarray]:
+        if len(self.frontier_waypoints) == 0:
+            return None
+        speeds = self.config.speeds
+        candidates = self._to_world(self.frontier_waypoints, position[1])
+        heuristics = completion_time_lower_bounds(candidates, position, heading, speeds)
+        idx = best_first_search(candidates, heuristics, lambda target: path_time_cost(self.pathfinder, position, heading, target, speeds))
+        return None if idx is None else candidates[idx]
 
-                # Cells within ~one grid cell of the agent's true (unquantized) position are
-                # always "seen" regardless of facing -- at this range, cell-center snapping
-                # error puts `delta` in a near-random direction, which would otherwise fail
-                # the forward-angle check on pure quantization noise (observed: the agent's
-                # own cell failing this check, getting re-picked as the nearest goal, and
-                # deadlocking on a zero-length path forever).
-                in_view = dist <= env._GROUND_FLOOR_MPP or (heading[0] * delta[0] + heading[2] * delta[2]) / dist >= cos_half_angle
-                if in_view:
-                    self._unexplored.discard(cell)
-                    if cell == self._goal_cell:
-                        self._goal_cell = None  # currently-pursued goal got seen first -- replan
+    def _point_turn_action(self, position: np.ndarray, heading: float, target: np.ndarray) -> str:
+        next_waypoint = np.array(find_path(self.pathfinder, position, target).points[1])
+        error = heading_error(position, next_waypoint, heading)
+        turn_angle = np.deg2rad(self.config.turn_angle_deg)
+        if error > turn_angle:
+            return "turn_right"
+        if error < -turn_angle:
+            return "turn_left"
+        return "move_forward"
 
-    def _pick_goal(self, agent_cell: tuple, exclude: set) -> tuple:
-        candidates = self._unexplored - exclude - {agent_cell}
-        if candidates:
-            return min(candidates, key=lambda c: abs(c[0] - agent_cell[0]) + abs(c[1] - agent_cell[1]))
+    def map_image(self) -> np.ndarray:
+        """BGR top-down map of the revealed area, the trajectory so far and the frontier currently pursued."""
+        frontier_px = None if self.closest_frontier_waypoint is None else self.to_pixel(self.closest_frontier_waypoint)
+        trajectory_px = [self.to_pixel(position) for position in self.trajectory]
+        return plot_exploration_map(self.top_down_map, self.fog_of_war_mask, trajectory_px, frontier_px)
 
-        fallback = list(self._reachable - exclude - {agent_cell})  # exploration done -- degrade to a random walk
-        return fallback[self.rng.integers(len(fallback))]
+    def map_tile(self) -> Tuple[str, np.ndarray]:
+        """(label, RGB map_image) mosaic tile of the current step."""
+        return f"step{len(self.trajectory) - 1:03d}", self.map_image()[:, :, ::-1].copy()
 
-    def _plan_to_goal(self, env: ExplorationEnv, agent_cell: tuple) -> list:
-        tried: set = set()
-        for _ in range(_MAX_GOAL_RETRIES):
-            goal_cell = self._pick_goal(agent_cell, tried)
-            tried.add(goal_cell)
-
-            trajectory = env.find_shortest_path(env.cell_to_world(*goal_cell))
-            if "move_forward" in trajectory:
-                self._goal_cell = goal_cell
-                return trajectory
-            # empty (navmesh mask doesn't encode connectivity) or a trivial already-there
-            # ["stop"] plan (goal within the geodesic follower's own goal radius, closer than
-            # this grid's resolution can usefully separate from agent_cell) -- neither is a
-            # real destination; mark it seen (we're already standing right there) and retry.
-            self._unexplored.discard(goal_cell)
-
-        raise RuntimeError(f"FrontierAgent failed to find a reachable goal after {_MAX_GOAL_RETRIES} retries")
+    def _spin(self) -> str:
+        if self._spin_action is None:
+            self._spin_action = "turn_left" if self.rng.integers(2) else "turn_right"
+        return self._spin_action

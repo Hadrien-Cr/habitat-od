@@ -76,17 +76,14 @@ def _random_agent_state(sim, rng) -> habitat_sim.AgentState:
 
 @pytest.fixture(scope="module")
 def frames(env):
-    """k (rgb, semantic, depth, agent_state) tuples captured once, reused across all 4
-    settings. agent_state is captured alongside each frame (rather than re-read from the
-    simulator when the frame is later decomposed) since by the time all frames have been
-    captured the agent has moved on to the last one."""
+    """k (rgb, semantic, depth) tuples captured once, reused across all 4 settings."""
     rng = np.random.default_rng(0)
     sim = env._env.sim
     captured = []
     for _ in range(_K_FRAMES):
         state = _random_agent_state(sim, rng)
         obs, _, _, _ = env.teleport(state)
-        captured.append((obs["rgb"], obs["semantic"], obs["depth"], sim.get_agent_state()))
+        captured.append((obs["rgb"], obs["semantic"], obs["depth"]))
     return captured
 
 
@@ -113,11 +110,11 @@ def test_filters_only_ever_remove_detections(env, frames):
     sensor = _sensor(env)
     counts = {name: [] for name in SETTINGS}
 
-    for i, (rgb, semantic_obs, depth_obs, agent_state) in enumerate(frames):
+    for i, (rgb, semantic_obs, depth_obs) in enumerate(frames):
         for name in SETTINGS:
             print(f"Image {i}, filter setting: {name}")
             _apply_setting(sensor, name)
-            result = sensor.decompose_frame(semantic_obs.copy(), agent_state=agent_state, depth_obs=depth_obs.copy())
+            result = sensor.decompose_frame(semantic_obs.copy(), depth_obs=depth_obs.copy())
             instances = result["instances"]
             counts[name].append(len(instances))
             _dump_frame(rgb, semantic_obs, instances, f"frame{i}_{name}_n={len(instances)}")

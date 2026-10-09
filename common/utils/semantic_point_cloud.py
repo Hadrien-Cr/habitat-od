@@ -139,7 +139,7 @@ class SemanticPointCloud(ResolvedObjects):
         return len(self.points)
 
     def raytrace_radius(self) -> float:
-        return np.sqrt(2) / 2 * self.voxel_size
+        return np.sqrt(2) * self.voxel_size
 
     def object_logits(self, object_id: int) -> torch.Tensor:
         return self.solve(self.resolved_logits[object_id])[1]

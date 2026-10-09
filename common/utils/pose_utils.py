@@ -134,6 +134,14 @@ def to_matrix(pos, rot, trimesh_format=False) -> np.ndarray:
     return T
 
 
+def sensor_pose_matrix(sensor_state) -> np.ndarray:
+    """4x4 camera-to-world transform of a habitat_sim sensor state."""
+    T = np.eye(4)
+    T[:3, :3] = quaternion.as_rotation_matrix(sensor_state.rotation)
+    T[:3, 3] = sensor_state.position
+    return T
+
+
 def get_l2_distance(x1, x2, y1, y2):
     return ((x1 - x2) ** 2 + (y1 - y2) ** 2) ** 0.5
 
@@ -203,10 +211,7 @@ def normalize_angle(angle_in_degrees):
 
 
 def normalize_radians(angle_in_radians):
-    angle_in_radians = angle_in_radians % (2 * np.pi)
-    if angle_in_radians > np.pi:
-        angle_in_radians -= 2 * np.pi
-    return angle_in_radians
+    return (angle_in_radians + np.pi) % (2 * np.pi) - np.pi
 
 
 def convert_pose_habitat_to_opencv(hab_pose: np.ndarray) -> np.ndarray:

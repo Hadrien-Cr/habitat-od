@@ -7,6 +7,8 @@ import torch
 from detectron2.structures import Instances
 from scipy.spatial.kdtree import KDTree
 
+from common.env_utils.visibility_utils import mesh_visibility_fraction
+
 log = logging.getLogger(__name__)
 
 
@@ -94,22 +96,31 @@ class ResolvedObjects:
         raise NotImplementedError
 
     def depth_raytracing(
-        self, depth, pose, hfov, min_depth, max_depth
+        self, depth, pose, hfov, min_depth, max_depth, *, min_visibility_fraction: float = 0.0
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Masks, ids, classes and logits of the resolved objects seen in depth from pose, dropping those below min_visibility_fraction."""
         if len(self.resolved_points) == 0:
             log.warning("no resolved points to raytrace")
             return torch.Tensor(), torch.Tensor(), torch.Tensor(), torch.Tensor()
         projected_points = project_batch_masks(depth, pose, hfov=hfov, min_depth=min_depth, max_depth=max_depth).numpy()
         nearest_points = self.kdtree.query(projected_points, distance_upper_bound=self.raytrace_radius(), k=1, workers=-1)[1]
         resolved_masks, resolved_ids, resolved_classes = self._object_masks(nearest_points, depth.shape)
-        if len(resolved_masks) == 0:
+        kept = [
+            idx for idx, (mask, object_id) in enumerate(zip(resolved_masks, resolved_ids))
+            if mesh_visibility_fraction(self.object_dimensions(object_id), mask.numpy(), np.asarray(depth), hfov) >= min_visibility_fraction
+        ]
+        if not kept:
             return torch.Tensor(), torch.Tensor(), torch.Tensor(), torch.Tensor()
         return (
-            torch.stack(resolved_masks),
-            torch.tensor(resolved_ids, dtype=torch.int),
-            torch.tensor(resolved_classes, dtype=torch.int),
-            torch.cat([self.object_logits(object_id).cpu() for object_id in resolved_ids]),
+            torch.stack([resolved_masks[idx] for idx in kept]),
+            torch.tensor([resolved_ids[idx] for idx in kept], dtype=torch.int),
+            torch.tensor([resolved_classes[idx] for idx in kept], dtype=torch.int),
+            torch.cat([self.object_logits(resolved_ids[idx]).cpu() for idx in kept]),
         )
+
+    def object_dimensions(self, object_id: int) -> np.ndarray:
+        """World-axis-aligned extent of one resolved object's points, the stand-in for its mesh AABB in mesh_visibility_fraction."""
+        return np.ptp(self.resolved_points[self.resolved_infos[:, 1] == object_id], axis=0)
 
     def _object_masks(self, nearest_points: np.ndarray, image_shape, min_pixels: int = 100) -> Tuple[list, list, list]:
         """Pixel mask, id and class of every resolved object hit by at least min_pixels pixels."""

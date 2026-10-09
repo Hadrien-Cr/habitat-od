@@ -38,7 +38,6 @@ class ExplorationEnv(RLEnv):
         self.episode_over = False
         self._elapsed_steps = 0
         self._tdmap: Optional[np.ndarray] = None
-        self._follower = None
 
 
     def reset(self, episode: Optional[NavigationEpisode] = None, rng: Optional[np.random.Generator] = None):
@@ -48,14 +47,10 @@ class ExplorationEnv(RLEnv):
 
         Places the agent at a random navigable point: an episode's own start_position/
         start_rotation are meaningless synthetic placeholders (see common/env_utils/dataset.py::
-        ExplorationNavDataset), historically safe only because every caller teleported before
-        capturing anything -- RandomAgent (common/agents/random_agent.py) no longer does, since
-        it plans from the agent's live pose (env.find_shortest_path), so it needs reset() to
-        already have placed the agent somewhere real."""
+        ExplorationNavDataset), and agents (common/agents/) act from the agent's live pose."""
         self._elapsed_steps = 0
         self.episode_over = False
         self._tdmap = None
-        self._follower = None
 
         self._env._reset_stats()
 
@@ -119,6 +114,9 @@ class ExplorationEnv(RLEnv):
     def set_done(self, done) -> None:
         self._env.current_episode.episode_over = done
 
+    def get_pathfinder(self) -> habitat_sim.PathFinder:
+        return self._env.sim.pathfinder
+
     def get_map_bounds(self) -> tuple[tuple[float, float], tuple[float, float]]:
         l, u = self._env.sim.pathfinder.get_bounds()
         return l, u
@@ -138,25 +136,13 @@ class ExplorationEnv(RLEnv):
     def get_navmesh_grid(self) -> np.ndarray:
         r"""Boolean navigable-cell mask at _GROUND_FLOOR_MPP resolution, lazily built and
         cached per scene (reset on reset()/change_scene()) -- shared by get_random_point/
-        find_shortest_path_waypoints below and by grid-based exploration agents
-        (common/agents/frontier_agent.py, sweep_agent.py, via common/agents/grid.py)."""
+        find_shortest_path_waypoints below."""
         if self._tdmap is None:
             lower_bound, _ = self._env.sim.pathfinder.get_bounds()
             self._tdmap = self._env.sim.pathfinder.get_topdown_view(
                 meters_per_pixel=self._GROUND_FLOOR_MPP, height=lower_bound[1]
             ).astype(np.uint8)
         return self._tdmap
-
-    def world_to_cell(self, position: np.ndarray) -> tuple[int, int]:
-        r"""(row, col) into get_navmesh_grid() for a world xyz position."""
-        return maps.to_grid(position[2], position[0], self.get_navmesh_grid().shape, pathfinder=self._env.sim.pathfinder)
-
-    def cell_to_world(self, row: int, col: int) -> np.ndarray:
-        r"""World xyz (snapped onto the navmesh) for a get_navmesh_grid() (row, col) cell."""
-        pathfinder = self._env.sim.pathfinder
-        lower_bound, _ = pathfinder.get_bounds()
-        z, x = maps.from_grid(row, col, self.get_navmesh_grid().shape, pathfinder=pathfinder)
-        return np.array(pathfinder.snap_point(mn.Vector3(x, lower_bound[1], z)))
 
     def get_random_point(self, rng: Optional[np.random.Generator] = None, min_distance: float = 0.0, max_retries: int = 100) -> np.ndarray:
         pathfinder = self._env.sim.pathfinder
@@ -181,12 +167,6 @@ class ExplorationEnv(RLEnv):
 
         return np.array(snapped)
     
-    def get_turn_angle(self) -> int:
-        return self._env.sim.habitat_config.turn_angle
-
-    def get_pitch_angle(self) -> int:
-        return self._env._config.habitat.task.actions.look_down.tilt_angle
-
     def get_random_rotation(self, rng: Optional[np.random.Generator] = None) -> np.ndarray:
         if rng is None:
             rng = np.random.default_rng()
@@ -252,16 +232,6 @@ class ExplorationEnv(RLEnv):
             points.append(np.array(pathfinder.snap_point(mn.Vector3(x, lower_bound[1], z))))
         return points
 
-    def find_shortest_path(self, goal: np.ndarray) -> list:
-        if self._follower is None:
-            self._follower = self._env.sim.make_greedy_follower(
-                0, stop_key="stop", forward_key="move_forward", left_key="turn_left", right_key="turn_right",
-            )
-        try:
-            return self._follower.find_path(np.array(goal))
-        except habitat_sim.errors.GreedyFollowerError:
-            return []
-
     def get_env_name(self) -> str:
         return self._env.task.sensor_suite.get("bbsgt").env_name
 
@@ -269,8 +239,7 @@ class ExplorationEnv(RLEnv):
         return self._env.task.sensor_suite.get("bbsgt").vocab_name
 
     def get_agent_state(self) -> habitat_sim.AgentState:
-        r"""Current position/rotation -- e.g. for an Agent (common/agents/) that needs to know
-        where it is now to decide the next AgentState to move to."""
+        r"""Current position/rotation, including per-sensor states -- what an Agent (common/agents/) acts from."""
         return self._env.sim.agents[0].get_state()
 
     def step(self, action) -> tuple[dict[str, Any], float, bool, dict[str, Any]]:
@@ -306,7 +275,6 @@ class ExplorationEnv(RLEnv):
         self._env._sim.reconfigure(self._env._config.simulator)
         self._env.task.sensor_suite.get("bbsgt").setup_semantic_labels()
         self._tdmap = None
-        self._follower = None
         return
 
     def get_reward_range(self):
