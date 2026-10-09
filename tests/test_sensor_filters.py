@@ -1,10 +1,11 @@
 """
-Integration test: instantiates a real HSSD scene and generates k frames, then runs
-ObjectDetectorGTSensor.decompose_frame on each of them under increasingly strict
-min_visibility_fraction settings - reusing the same captured (semantic, depth) pair across
-settings so the comparison is apples-to-apples.
+Integration test for ObjectDetectorGTSensor.decompose_frame's min_visibility_fraction filter.
 
-Requires real HSSD data (HABITAT_DATA/BASE_DIR set, per CLAUDE.md) - skipped otherwise.
+Instantiates a real HSSD scene, captures k frames, and runs decompose_frame on each under
+increasingly strict min_visibility_fraction settings, reusing the same (semantic, depth) pair
+across settings so the comparison is apples-to-apples.
+
+Requires HABITAT_DATA pointing at a real hssd-hab dataset (see INSTALL.MD) - skipped otherwise.
 """
 
 import math

@@ -1,14 +1,13 @@
 """
-Tests for mesh_visibility_fraction (common/env_utils/visibility_utils.py), the check
-ObjectDetectorGTSensor.decompose_frame uses to filter out barely-visible detections before
-they reach the vocab/area filters. It compares the actual number of visible mask pixels
-against how many pixels the object's largest AABB face would occupy if fully visible and
-facing the camera head-on at the mask's mean depth - so occlusion, cropping, and
-foreshortening (an edge-on view) all pull the ratio down without needing to project the
-object's real mesh.
+Tests for common/env_utils/visibility_utils.py::mesh_visibility_fraction.
 
-Everything is placed high above apartment_1's own geometry, so only the objects placed here
-are reachable by the semantic/depth buffers under test.
+That is the check ObjectDetectorGTSensor.decompose_frame uses to drop barely-visible detections. It
+compares the visible mask pixel count against how many pixels the object's largest AABB face would
+cover if fully visible and facing the camera at the mask's mean depth, so occlusion, cropping and
+foreshortening all lower the ratio without projecting the real mesh.
+
+Everything is placed high above apartment_1's own geometry, so only the objects placed here reach
+the semantic/depth buffers under test.
 """
 
 import os

@@ -279,7 +279,7 @@ def plot_segmentation_gt(rgb: np.ndarray, gt_instances, classes: list[str], colo
 
     vis_img = det_visualizer.overlay_instances(
         boxes=gt_instances.gt_boxes.tensor.cpu().numpy(),
-        masks=None,
+        masks=gt_instances.gt_masks.cpu().numpy() if gt_instances.has("gt_masks") else None,
         labels=None,
         assigned_colors=[(x/255, y/255, z/255) for class_id in gt_instances.gt_classes.cpu().numpy() for x, y, z in [colors[class_id]]],
         alpha=0.5
@@ -299,7 +299,7 @@ def plot_segmentation(
 ) -> Image.Image:
     
     if gt_instances is not None:
-        im = plot_segmentation_gt(rgb, gt_instances, classes, [(255, 0, 0) for _ in classes])
+        im = plot_segmentation_gt(rgb, gt_instances, classes, [(255, 0, 0) for _ in classes] if pred_instances is not None else colors)
         rgb = np.array(im)
 
     if pred_instances is not None:

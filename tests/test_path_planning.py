@@ -1,20 +1,18 @@
-"""Path-planning test for common/env_utils/env_base.py::ExplorationEnv.find_shortest_path (the
-discrete-action shortest-path trajectory, via habitat_sim's GreedyGeodesicFollower -- the real
-navmesh geodesic shortest path, greedily fit to move_forward/turn_left/turn_right motion
-primitives) and common/agents/random_agent.py (which walks it).
+"""
+Path-planning test for ExplorationEnv.find_shortest_path and common/agents/random_agent.py.
 
-Behavior checks: a reachable goal produces a trajectory of valid env.action_space actions ending
-in exactly one "stop" that actually walks the agent to the goal when executed via env.step;
-repeated calls from a fixed pose are deterministic; an unreachable goal returns [] instead of
-raising.
+find_shortest_path (common/env_utils/env_base.py) fits habitat_sim's GreedyGeodesicFollower navmesh
+path to move_forward/turn_left/turn_right primitives; RandomAgent walks it.
 
-Visual check: drives RandomAgent for _N_STEPS actions, stepping the env with each returned
-action (rotations/move_forward only, never teleporting) and dumping a rgb | top-down map
-side-by-side GIF to tests/testdump/test_path_planning/ for visual inspection of the walk
-towards the agent's randomly sampled destination (red circle on the map; blue dot+line is
-the agent's position/heading; yellow trail is the path walked so far).
+Behavior checks: a reachable goal yields valid env.action_space actions ending in exactly one
+"stop" that walks the agent to the goal via env.step; repeated calls from a fixed pose are
+deterministic; an unreachable goal returns [] instead of raising.
 
-Requires HABITAT_DATA pointing at a real hssd-hab dataset (see INSTALL.MD) -- skipped otherwise.
+Visual check: drives RandomAgent for _N_STEPS actions (no teleporting) and dumps an rgb | top-down
+map GIF to tests/testdump/test_path_planning/ (red circle = sampled destination, blue dot+line =
+agent position/heading, yellow trail = path walked so far).
+
+Requires HABITAT_DATA pointing at a real hssd-hab dataset (see INSTALL.MD) - skipped otherwise.
 """
 import os
 

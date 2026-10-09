@@ -1,14 +1,15 @@
-"""Smoke tests for the grid-based exploration agents (common/agents/frontier_agent.py,
-sweep_agent.py) -- same env fixture/scene as test_path_planning.py.
+"""
+Smoke tests for the grid-based exploration agents (common/agents/frontier_agent.py, sweep_agent.py).
 
-FrontierAgent: drives it for _N_STEPS actions and checks its unexplored-cell count only ever
-shrinks (never re-grows) and is strictly smaller at the end than at the start (real coverage
-progress, not stuck replanning the same cell forever).
+Same env fixture/scene as test_path_planning.py.
 
-SweepAgent: drives it for _N_STEPS actions and checks its visited-cell count only ever grows
-except for a full reset back to empty once every reachable cell has been swept.
+FrontierAgent: drives it for _N_STEPS actions and checks its unexplored-cell count never grows and
+is strictly smaller at the end than at the start (real coverage progress, not stuck replanning).
 
-Requires HABITAT_DATA pointing at a real hssd-hab dataset (see INSTALL.MD) -- skipped otherwise.
+SweepAgent: drives it for _N_STEPS actions and checks its visited-cell count only ever grows, except
+for a full reset to empty once every reachable cell has been swept.
+
+Requires HABITAT_DATA pointing at a real hssd-hab dataset (see INSTALL.MD) - skipped otherwise.
 """
 import os
 

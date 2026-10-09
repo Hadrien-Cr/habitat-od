@@ -115,6 +115,7 @@ class ObjectDetectorGTSensor(habitat.Sensor): # type: ignore
             detections.append({
                 "class_id": torch.tensor(class_id).unsqueeze(0),
                 "bounding_box": torch.tensor([x, y, x + w, y + h]).unsqueeze(0),
+                "mask": torch.from_numpy(mask).bool().unsqueeze(0),
                 "info": {
                     "object_id": obj_id,
                     "env_name": self.env_name,
@@ -130,6 +131,7 @@ class ObjectDetectorGTSensor(habitat.Sensor): # type: ignore
                 image_size=(semantic_obs.shape[0], semantic_obs.shape[1]),
                 pred_boxes=Boxes(torch.zeros((0,4))),
                 pred_classes=torch.zeros((0,)).long(),
+                pred_masks=torch.zeros((0, *semantic_obs.shape[:2]), dtype=torch.bool),
                 scores=torch.zeros((0,)),
                 infos=np.zeros((0,), dtype=object),
             )}
@@ -138,12 +140,14 @@ class ObjectDetectorGTSensor(habitat.Sensor): # type: ignore
         sorted_detections = sorted(detections, key=lambda d: get_center(d["bounding_box"][0])[0] + get_center(d["bounding_box"][0])[1], reverse=False)
         pred_boxes = torch.cat([d["bounding_box"] for d in sorted_detections])
         pred_classes = torch.cat([d["class_id"] for d in sorted_detections])
+        pred_masks = torch.cat([d["mask"] for d in sorted_detections])
         infos = np.array([d["info"] for d in sorted_detections], dtype=object)
 
         return {'instances': Instances(
             image_size=(semantic_obs.shape[0], semantic_obs.shape[1]),
             pred_boxes=Boxes(pred_boxes),
             pred_classes=pred_classes,
+            pred_masks=pred_masks,
             scores=torch.ones(len(sorted_detections)),
             infos=infos,
         )}

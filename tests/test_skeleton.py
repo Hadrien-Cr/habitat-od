@@ -1,7 +1,9 @@
-"""Unit tests for common/planning/skeleton.py's grid_path -- no simulator needed, pure
-synthetic occupancy masks. Checks the "step walking" claim: that consecutive waypoints are
-close together (roughly one skeleton-node step apart), not long straight-line jumps that
-skip over intermediate grid points."""
+"""
+Unit tests for common/planning/skeleton.py::grid_path on synthetic occupancy masks (no simulator).
+
+Checks the "step walking" claim: consecutive waypoints are roughly one skeleton-node step apart,
+not long straight-line jumps that skip intermediate grid points.
+"""
 import numpy as np
 import pytest
 

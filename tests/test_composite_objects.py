@@ -1,17 +1,13 @@
 """
-End-to-end check that ObjectDetectorGTSensor (common/env_utils/object_detector_sensors.py)
-correctly classifies and separates HSSD-HAB's decomposed dining-set composites,
-using the real scene they're placed in (scenes/102344022.scene_instance.json)
-and the real sensor pipeline (setup_semantic_labels + decompose_frame) - not a
-synthetic stand-in.
+End-to-end check that ObjectDetectorGTSensor separates HSSD-HAB's decomposed dining-set composites.
 
-Each test finds a dining set's real object instances in the scene, renders a
-view of it, and checks decompose_frame's detections: exactly one "table" and
-one "chair" per chair instance, each with its own separate box/mask (not
-merged - see common/env_utils/object_annotations.py's obj_id*1000+class_id
-semantic buffer encoding, which ObjectAnnotation.semantic_id_to_classid_obj_id
-decodes for decompose_frame). A bounding-box snapshot is saved to
-tests/testdump/test_composite_objects/ for visual sanity-checking.
+Uses the real scene they're placed in (scenes/102344022.scene_instance.json) and the real sensor
+pipeline (setup_semantic_labels + decompose_frame), not a synthetic stand-in. Each test finds a
+dining set's object instances, renders a view of it, and checks decompose_frame returns exactly
+one "table" and one "chair" per chair instance, each with its own box/mask (kept apart by the
+object_id * 1000 + class_id semantic encoding in common/env_utils/object_annotations.py).
+
+A bounding-box snapshot is saved to tests/testdump/test_composite_objects/ for visual inspection.
 """
 import os
 

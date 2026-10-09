@@ -1,25 +1,21 @@
 """
-Sanity check that the MP3D scene dataset (see INSTALL.MD) loads correctly in habitat_sim:
-instantiates one of the standard MP3D ObjectNav/PointNav val scenes directly via raw
-habitat_sim.Simulator (no habitat-lab Env/task) and renders an rgb+semantic overlay, labeled
-with each visible instance's category name and its 3D oriented-bounding-box wireframe, at
-random navigable positions - dumped as plain-rgb|overlay side-by-side frames to
-tests/testdump/test_mp3d/ for visual inspection.
+Sanity check that the MP3D scene dataset (see INSTALL.MD) loads and renders in habitat_sim.
 
-The semantic sensor's raw pixel values are per-instance ids (id 0 = unlabeled background),
-not class ids directly - class name comes from sim.semantic_scene.objects[id].category.name(),
-same as Gibson-Semantic (see test_gibson.py). Boxes come from that same object's .obb, projected
-as pure 3D geometry with no occlusion culling, so a box can extend behind whatever's actually
-drawn in front of it. Unlike gibson_semantic, MP3D's world coordinates need no axis rearrangement
-to line up an obb with its rendered geometry (see test_isometric_scene.py's note that MP3D is
-converted to habitat-sim's Y-up convention at load time). _FILTER_OUT_CLASSES drops matching
-category names entirely - a local denylist, opposite of object_detector_sensors.py's
-filter_classes allow-list - so their pixels stay untinted and get no box/label; MP3D's
-house-format "ceiling"/"floor" are room-sized planar regions whose boxes/tint otherwise swamp
-the frame, so they're filtered here.
+Instantiates one of the standard MP3D ObjectNav/PointNav val scenes via a raw habitat_sim.Simulator
+(no habitat-lab Env/task) and renders an rgb+semantic overlay, labeled with each visible instance's
+category name and its 3D oriented-bounding-box wireframe, at random navigable positions. Frames are
+dumped as plain-rgb|overlay side by side to tests/testdump/test_mp3d/, plus one pure semantic mask
+(class-colored fill + label per instance) for the sampled point with the most visible instances.
 
-Requires real MP3D data under HABITAT_DATA/scene_datasets/mp3d/ (mp3d.scene_dataset_config.json
-+ per-scene assets) - skipped otherwise.
+As in test_gibson.py, pixel values are per-instance ids (0 = unlabeled background) and the class
+name comes from sim.semantic_scene.objects[id].category.name(). Boxes come from that object's .obb
+and are projected with no occlusion culling; unlike Gibson, no axis rearrangement is needed since
+MP3D is converted to Y-up at load time. _FILTER_OUT_CLASSES is a local denylist (the opposite of
+object_detector_sensors.py's filter_classes allow-list): matching categories get no tint, box or
+label. It drops MP3D's room-sized "ceiling"/"floor" regions, which otherwise swamp the frame.
+
+Requires real MP3D data under HABITAT_DATA/scene_datasets/mp3d/ (mp3d.scene_dataset_config.json +
+per-scene assets) - skipped otherwise.
 """
 
 import itertools
@@ -57,7 +53,8 @@ _RESOLUTION = [480, 480]
 _HFOV_DEG = 90.0
 _AGENT_HEIGHT = 0.88  # matches common/config/hssd-hab/default.yaml's agent height
 _OVERLAY_ALPHA = 0.5
-_N_POINTS = 4
+_N_POINTS = 15
+_N_MASK_CANDIDATES = 30  # extra random points searched (beyond _N_POINTS) for the richest mask-only frame
 _FILTER_OUT_CLASSES: list[str] = ["ceiling", "floor", "misc", "wall", "door", "void", "column", "beam"]  # local denylist, opposite of object_detector_sensors.py's filter_classes allow-list
 _TESTDUMP_DIR = os.path.join(os.path.dirname(__file__), "testdump", "test_mp3d")
 os.system(f"rm -rf {_TESTDUMP_DIR}")
@@ -152,6 +149,27 @@ def _draw_obb_wireframe(draw, obb, color, cam_pos, forward, right, up, focal):
         )
 
 
+def _semantic_mask_only(semantic, objects_by_id) -> Image.Image:
+    """Pure semantic segmentation mask - no rgb blend: id 0 stays black, every other labeled
+    pixel gets its colorize_ids color, with each instance's category name at its mask centroid."""
+    color_ids = colorize_ids(semantic).astype(np.uint8)
+    mask = np.zeros_like(color_ids)
+    labeled = np.isin(semantic, list(objects_by_id.keys()))
+    mask[labeled] = color_ids[labeled]
+    img = Image.fromarray(mask)
+
+    draw = ImageDraw.Draw(img)
+    for obj_id in np.unique(semantic):
+        if obj_id == 0:
+            continue
+        obj = objects_by_id.get(int(obj_id))
+        if obj is None:
+            continue
+        ys, xs = np.where(semantic == obj_id)
+        draw.text((int(xs.mean()), int(ys.mean())), obj.category.name(), fill=(255, 255, 255), stroke_width=1, stroke_fill=(0, 0, 0))
+    return img
+
+
 def _rgb_semantic_overlay(rgb, semantic, objects_by_id, cam_pos, forward, right, up, focal) -> Image.Image:
     """rgb blended with colorize_ids(semantic) over labeled pixels only (id 0 stays plain rgb);
     each visible instance gets its obb wireframe and its category name at the mask centroid."""
@@ -191,6 +209,7 @@ def test_generates_rgb_semantic_overlay_frames(sim):
     agent = sim.get_agent(0)
     rng = np.random.default_rng(0)
 
+    best = None  # (num_visible_instances, semantic, objects_by_id) for the mask-only dump
     for i in range(_N_POINTS):
         agent.set_state(_random_agent_state(sim, rng))
 
@@ -209,8 +228,24 @@ def test_generates_rgb_semantic_overlay_frames(sim):
         side_by_side = Image.fromarray(np.concatenate([rgb[:, :, :3], np.array(overlay)], axis=1))
         side_by_side.save(os.path.join(_TESTDUMP_DIR, f"{prefix}_overlay.png"))
 
-        classes_in_frame = {objects_by_id[v].category.name() for v in np.unique(semantic) if v != 0 and v in objects_by_id}
+        visible_ids = {int(v) for v in np.unique(semantic) if v != 0 and int(v) in objects_by_id}
+        classes_in_frame = {objects_by_id[v].category.name() for v in visible_ids}
         print(f"{prefix}: {classes_in_frame}")
+
+        if best is None or len(visible_ids) > best[0]:
+            best = (len(visible_ids), semantic, objects_by_id)
+
+    # Keep searching (without dumping overlays) for a richer frame to use for the mask-only image.
+    for _ in range(_N_MASK_CANDIDATES):
+        agent.set_state(_random_agent_state(sim, rng))
+        semantic = sim.get_sensor_observations()["semantic"]
+        visible_ids = {int(v) for v in np.unique(semantic) if v != 0 and int(v) in objects_by_id}
+        if len(visible_ids) > best[0]:
+            best = (len(visible_ids), semantic, objects_by_id)
+
+    mask_img = _semantic_mask_only(best[1], best[2])
+    mask_img.save(os.path.join(_TESTDUMP_DIR, f"{_SCENE}_mask.png"))
+    print(f"{_SCENE}: mask.png dumped with {best[0]} visible instances")
 
     print(f"{_SCENE}: {len(objects_by_id)} semantic objects in the scene, {_N_POINTS} frames dumped to {_TESTDUMP_DIR}")
 

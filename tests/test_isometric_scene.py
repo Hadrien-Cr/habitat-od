@@ -1,28 +1,20 @@
 """
-Renders one isometric rgb|(rgb+semantic overlay) snapshot (side by side) of an entire
-scene, for one HSSD-HAB scene, one Gibson-Semantic scene, one MP3D scene, and two
-ProcTHOR-hab scenes - raw habitat_sim.Simulator, no habitat-lab Env/task. Each scene is
-independently skipped if its data isn't present, so this runs against whichever of the four
-datasets you have locally.
+Renders one isometric rgb|(rgb+semantic overlay) snapshot of an entire scene per dataset.
 
-All use the same outside diagonal-elevated camera for a "dollhouse cutaway" view. HSSD,
-Gibson, and MP3D are real-world scans with no exterior roof, so that camera sees straight
-through where the roof would be - MP3D's raw assets are authored Z-up (its
-mp3d.scene_dataset_config.json declares "up": [0, 0, 1]), but habitat_sim converts that at
-load time, so world coordinates are already Y-up like the others and it needs no special
-handling here. ProcTHOR scenes are procedurally generated *with* a real roof/ceiling mesh
-(confirmed by rendering it directly and getting a single flat-colored image), so for
-ProcTHOR the ceiling is stripped first: each stage .glb has one "Ceiling#room|N|c" node per
-room in its gltf scene graph (found via trimesh), distinct from the floor/wall nodes, so
-they can be removed and the stage re-exported. A minimal scene_dataset_config.json is then
-built pointing at that stripped stage plus the *original* scene_instance.json (so furniture
-placement is untouched) and the original furniture object templates - written under
-_TESTDUMP_DIR, never modifying anything under HABITAT_DATA.
+Covers one HSSD-HAB, one Gibson-Semantic, one MP3D and two ProcTHOR-hab scenes on a raw
+habitat_sim.Simulator (no habitat-lab Env/task). Each scene is skipped independently if its data
+isn't present.
 
-Doesn't touch sim.semantic_scene.objects for HSSD/ProcTHOR (neither populates it in this
-pipeline - only the rendered per-pixel semantic buffer is used here), so none of the
-per-object obb/aabb axis issues from test_gibson.py are relevant. MP3D and Gibson do
-populate it, but this file never reads it either, for consistency.
+All use the same diagonal-elevated outside camera for a "dollhouse cutaway" view. HSSD, Gibson and
+MP3D scans have no roof, so the camera sees straight in; MP3D's assets are authored Z-up but
+habitat_sim converts them to Y-up at load time, so no special handling is needed. ProcTHOR scenes
+do have a ceiling mesh, so it is stripped first: each stage .glb has one "Ceiling#room|N|c" node
+per room (found via trimesh), which is removed before re-exporting the stage. A minimal
+scene_dataset_config.json then points at that stripped stage plus the original
+scene_instance.json and object templates - all written under _TESTDUMP_DIR, never under
+HABITAT_DATA.
+
+Only the rendered per-pixel semantic buffer is used; sim.semantic_scene.objects is never read.
 """
 
 import glob
@@ -231,7 +223,7 @@ def test_hssd_isometric_scene():
     sim.close()
 
     os.makedirs(_TESTDUMP_DIR, exist_ok=True)
-    img.save(os.path.join(_TESTDUMP_DIR, f"hssd_{_HSSD_SCENE}_isometric.pdf"))
+    img.save(os.path.join(_TESTDUMP_DIR, f"hssd_{_HSSD_SCENE}_isometric.png"))
 
 
 @pytest.mark.skipif(
@@ -244,7 +236,7 @@ def test_gibson_isometric_scene():
     sim.close()
 
     os.makedirs(_TESTDUMP_DIR, exist_ok=True)
-    img.save(os.path.join(_TESTDUMP_DIR, f"gibson_{_GIBSON_SCENE}_isometric.pdf"))
+    img.save(os.path.join(_TESTDUMP_DIR, f"gibson_{_GIBSON_SCENE}_isometric.png"))
 
 
 @pytest.mark.skipif(
@@ -257,7 +249,7 @@ def test_mp3d_isometric_scene():
     sim.close()
 
     os.makedirs(_TESTDUMP_DIR, exist_ok=True)
-    img.save(os.path.join(_TESTDUMP_DIR, f"mp3d_{_MP3D_SCENE}_isometric.pdf"))
+    img.save(os.path.join(_TESTDUMP_DIR, f"mp3d_{_MP3D_SCENE}_isometric.png"))
 
 
 @pytest.mark.skipif(
@@ -271,7 +263,7 @@ def test_procthor_isometric_scene():
     sim.close()
 
     os.makedirs(_TESTDUMP_DIR, exist_ok=True)
-    img.save(os.path.join(_TESTDUMP_DIR, f"procthor_{_PROCTHOR_SCENE}_isometric.pdf"))
+    img.save(os.path.join(_TESTDUMP_DIR, f"procthor_{_PROCTHOR_SCENE}_isometric.png"))
 
 
 @pytest.mark.skipif(
@@ -285,7 +277,7 @@ def test_procthor_isometric_scene_multiroom():
     sim.close()
 
     os.makedirs(_TESTDUMP_DIR, exist_ok=True)
-    img.save(os.path.join(_TESTDUMP_DIR, f"procthor_{_PROCTHOR_SCENE_2}_isometric.pdf"))
+    img.save(os.path.join(_TESTDUMP_DIR, f"procthor_{_PROCTHOR_SCENE_2}_isometric.png"))
 
 
 if __name__ == "__main__":

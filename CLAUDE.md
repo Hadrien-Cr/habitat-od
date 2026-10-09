@@ -3,10 +3,30 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 `habitat-od` generates COCO-format object-detection datasets from HSSD-HAB scenes inside the Habitat simulator, and fine-tunes a detectron2 Mask R-CNN on them. Ground-truth boxes/masks come from the simulator's semantic sensor (object IDs baked into `semantic_id`), not from a hand-labeled dataset.
 
-## Instructions
-New code addition SHOULD NOT contain new comments
-Minimize the size of docstrings added and the size of comments.
-Immediatly remove the unused flags in functions.
+## Code style (strict — applies to every change)
+
+**Reuse before writing.**
+- Before adding a function, search the repo (`common/`, `habitat_embodied_al/`, `tests/`) for an existing one that does the same or nearly the same thing. Call it, or generalize it with a parameter, instead of writing a new one.
+- Never duplicate logic across files. If the same few lines would show up twice, move them into a shared helper in the most specific common module (e.g. `common/utils/`, `common/env_utils/`).
+- Prefer what detectron2, habitat-sim, numpy and torch already provide over hand-written versions.
+
+**Short, single-purpose functions.**
+- Each function does one thing. Aim for ≤ 20 lines, and treat 40 as a hard limit. Split anything longer into well-named helpers.
+- Keep nesting to 2 levels at most. Use early returns, guard clauses and comprehensions instead of deep `if`/`for` blocks.
+- Keep signatures to ≤ 4–5 parameters. Group related ones into a config/dataclass instead of adding more positional args.
+- Avoid boolean flag parameters that switch between two behaviors. Write two functions instead.
+
+**Readable without comments.**
+- Use descriptive names for functions, variables and arguments so the code explains itself. Don't use single-letter names outside short comprehensions or math.
+- New code MUST NOT add comments. The only exception is a genuinely non-obvious WHY (a hidden constraint, a workaround, a subtle invariant), and then it gets one short line.
+- Docstrings are optional. When one is required, it's a single line. No `Args:`/`Returns:` blocks.
+- Don't restate the code in prose, and don't leave commented-out code, TODOs or print/debug leftovers.
+
+**No dead code.**
+- Remove unused parameters, flags, imports, variables and functions right away, including the ones your change makes obsolete. Update every call site.
+- Don't add speculative options, fallbacks or abstractions for cases that don't exist yet.
+
+**Match the surrounding code.** Follow the existing naming, structure and idioms of the file you edit. Keep diffs minimal and focused on the task.
 
 
 ## Environment setup
@@ -42,7 +62,3 @@ PYTHONPATH=. python pretrain.py --config-file habitat_embodied_al/pretrain/confi
 **Data generation** (`common/env_utils`, `habitat_embodied_al`): `common/env_utils/env_base.py` registers a custom `ExplorationTask`/`ExplorationEnv`. `common/env_utils/object_annotations.py::setup_semantic_labels(sim, env_name, vocab_name)` builds the `ObjectAnnotation` (classes + per-object `class_id`/dimensions + decode) for whichever of the 4 supported `env_name`s (`HSSD-HAB`, `MP3D`, `Gibson-Semantic`, `ProcTHOR-hab`) is loaded — HSSD-HAB/ProcTHOR-hab bake `node.semantic_id = object_id * 1000 + class_id` onto each placed rigid/articulated object's scene nodes (`_load_hssd_vocab` reads HSSD-HAB's own object-handle → target-vocab CSV mapping; ProcTHOR-hab reuses its native per-category id as `class_id` directly, restoring per-instance separation it doesn't have out of the box); MP3D/Gibson-Semantic have no writable per-object scene node, so their already-unique native `semantic_id` (from `sim.semantic_scene.objects`) is read as-is instead. Vocab resolution (HSSD-HAB's CSV read, ProcTHOR-hab's `object_semantic_id_mapping.json` parse) is cached per `(env_name, vocab_name)` since `setup_semantic_labels` reruns on every scene change. `common/env_utils/object_detector_sensors.py` registers `ObjectDetectorGTSensor` (`uuid = "bbsgt"`) as a thin wrapper around this: it calls `setup_semantic_labels` whenever the scene changes, then `decompose_frame` reads the simulator's rendered semantic buffer, decodes each pixel value via `ObjectAnnotation.semantic_id_to_classid_obj_id`, filters by area/occlusion/`filter_classes` (an allow-list of kept classes; `None`/empty keeps everything), and returns a detectron2 `Instances` — the ground truth used everywhere downstream. `habitat_embodied_al/collection.py::collect_random`/`collect_validation` drive a single `ExplorationEnv` directly (no trainer/`VectorEnv`) to dump raw per-step rgb+GT sense files; `habitat_embodied_al/coco_writer.py::build_coco_dataset` converts those into a COCO json (`categories` already filtered to the kept vocab, with a `"vocab"` field tracing the full vocab it was filtered from); `habitat_embodied_al/dataset.py::register_dataset` registers the result into detectron2's catalogs.
 
 **Training** (`pretrain.py`): a thin wrapper around detectron2's own `train_net.py` shape (`setup`/`Trainer`/`main`) — plain `DefaultTrainer` + `COCOEvaluator`, no custom model, so whichever architecture `--config-file` names runs unmodified. `MODEL.ROI_HEADS.NUM_CLASSES` is set at runtime from the registered dataset's `thing_classes`.
-
-## Code style
-
-Avoid comments and docstrings unless they're mandatory (e.g. required by a linter/interface) or explain a genuinely non-obvious WHY (a hidden constraint, a workaround, a subtle invariant). Don't restate what the code already says.

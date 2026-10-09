@@ -1,30 +1,22 @@
 """
-Sanity check that the HSSD-HAB scene dataset (see INSTALL.MD) loads correctly in habitat_sim:
-instantiates one of the standard HSSD-HAB ObjectNav val scenes (habitat_embodied_al/pretrain/
-config/ds_hssd.yaml's val_scenes) directly via raw habitat_sim.Simulator (no habitat-lab Env/task)
-and renders an rgb+semantic overlay, labeled with each visible instance's category name and
-its world-space AABB wireframe, at random navigable positions - dumped as plain-rgb|overlay
-side-by-side frames to tests/testdump/test_hssd/ for visual inspection.
+Sanity check that the HSSD-HAB scene dataset (see INSTALL.MD) loads and renders in habitat_sim.
 
-Unlike Gibson-Semantic/MP3D, HSSD-HAB doesn't populate sim.semantic_scene.objects (see
-test_isometric_scene.py) - there's no per-scene semantic mesh annotation to read class names
-from. Instead, per-pixel class ids have to be baked in by hand, exactly like
-common/env_utils/object_annotations.py::setup_semantic_labels does for ObjectDetectorGTSensor:
-every placed rigid/articulated object's handle is looked up in a target_vocab_object_annotations
-mapping (object name -> target-vocab class name, built from hssd_obj_semantics_condensed.csv -
-_load_target_vocab_object_annotations below is a standalone copy of that same module's
-_load_hssd_vocab), and its visual scene nodes get
-semantic_id = object_id * 1000 + class_id. Objects with no vocab match, or a filtered-out
-class, get semantic_id 0 instead (plain unlabeled background). Decoding a rendered pixel
-reverses that: class_id = semantic_id % 1000, object_id = semantic_id // 1000 - so, unlike
-Gibson/MP3D, a semantic_id here is never itself a lookup key into any habitat_sim object
-list, only something this file's own baking step defined.
+Instantiates one of ds_hssd.yaml's val_scenes via a raw habitat_sim.Simulator (no habitat-lab
+Env/task) and renders an rgb+semantic overlay, labeled with each visible instance's category name
+and its world-space AABB wireframe, at random navigable positions. Frames are dumped as
+plain-rgb|overlay side by side to tests/testdump/test_hssd/, plus one pure semantic mask
+(class-colored fill + label per instance) for the sampled point with the most visible instances.
 
-Each object's wireframe is its collision_shape_aabb rotated+translated into world space by
-the object's own transform (same corners common/env_utils/object_annotations.py::get_objects_info
-computes) - HSSD has no separately-fit oriented box like Gibson/MP3D's .obb. Articulated
-objects (e.g. a cabinet with a door) have no single collision_shape_aabb, so they get a label
-but no box.
+HSSD-HAB doesn't populate sim.semantic_scene.objects, so semantic ids are baked in the same way
+object_annotations.py::setup_semantic_labels does: each placed object's handle is looked up in the
+hssd_obj_semantics_condensed.csv vocab mapping (_load_target_vocab_object_annotations is a
+standalone copy of _load_hssd_vocab), and its scene nodes get
+semantic_id = object_id * 1000 + class_id, or 0 when unmatched or filtered out. A rendered pixel
+decodes back as class_id = semantic_id % 1000, object_id = semantic_id // 1000.
+
+Each wireframe is the object's collision_shape_aabb transformed into world space (same corners as
+object_annotations.py::get_objects_info). Articulated objects have no single collision_shape_aabb,
+so they get a label but no box.
 
 Requires real HSSD-HAB data under HABITAT_DATA/scene_datasets/hssd-hab/
 (hssd-hab.scene_dataset_config.json + per-scene assets) - skipped otherwise.
@@ -68,7 +60,8 @@ _RESOLUTION = [480, 480]
 _HFOV_DEG = 90.0
 _AGENT_HEIGHT = 0.88  # matches common/config/hssd-hab/default.yaml's agent height
 _OVERLAY_ALPHA = 0.5
-_N_POINTS = 4
+_N_POINTS = 15
+_N_MASK_CANDIDATES = 30  # extra random points searched (beyond _N_POINTS) for the richest mask-only frame
 _FILTER_OUT_CLASSES: list[str] = []  # local denylist, opposite of object_detector_sensors.py's filter_classes allow-list
 _TESTDUMP_DIR = os.path.join(os.path.dirname(__file__), "testdump", "test_hssd")
 os.system(f"rm -rf {_TESTDUMP_DIR}")
@@ -221,6 +214,27 @@ def _draw_aabb_wireframe(draw, obj, color, cam_pos, forward, right, up, focal):
         )
 
 
+def _semantic_mask_only(semantic, objects_by_id) -> Image.Image:
+    """Pure semantic segmentation mask - no rgb blend: id 0 stays black, every other labeled
+    pixel gets its colorize_ids color, with each instance's category name at its mask centroid."""
+    color_ids = colorize_ids(semantic).astype(np.uint8)
+    mask = np.zeros_like(color_ids)
+    labeled = np.isin(semantic, list(objects_by_id.keys()))
+    mask[labeled] = color_ids[labeled]
+    img = Image.fromarray(mask)
+
+    draw = ImageDraw.Draw(img)
+    for obj_id in np.unique(semantic):
+        if obj_id == 0:
+            continue
+        hssd_obj = objects_by_id.get(int(obj_id))
+        if hssd_obj is None:
+            continue
+        ys, xs = np.where(semantic == obj_id)
+        draw.text((int(xs.mean()), int(ys.mean())), hssd_obj.class_name, fill=(255, 255, 255), stroke_width=1, stroke_fill=(0, 0, 0))
+    return img
+
+
 def _rgb_semantic_overlay(rgb, semantic, objects_by_id, cam_pos, forward, right, up, focal) -> Image.Image:
     """rgb blended with colorize_ids(semantic) over labeled pixels only (id 0 stays plain rgb);
     each visible instance gets its AABB wireframe and its category name at the mask centroid."""
@@ -261,6 +275,7 @@ def test_generates_rgb_semantic_overlay_frames(sim):
     agent = sim.get_agent(0)
     rng = np.random.default_rng(0)
 
+    best = None  # (num_visible_instances, semantic, objects_by_id) for the mask-only dump
     for i in range(_N_POINTS):
         agent.set_state(_random_agent_state(sim, rng))
 
@@ -279,8 +294,24 @@ def test_generates_rgb_semantic_overlay_frames(sim):
         side_by_side = Image.fromarray(np.concatenate([rgb[:, :, :3], np.array(overlay)], axis=1))
         side_by_side.save(os.path.join(_TESTDUMP_DIR, f"{prefix}_overlay.png"))
 
-        classes_in_frame = {objects_by_id[v].class_name for v in np.unique(semantic) if v != 0 and v in objects_by_id}
+        visible_ids = {int(v) for v in np.unique(semantic) if v != 0 and int(v) in objects_by_id}
+        classes_in_frame = {objects_by_id[v].class_name for v in visible_ids}
         print(f"{prefix}: {classes_in_frame}")
+
+        if best is None or len(visible_ids) > best[0]:
+            best = (len(visible_ids), semantic, objects_by_id)
+
+    # Keep searching (without dumping overlays) for a richer frame to use for the mask-only image.
+    for _ in range(_N_MASK_CANDIDATES):
+        agent.set_state(_random_agent_state(sim, rng))
+        semantic = sim.get_sensor_observations()["semantic"]
+        visible_ids = {int(v) for v in np.unique(semantic) if v != 0 and int(v) in objects_by_id}
+        if len(visible_ids) > best[0]:
+            best = (len(visible_ids), semantic, objects_by_id)
+
+    mask_img = _semantic_mask_only(best[1], best[2])
+    mask_img.save(os.path.join(_TESTDUMP_DIR, f"{_SCENE}_mask.png"))
+    print(f"{_SCENE}: mask.png dumped with {best[0]} visible instances")
 
     print(f"{_SCENE}: {len(objects_by_id)} {_VOCAB} objects in the scene, {_N_POINTS} frames dumped to {_TESTDUMP_DIR}")
 

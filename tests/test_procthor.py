@@ -1,40 +1,22 @@
 """
-Sanity check that the ProcTHOR-hab scene dataset (see INSTALL.MD and
-data/scene_datasets/ai2thor-hab/README.md) loads correctly in habitat_sim: instantiates one of
-two known-good ProcTHOR-Train houses directly via raw habitat_sim.Simulator (no habitat-lab
-Env/task) and renders an rgb+semantic overlay, labeled with each visible instance's category
-name and its world-space AABB wireframe, at random navigable positions - dumped as
-plain-rgb|overlay side-by-side frames to tests/testdump/test_procthor/ for visual inspection.
+Sanity check that the ProcTHOR-hab scene dataset (see INSTALL.MD) loads and renders in habitat_sim.
 
-Unlike Gibson-Semantic/MP3D/HSSD, ProcTHOR's semantic ids are CATEGORY ids, not per-instance
-ones: every ai2thor-hab/configs/objects/*.object_config.json ships a static "semantic_id" field
-(looked up in configs/object_semantic_id_mapping.json - e.g. "ArmChair": 88, per the README),
-and habitat_sim applies it to that object's render nodes at load time - confirmed directly
-against a loaded scene: two ArmChair instances both carry obj.semantic_id == 88, and that's
-exactly the pixel value the semantic sensor renders for both. This file renders that native
-buffer as-is, so it can't tell two same-category instances apart here, only which category is
-present where (common/env_utils/object_annotations.py::setup_semantic_labels does bake a real
-per-instance id for ProcTHOR-hab - obj.semantic_id read here is exactly the native class_id it
-packs into object_id * 1000 + class_id - but this standalone smoke test intentionally doesn't
-go through the sensor).
+Instantiates one of two known-good ProcTHOR-Train houses via a raw habitat_sim.Simulator (no
+habitat-lab Env/task) and renders an rgb+semantic overlay, labeled with each visible object's
+category name and its world-space AABB wireframe, at random navigable positions. Frames are dumped
+as plain-rgb|overlay side by side to tests/testdump/test_procthor/, plus one pure semantic mask
+(class-colored fill + label per category) for the sampled point with the most visible categories.
 
-Because of that, the wireframe+label pass gates purely on whether an object's class id shows up
-anywhere in that frame's rendered semantic buffer (np.unique(semantic)) - the same "did this id
-survive into the rendered buffer" test the other three files use, just at category instead of
-instance granularity. No extra geometry/frustum check on top of that: a box's own corners get
-individually clipped at the camera's near plane while drawing (same as the other files' obb
-wireframes), and PIL simply doesn't render whatever falls outside the canvas, so a large object
-that's only partially in frame still gets its box - an earlier version of this file additionally
-required the object's *center* to project inside the frame, which dropped exactly that case: a
-big, close ArmChair filling a corner of the view with its center just outside it. The class-in-
-buffer check is still a necessary, not sufficient, stand-in for "this exact instance is visible"
-- it can't rule out one same-class instance being visible while another, elsewhere in frame, is
-fully hidden (e.g. behind a closed door). Boxes are still pure 3D-geometry projections with no
-occlusion culling once drawn, same as the other files.
+Unlike the other datasets, ProcTHOR's native semantic ids are category ids, not per-instance ones:
+each object_config.json ships a static "semantic_id" (from configs/object_semantic_id_mapping.json,
+e.g. "ArmChair": 88) that habitat_sim applies at load time. This file renders that native buffer
+as-is, so two same-category instances tint identically; setup_semantic_labels is what bakes real
+per-instance ids, but this smoke test deliberately bypasses the sensor.
 
-The rgb+color tint itself is still genuine per-pixel semantic segmentation (id 0 "Undefined" =
-unlabeled background), just at category rather than instance granularity - so, unlike the other
-three files, two overlapping same-class instances tint identically and blend into one blob.
+So a box+label is drawn whenever an object's class id appears anywhere in the frame's semantic
+buffer - necessary but not sufficient for that exact instance to be visible (a same-class instance
+behind a closed door still gets drawn). Box corners are clipped at the near plane and the canvas
+edge, so a partially in-frame object still gets its box; there is no occlusion culling.
 
 Requires real ProcTHOR-hab data under HABITAT_DATA/scene_datasets/ai2thor-hab/ai2thor-hab/
 (ai2thor-hab.scene_dataset_config.json + per-scene assets) - skipped otherwise.
@@ -76,7 +58,8 @@ _RESOLUTION = [480, 480]
 _HFOV_DEG = 90.0
 _AGENT_HEIGHT = 0.88  # matches common/config/hssd-hab/default.yaml's agent height
 _OVERLAY_ALPHA = 0.5
-_N_POINTS = 4
+_N_POINTS = 15
+_N_MASK_CANDIDATES = 30  # extra random points searched (beyond _N_POINTS) for the richest mask-only frame
 _FILTER_OUT_CLASSES: list[str] = []  # local denylist, opposite of object_detector_sensors.py's filter_classes allow-list
 _TESTDUMP_DIR = os.path.join(os.path.dirname(__file__), "testdump", "test_procthor")
 os.system(f"rm -rf {_TESTDUMP_DIR}")
@@ -217,6 +200,25 @@ def _draw_wireframe(draw, world_corners, color, cam_pos, forward, right, up, foc
     return sum(xs) / len(xs), sum(ys) / len(ys)
 
 
+def _semantic_mask_only(semantic, id2class, valid_ids) -> Image.Image:
+    """Pure semantic segmentation mask - no rgb blend: id 0 stays black, every other labeled
+    pixel gets its colorize_ids color, with each visible category's name at its mask centroid.
+    Category, not instance, granularity - see module docstring."""
+    color_ids = colorize_ids(semantic).astype(np.uint8)
+    mask = np.zeros_like(color_ids)
+    labeled = np.isin(semantic, list(valid_ids))
+    mask[labeled] = color_ids[labeled]
+    img = Image.fromarray(mask)
+
+    draw = ImageDraw.Draw(img)
+    for class_id in np.unique(semantic):
+        if int(class_id) not in valid_ids:
+            continue
+        ys, xs = np.where(semantic == class_id)
+        draw.text((int(xs.mean()), int(ys.mean())), id2class[int(class_id)], fill=(255, 255, 255), stroke_width=1, stroke_fill=(0, 0, 0))
+    return img
+
+
 def _rgb_semantic_overlay(rgb, semantic, objects, valid_ids, cam_pos, forward, right, up, focal) -> Image.Image:
     """rgb blended with colorize_ids(semantic) over labeled pixels only (id 0 stays plain rgb) -
     genuine per-pixel category segmentation. An object gets its wireframe and category name
@@ -265,6 +267,7 @@ def test_generates_rgb_semantic_overlay_frames(sim):
     agent = sim.get_agent(0)
     rng = np.random.default_rng(0)
 
+    best = None  # (num_visible_categories, semantic) for the mask-only dump
     for i in range(_N_POINTS):
         agent.set_state(_random_agent_state(sim, rng))
 
@@ -283,8 +286,24 @@ def test_generates_rgb_semantic_overlay_frames(sim):
         side_by_side = Image.fromarray(np.concatenate([rgb[:, :, :3], np.array(overlay)], axis=1))
         side_by_side.save(os.path.join(_TESTDUMP_DIR, f"{prefix}_overlay.png"))
 
-        classes_in_frame = {id2class[int(v)] for v in np.unique(semantic) if int(v) in valid_ids}
+        visible_ids = {int(v) for v in np.unique(semantic) if int(v) in valid_ids}
+        classes_in_frame = {id2class[v] for v in visible_ids}
         print(f"{prefix}: {classes_in_frame}")
+
+        if best is None or len(visible_ids) > best[0]:
+            best = (len(visible_ids), semantic)
+
+    # Keep searching (without dumping overlays) for a richer frame to use for the mask-only image.
+    for _ in range(_N_MASK_CANDIDATES):
+        agent.set_state(_random_agent_state(sim, rng))
+        semantic = sim.get_sensor_observations()["semantic"]
+        visible_ids = {int(v) for v in np.unique(semantic) if int(v) in valid_ids}
+        if len(visible_ids) > best[0]:
+            best = (len(visible_ids), semantic)
+
+    mask_img = _semantic_mask_only(best[1], id2class, valid_ids)
+    mask_img.save(os.path.join(_TESTDUMP_DIR, f"{_SCENE}_mask.png"))
+    print(f"{_SCENE}: mask.png dumped with {best[0]} visible categories")
 
     print(f"{_SCENE}: {len(objects)} recognized objects in the scene, {_N_POINTS} frames dumped to {_TESTDUMP_DIR}")
 

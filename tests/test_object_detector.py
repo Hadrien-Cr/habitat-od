@@ -1,32 +1,23 @@
 """
-Cross-env sanity check for the real ObjectDetectorGTSensor (common/env_utils/
-object_detector_sensors.py) + its object_annotations.py backing (common/env_utils/
-object_annotations.py) - unlike test_hssd.py/test_gibson.py/test_mp3d.py/test_procthor.py,
-which each reimplement a standalone, simplified version of the baking/decoding logic inline
-against raw habitat_sim, this test goes through the actual sensor for all 4 supported
-env_names (HSSD-HAB, MP3D, Gibson-Semantic, ProcTHOR-hab) - same ObjectDetectorGTSensor
-collect_dataset.py drives, just constructed directly against a raw habitat_sim.Simulator here
-instead of through the full ExplorationEnv/Hydra config path.
+Cross-env sanity check for the real ObjectDetectorGTSensor on all 4 supported env_names.
 
-For each env with data available (independently skipped otherwise - this test still runs
-against whichever subset of the 4 datasets you have locally, same convention as the sibling
-files), instantiates a real ObjectDetectorGTSensor against one scene and samples random
-navigable positions through sensor.decompose_frame() until _N_NONEMPTY_FRAMES_PER_ENV frames
-with at least one surviving detection are found (same "non_empty" notion
-habitat_embodied_al/collection.py::visualize_mosaic uses for its own mosaics) or
-_MAX_ATTEMPTS_PER_ENV is hit. Detections are rendered with plot_segmentation_gt
-(common/utils/plot_utils.py) - the same box+"i: gt=<class>" label style visualize_mosaic uses
-to build a collected run's own train_mosaic.png/val_mosaic.png - and tiled into that env's own
-mosaic via make_mosaic, dumped to tests/testdump/test_object_detector/<env_name>_mosaic.png
-(one file per env, not one combined mosaic) for visual inspection.
+Unlike test_hssd.py/test_gibson.py/test_mp3d.py/test_procthor.py, which reimplement a simplified
+baking/decoding inline, this goes through the actual sensor (the same one collect_dataset.py
+drives), constructed directly on a raw habitat_sim.Simulator instead of through
+ExplorationEnv/Hydra.
 
-Colors/classes come from sensor.get_classes() + vocab_constants.make_colors() directly rather
-than MetadataCatalog, since ProcTHOR-hab's vocabulary is fully data-driven (see
-object_annotations.py::_load_procthor_classes) and was never registered into MetadataCatalog -
-this keeps all 4 envs on one uniform code path instead of special-casing that one.
+For each env with data available (HSSD-HAB, MP3D, Gibson-Semantic, ProcTHOR-hab; each skipped
+independently), samples random navigable positions through sensor.decompose_frame() until
+_N_NONEMPTY_FRAMES_PER_ENV frames with at least one detection are found or _MAX_ATTEMPTS_PER_ENV
+is hit. Detections are drawn with plot_segmentation_gt, the same style as collection.py's
+visualize_mosaic, and tiled with make_mosaic into
+tests/testdump/test_object_detector/<env_name>_mosaic.png (one file per env).
 
-Requires HABITAT_DATA pointing at real data for at least one of HSSD-HAB/MP3D/Gibson-Semantic/
-ProcTHOR-hab (see INSTALL.MD) - skipped entirely otherwise.
+Classes/colors come from sensor.get_classes() + vocab_constants.make_colors() rather than
+MetadataCatalog, since ProcTHOR-hab's data-driven vocabulary is never registered there.
+
+Requires HABITAT_DATA pointing at real data for at least one of the 4 envs (see INSTALL.MD) -
+skipped entirely otherwise.
 """
 
 import math
