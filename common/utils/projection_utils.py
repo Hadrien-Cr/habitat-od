@@ -135,17 +135,32 @@ class ResolvedObjects:
         """(1, num_classes) logits of one resolved object."""
         raise NotImplementedError
 
-    def source_instances(self, object_id: int) -> Dict[int, int]:
-        """{frame id: instance index} of the detections one resolved object was built from."""
-        raise NotImplementedError
+    def classified(self, class_probs: Dict[int, torch.Tensor]) -> "ResolvedObjects":
+        """self restricted to the objects of class_probs, each taking its most probable class."""
+        kept = np.isin(self.resolved_infos[:, 1], list(class_probs))
+        self.resolved_points, self.resolved_infos = self.resolved_points[kept], self.resolved_infos[kept]
+        object_classes = {object_id: int(probs.argmax()) for object_id, probs in class_probs.items()}
+        self.resolved_infos[:, 0] = [object_classes[object_id] for object_id in self.resolved_infos[:, 1]]
+        self.resolved_logits = class_probs
+        self.kdtree = KDTree(self.resolved_points) if len(self.resolved_points) else None
+        return self
 
     def depth_raytracing(
         self, depth, pose, hfov, min_depth, max_depth, *, min_visibility_fraction: float = 0.2
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Masks, ids, classes and logits of the resolved objects seen in depth from pose, dropping those below min_visibility_fraction."""
+        masks, ids, classes = self.visible_objects(depth, pose, hfov, min_depth, max_depth, min_visibility_fraction=min_visibility_fraction)
+        if len(ids) == 0:
+            return masks, ids, classes, torch.Tensor()
+        return masks, ids, classes, torch.cat([self.object_logits(int(object_id)).cpu() for object_id in ids])
+
+    def visible_objects(
+        self, depth, pose, hfov, min_depth, max_depth, *, min_visibility_fraction: float = 0.2
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Masks, ids and classes of the resolved objects seen in depth from pose, dropping those below min_visibility_fraction."""
         if len(self.resolved_points) == 0:
             log.warning("no resolved points to raytrace")
-            return torch.Tensor(), torch.Tensor(), torch.Tensor(), torch.Tensor()
+            return torch.Tensor(), torch.Tensor(), torch.Tensor()
         projected_points = project_batch_masks(depth, pose, hfov=hfov, min_depth=min_depth, max_depth=max_depth).numpy()
         nearest_points = self.kdtree.query(projected_points, distance_upper_bound=self.raytrace_radius(), k=1, workers=-1)[1]
         resolved_masks, resolved_ids, resolved_classes = self._object_masks(nearest_points, depth.shape)
@@ -154,12 +169,11 @@ class ResolvedObjects:
             if mesh_visibility_fraction(self.object_dimensions(object_id), mask.numpy(), np.asarray(depth), hfov) >= min_visibility_fraction
         ]
         if not kept:
-            return torch.Tensor(), torch.Tensor(), torch.Tensor(), torch.Tensor()
+            return torch.Tensor(), torch.Tensor(), torch.Tensor()
         return (
             torch.stack([resolved_masks[idx] for idx in kept]),
             torch.tensor([resolved_ids[idx] for idx in kept], dtype=torch.int),
             torch.tensor([resolved_classes[idx] for idx in kept], dtype=torch.int),
-            torch.cat([self.object_logits(resolved_ids[idx]).cpu() for idx in kept]),
         )
 
     def object_dimensions(self, object_id: int) -> np.ndarray:

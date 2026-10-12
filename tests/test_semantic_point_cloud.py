@@ -198,8 +198,9 @@ def viewer_arg_parser(description: str, map_name: str) -> argparse.ArgumentParse
     return parser
 
 
-def run_viewer(args: argparse.Namespace, out_name: str, fused, frame_map: Callable) -> Tuple[_Viewer, object, ImageMemory]:
-    """Fuses frame_map(rgb, depth, pose, gt_instances) pieces of an exploration run into `fused`, saves it, backprojects it and returns it with every explored frame."""
+def run_viewer(args: argparse.Namespace, out_name: str, fused, frame_map: Callable, resolve: Callable) -> Tuple[_Viewer, object, ImageMemory]:
+    """Fuses frame_map(rgb, depth, pose, gt_instances) pieces of an exploration run into `fused`, resolves it with resolve(fused, memory),
+    saves it, backprojects it and returns it with every explored frame."""
     
     if not _DATASET_CONFIG or not os.path.exists(_DATASET_CONFIG):
         raise SystemExit(f"no ProcTHOR-hab data at {_DATASET_CONFIG} (check HABITAT_DATA)")
@@ -212,22 +213,23 @@ def run_viewer(args: argparse.Namespace, out_name: str, fused, frame_map: Callab
         input_tiles, memory, held_out = [], ImageMemory(), []
 
         for step, (obs, agent_state) in enumerate(exploration_frames(viewer, 2 * args.num_frames)):
-            frame = Frame(*_frame_geometry(obs, agent_state), _frame_gt_instances(viewer.sensor, obs, set(args.classes_keep)))
+            frame = Frame(*_frame_geometry(obs, agent_state))
+            gt_instances = _frame_gt_instances(viewer.sensor, obs, set(args.classes_keep))
             frame_id = memory.add_frame(frame)
             if step % 2:
                 held_out.append(frame_id)
                 continue
 
-            input_tiles.append(_segmentation_tile(viewer, frame.rgb, frame.instances, f"frame{frame_id:03d}"))
-            if len(frame.instances):
+            input_tiles.append(_segmentation_tile(viewer, frame.rgb, gt_instances, f"frame{frame_id:03d}"))
+            if len(gt_instances):
                 st = time.time()
-                fused = fused + frame_map(frame.rgb, frame.depth, frame.pose, _tag_frame_id(frame.instances, frame_id))
-                print(f"frame {frame_id:03d}: inserted {len(frame.instances)} instances in {time.time() - st:.3f}s")
+                fused = fused + frame_map(frame.rgb, frame.depth, frame.pose, gt_instances)
+                print(f"frame {frame_id:03d}: inserted {len(gt_instances)} instances in {time.time() - st:.3f}s")
 
         make_mosaic(input_tiles, N_cols=4).save(os.path.join(viewer.out_dir, f"{viewer.out_stem}_input_mosaic.png"))
 
         # resolve
-        fused.resolve()
+        fused = resolve(fused, memory)
         if len(fused.resolved_points) == 0:
             raise SystemExit("none of the explored frames produced anything to resolve")
         print(f"{args.scene_id}: fused and resolved in {time.time() - run_st:.3f}s, {len(fused.resolved_points)} resolved points")
@@ -260,7 +262,7 @@ def run_viewer(args: argparse.Namespace, out_name: str, fused, frame_map: Callab
         print(f"backprojection pass: {time.time() - backproj_st:.3f}s total")
 
         cv2.imwrite(os.path.join(viewer.out_dir, f"{viewer.out_stem}_exploration_map.png"), viewer.explorer.map_image())
-        make_mosaic(viewer.map_tiles, N_cols=10).save(os.path.join(viewer.out_dir, f"{viewer.out_stem}_exploration_mosaic.png"))
+        make_mosaic(viewer.map_tiles, N_cols=5).save(os.path.join(viewer.out_dir, f"{viewer.out_stem}_exploration_mosaic.png"))
         return viewer, fused, memory
     
     finally:
@@ -306,12 +308,6 @@ def _frame_geometry(obs: dict, agent_state: habitat_sim.AgentState) -> Tuple[np.
     return obs["rgb"][:, :, :3].copy(), obs["depth"].squeeze(), sensor_pose_matrix(agent_state.sensor_states["depth"])
 
 
-def _tag_frame_id(instances: Instances, frame_id: int) -> Instances:
-    for info in instances.infos:
-        info["frame_id"] = frame_id
-    return instances
-
-
 def _segmentation_tile(viewer: _Viewer, rgb: np.ndarray, instances: Instances, label: str) -> Tuple[str, np.ndarray]:
     return segmentation_tile(rgb, instances, _style(viewer), label)
 
@@ -328,12 +324,17 @@ def save_retrieval_mosaic(viewer: _Viewer, fused: ResolvedObjects, memory: Image
         mosaic.save(os.path.join(viewer.out_dir, f"{viewer.out_stem}_retrieval_mosaic.png"))
 
 
+def resolve_point_cloud(fused: SemanticPointCloud, memory: ImageMemory) -> SemanticPointCloud:
+    fused.resolve()
+    return fused
+
+
 def frame_point_cloud(rgb: np.ndarray, depth: np.ndarray, pose: np.ndarray, gt_instances: Instances) -> SemanticPointCloud:
-    infos = [{"id_object": int(info["object_id"]), "frame_id": info["frame_id"]} for info in gt_instances.infos]
+    infos = [{"id_object": int(info["object_id"])} for info in gt_instances.infos]
     return project_semantic_masks_to_3d(depth, pose, gt_instances, infos, hfov=HFOV_DEG, min_depth=MIN_DEPTH, max_depth=MAX_DEPTH)
 
 
 if __name__ == "__main__":
     args = viewer_arg_parser(__doc__, "SemanticPointCloud").parse_args()
-    viewer, fused, memory = run_viewer(args, "test_semantic_point_cloud", SemanticPointCloud(), frame_point_cloud)
+    viewer, fused, memory = run_viewer(args, "test_semantic_point_cloud", SemanticPointCloud(), frame_point_cloud, resolve_point_cloud)
     save_retrieval_mosaic(viewer, fused, memory, args.retrieval_objects)

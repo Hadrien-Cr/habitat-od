@@ -41,23 +41,20 @@ def segmentation_tile(rgb: np.ndarray, instances: Instances, style: Segmentation
 def retrieval_mosaic(fused: ResolvedObjects, memory: ImageMemory, raytraced: dict, style: SegmentationStyle, num_objects: int) -> Optional[Image.Image]:
     """One mosaic row per largest resolved object, of every frame ImageMemory.frames_showing retrieves it in from raytraced (ImageMemory.raytrace_frames)."""
     object_ids, sizes = np.unique(fused.resolved_infos[:, 1], return_counts=True)
-    rows = [_retrieval_row(fused, memory, raytraced, style, int(object_id)) for object_id in object_ids[np.argsort(-sizes)[:num_objects]]]
+    rows = [_retrieval_row(memory, raytraced, style, int(object_id)) for object_id in object_ids[np.argsort(-sizes)[:num_objects]]]
     tiles = [tile for row in rows for tile in row]
     return make_mosaic(tiles, row_sizes=[len(row) for row in rows]) if tiles else None
 
 
-def _retrieval_row(fused: ResolvedObjects, memory: ImageMemory, raytraced: dict, style: SegmentationStyle, object_id: int) -> List[Tuple[str, np.ndarray]]:
+def _retrieval_row(memory: ImageMemory, raytraced: dict, style: SegmentationStyle, object_id: int) -> List[Tuple[str, np.ndarray]]:
     return [
-        _retrieval_tile(memory.get_frame(frame_id), frame_id, instance_idx, object_id, raytraced[frame_id], style)
-        for frame_id, instance_idx in memory.frames_showing(fused, object_id, raytraced)
+        _retrieval_tile(memory.get_frame(frame_id), frame_id, object_id, raytraced[frame_id], style)
+        for frame_id in memory.frames_showing(object_id, raytraced)
     ][0:10]  # limit to 10 frames per object
 
 
-def _retrieval_tile(
-    frame: Frame, frame_id: int, instance_idx: Optional[int], object_id: int, frame_raytraced: tuple, style: SegmentationStyle,
-) -> Tuple[str, np.ndarray]:
-    """frame with the instance that detected the object, or else the object's raytraced mask."""
-    if instance_idx is not None:
-        return segmentation_tile(frame.rgb, frame.instances[instance_idx], style, f"object{object_id} frame{frame_id:03d} detected")
+def _retrieval_tile(frame: Frame, frame_id: int, object_id: int, frame_raytraced: tuple, style: SegmentationStyle) -> Tuple[str, np.ndarray]:
+    """frame with the object's raytraced mask and resolved class."""
     masks, ids, classes = frame_raytraced
-    return segmentation_tile(frame.rgb, instances_from_masks(masks[ids == object_id], classes[ids == object_id], frame.depth.shape), style, f"object{object_id} frame{frame_id:03d} visible")
+    instances = instances_from_masks(masks[ids == object_id], classes[ids == object_id], frame.depth.shape)
+    return segmentation_tile(frame.rgb, instances, style, f"object{object_id} frame{frame_id:03d}")

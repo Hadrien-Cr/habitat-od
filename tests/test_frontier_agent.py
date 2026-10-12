@@ -73,7 +73,7 @@ def _save_snapshot(agent: FrontierAgent, map_tiles: list) -> None:
     shutil.rmtree(_TESTDUMP_DIR, ignore_errors=True)
     os.makedirs(_TESTDUMP_DIR, exist_ok=True)
     cv2.imwrite(os.path.join(_TESTDUMP_DIR, "map.png"), agent.map_image())
-    make_mosaic(map_tiles, N_cols=10).save(os.path.join(_TESTDUMP_DIR, "map_mosaic.png"))
+    make_mosaic(map_tiles, N_cols=5).save(os.path.join(_TESTDUMP_DIR, "map_mosaic.png"))
 
 
 def test_exploration(exploration_run):

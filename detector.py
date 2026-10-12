@@ -2,21 +2,55 @@
 collection rollout (see habitat_embodied_al/reproduce/main.py) -- unlike pretrain.py/eval.py,
 which only ever score a checkpoint against an already-built static COCO dataset offline, this
 wraps a trained checkpoint to run it against one simulator frame at a time as it's collected.
+Runs Detic checkpoints (third_party/Detic), whose zero-shot classifier is replaced by the CLIP text
+embeddings of `classes`.
 """
-from typing import Optional
+import sys
+from collections import defaultdict
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
 import torch
+import torch.nn.functional as F
 import torchvision  # type: ignore
 from torchvision.models.feature_extraction import create_feature_extractor  # type: ignore
-from detectron2.config import get_cfg  # type: ignore
+from detectron2.config import CfgNode, get_cfg  # type: ignore
 from detectron2.engine import DefaultPredictor  # type: ignore
 from detectron2.modeling.meta_arch.rcnn import GeneralizedRCNN  # type: ignore
 from detectron2.modeling.roi_heads.fast_rcnn import fast_rcnn_inference  # type: ignore
-from detectron2.structures import Instances  # type: ignore
+from detectron2.data.transforms import Transform  # type: ignore
+from detectron2.structures import BitMasks, Boxes, ImageList, Instances  # type: ignore
+from PIL import Image
+
+from common.utils.plot_utils import box_crop, draw_ranked_classes, make_mosaic
+
+_DETIC_ROOT = Path(__file__).resolve().parent / "third_party" / "Detic"
+sys.path[:0] = [str(_DETIC_ROOT), str(_DETIC_ROOT / "third_party" / "CenterNet2")]
+
+from centernet.config import add_centernet_config  # type: ignore  # noqa: E402
+from detic.config import add_detic_config  # type: ignore  # noqa: E402
+from detic.modeling.roi_heads.detic_fast_rcnn import DeticFastRCNNOutputLayers  # type: ignore  # noqa: E402
+from detic.modeling.utils import reset_cls_test  # type: ignore  # noqa: E402
+from detic.predictor import get_clip_embeddings  # type: ignore  # noqa: E402
 
 _CROP_SIZE = 128
+_TILE_SIZE = 320
+_TOP_CLASSES = 5
+_TRIAL_ROW_VIEWS = 10
+_OBJECT_PROB_PLACEHOLDER = 1.0
+
+ObjectViews = Dict[int, Dict[int, Tuple[np.ndarray, np.ndarray]]]
+
+
+def mean_view_class_probs(object_probs: Dict[int, Tuple[float, Dict[int, torch.Tensor]]]) -> Dict[int, torch.Tensor]:
+    """{object id: mean of its views' class probabilities} of a Detector.classify_objects result."""
+    return {object_id: torch.stack(list(frame_probs.values())).mean(dim=0) for object_id, (_, frame_probs) in object_probs.items()}
+
+
+def _mask_box(mask: np.ndarray) -> List[int]:
+    return BitMasks(torch.as_tensor(mask)[None]).get_bounding_boxes().tensor[0].int().tolist()
 
 
 class Detector:
@@ -32,9 +66,7 @@ class Detector:
     ):
         self.classes = classes
         self.agnostic_nms_thresh = agnostic_nms_thresh
-        cfg = get_cfg()
-        cfg.merge_from_file(config_file)
-
+        cfg = self._config(config_file)
         cfg.MODEL.ROI_HEADS.NUM_CLASSES = len(classes)
         cfg.MODEL.WEIGHTS = weights_path
         cfg.MODEL.MASK_ON = mask_on
@@ -43,10 +75,42 @@ class Detector:
         if score_thresh is not None:
             cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = score_thresh
         self._predictor = DefaultPredictor(cfg)
+        reset_cls_test(self._predictor.model, get_clip_embeddings(classes), len(classes))
         self._device = torch.device(cfg.MODEL.DEVICE)
         resnet = torchvision.models.resnet18(weights="IMAGENET1K_V1")
         self._feature_extractor = create_feature_extractor(resnet, return_nodes={"avgpool": "features"})
         self._feature_extractor.to(self._device).eval()
+
+    def _config(self, config_file: str) -> CfgNode:
+        """Detic config_file, its zero-shot classifier left to reset_cls_test and its metadata paths resolved from _DETIC_ROOT."""
+        cfg = get_cfg()
+        add_centernet_config(cfg)
+        add_detic_config(cfg)
+        cfg.merge_from_file(config_file)
+        cfg.MODEL.ROI_BOX_HEAD.ZEROSHOT_WEIGHT_PATH = "rand"
+        cfg.MODEL.ROI_BOX_HEAD.CAT_FREQ_PATH = str(_DETIC_ROOT / cfg.MODEL.ROI_BOX_HEAD.CAT_FREQ_PATH)
+        return cfg
+
+    def _box_predictions(self, features: dict, proposals: list) -> Tuple[tuple, tuple, DeticFastRCNNOutputLayers]:
+        """DeticCascadeROIHeads._forward_box's inference: stage-averaged class probabilities, times the proposal score, on the last stage's boxes."""
+        roi_heads = self._predictor.model.roi_heads
+        proposal_scores = [p.scores if p.has("scores") else p.objectness_logits for p in proposals]
+        box_features = [features[f] for f in roi_heads.box_in_features]
+        image_sizes = [p.image_size for p in proposals]
+        stage_probs = []
+
+        for stage in range(roi_heads.num_cascade_stages):
+            if stage > 0:
+                proposals = roi_heads._create_proposals_from_boxes(boxes, image_sizes, logits=[p.objectness_logits for p in proposals])
+            predictions = roi_heads._run_stage(box_features, proposals, stage)
+            boxes = roi_heads.box_predictor[stage].predict_boxes((predictions[0], predictions[1]), proposals)
+            stage_probs.append(roi_heads.box_predictor[stage].predict_probs(predictions, proposals))
+        probs = [sum(cls_probs) / roi_heads.num_cascade_stages for cls_probs in zip(*stage_probs)]
+        
+        if roi_heads.mult_proposal_score:
+            probs = [(cls_probs * box_scores[:, None]) ** 0.5 for cls_probs, box_scores in zip(probs, proposal_scores)]
+        
+        return boxes, probs, roi_heads.box_predictor[-1]
 
     def _crop_features(self, rgb: np.ndarray, boxes: np.ndarray) -> np.ndarray:
         """Frozen-ImageNet-ResNet18 embedding of each detected box's own cropped+resized
@@ -74,17 +138,96 @@ class Detector:
         features /= np.linalg.norm(features, axis=1, keepdims=True) + 1e-10
         return features
 
+    def _backbone(self, rgb: np.ndarray) -> Tuple[dict, ImageList, Transform]:
+        """Backbone features of rgb (RGB order, flipped to the BGR DefaultPredictor expects), its preprocessed images and resize transform."""
+        bgr = rgb[:, :, ::-1]
+        transform = self._predictor.aug.get_transform(bgr)
+        image = torch.as_tensor(transform.apply_image(bgr).astype("float32").transpose(2, 0, 1))
+        images = self._predictor.model.preprocess_image([{"image": image}])
+        return self._predictor.model.backbone(images.tensor), images, transform
+
+    def _region_embeddings(self, features: dict, boxes: Boxes) -> torch.Tensor:
+        """(N, D) normalized last-stage embeddings of boxes, the ones Detic contrasts with the class text embeddings."""
+        roi_heads = self._predictor.model.roi_heads
+        pooled = roi_heads.box_pooler([features[f] for f in roi_heads.box_in_features], [boxes])
+        head_features = torch.flatten(roi_heads.box_head[-1](pooled), start_dim=1)
+        return F.normalize(roi_heads.box_predictor[-1].cls_score.linear(head_features), dim=-1)
+
+    @torch.no_grad()
+    def encode_regions(self, rgb: np.ndarray, boxes: np.ndarray) -> torch.Tensor:
+        """(N, D) region embeddings of the xyxy boxes of rgb."""
+        features, _, transform = self._backbone(rgb)
+        return self._region_embeddings(features, Boxes(torch.as_tensor(transform.apply_box(boxes), dtype=torch.float32, device=self._device))).cpu()
+
+    @torch.no_grad()
+    def region_class_probs(self, embeddings: torch.Tensor) -> torch.Tensor:
+        """(N, len(classes)) Detic's sigmoid class probabilities of region embeddings."""
+        cls_score = self._predictor.model.roi_heads.box_predictor[-1].cls_score
+        return (cls_score.norm_temperature * embeddings.to(self._device) @ cls_score.zs_weight[:, :-1]).sigmoid().cpu()
+
+    def classify_objects(self, views: ObjectViews, mosaic_path: Path) -> Dict[int, Tuple[float, Dict[int, torch.Tensor]]]:
+        """{object id: (p(object), {frame id: class probabilities of that view's mask-box region embedding})}; saves each
+        object's ensembled-embedding and per-view top classes to mosaic_path."""
+        embeddings = self._view_embeddings(views)
+        view_probs = {
+            object_id: dict(zip(frame_embeddings, self.region_class_probs(torch.stack(list(frame_embeddings.values())))))
+            for object_id, frame_embeddings in embeddings.items()
+        }
+        ensembled_probs = {
+            object_id: self.region_class_probs(F.normalize(torch.stack(list(frame_embeddings.values())).mean(dim=0), dim=0)[None])[0]
+            for object_id, frame_embeddings in embeddings.items()
+        }
+        # top_two = {object_id: probs.topk(2).values for object_id, probs in ensembled_probs.items()}
+        # passed = {object_id: bool(top[0] >= min_class_margin * top[1]) for object_id, top in top_two.items()}
+        if view_probs:
+            self._trial_mosaic(views, ensembled_probs, view_probs).save(mosaic_path)
+        # return resolved.classified({object_id: probs for object_id, probs in ensembled_probs.items() if passed[object_id]})
+        return {object_id: (_OBJECT_PROB_PLACEHOLDER, frame_probs) for object_id, frame_probs in view_probs.items()}
+
+    def _view_embeddings(self, views: ObjectViews) -> Dict[int, Dict[int, torch.Tensor]]:
+        """{object id: {frame id: region embedding of that view's mask box}}, one backbone pass per frame."""
+        frame_views = defaultdict(list)
+        for object_id, object_views in views.items():
+            for frame_id, (rgb, mask) in object_views.items():
+                frame_views[frame_id].append((object_id, rgb, _mask_box(mask)))
+        embeddings = defaultdict(dict)
+        for frame_id, object_boxes in frame_views.items():
+            rgb = object_boxes[0][1]
+            for (object_id, _, _), embedding in zip(object_boxes, self.encode_regions(rgb, np.array([box for _, _, box in object_boxes]))):
+                embeddings[object_id][frame_id] = embedding
+        return dict(embeddings)
+
+    def _trial_mosaic(self, views: ObjectViews, ensembled_probs: Dict[int, torch.Tensor], view_probs: Dict[int, Dict[int, torch.Tensor]]) -> Image.Image:
+        """One row per object: its ensembled-embedding top classes, then each view's crop with its own top classes."""
+        rows = [self._trial_row(object_id, views[object_id], probs, view_probs[object_id]) for object_id, probs in ensembled_probs.items()]
+        return make_mosaic([tile for row in rows for tile in row], row_sizes=[len(row) for row in rows])
+
+    def _trial_row(
+        self, object_id: int, object_views: Dict[int, Tuple[np.ndarray, np.ndarray]], ensembled_probs: torch.Tensor, frame_probs: Dict[int, torch.Tensor],
+    ) -> List[Tuple[str, np.ndarray]]:
+        blank = np.zeros((_TILE_SIZE, _TILE_SIZE, 3), dtype=np.uint8)
+        crops = [
+            (f"frame{frame_id:03d}", self.draw_top_classes(probs, box_crop(object_views[frame_id][0], _mask_box(object_views[frame_id][1]), _TILE_SIZE)))
+            for frame_id, probs in list(frame_probs.items())[:_TRIAL_ROW_VIEWS]
+        ]
+        return [(f"object{object_id} ensembled", self.draw_top_classes(ensembled_probs, blank)), *crops]
+
+    def draw_top_classes(self, class_probs: torch.Tensor, image: np.ndarray) -> np.ndarray:
+        """image with the top classes of class_probs and their probabilities drawn on it."""
+        top_probs, top_classes = class_probs.topk(_TOP_CLASSES)
+        return draw_ranked_classes(image, [self.class_name(idx) for idx in top_classes.tolist()], top_probs.tolist())
+
     def predict(self, rgb: np.ndarray) -> Instances:
         """rgb: HxWx3 uint8 array, RGB order (as returned by habitat_sim's rgb sensor).
         DefaultPredictor always expects BGR (see its own docstring), so this flips channels
-        before calling it. Manually replays DefaultPredictor/StandardROIHeads/
-        FastRCNNOutputLayers's own inference path instead of just calling self._predictor(bgr)
+        before calling it. Manually replays DefaultPredictor/DeticCascadeROIHeads's own
+        inference path (see _box_predictions) instead of just calling self._predictor(bgr)
         so the per-detection full class-probability vector -- normally discarded after NMS --
         survives as an extra Instances field for scoring (common/samplers/scoring.py's entropy
         rule). box_features (common/samplers/similarity.py's diversity distance) come from a
         separate frozen crop-feature extractor (see _crop_features), not this detector's own
         RoI head. Returns detectron2 Instances (pred_boxes/pred_classes/scores/class_probs/
-        box_features, plus pred_masks when predicts_masks) on CPU, image-sized.
+        region_features (see _region_embeddings)/box_features, plus pred_masks when predicts_masks) on CPU, image-sized.
 
         fast_rcnn_inference's own NMS is per-class (detectron2 has no config flag for
         class-agnostic NMS -- it always groups by predicted class, see
@@ -92,36 +235,25 @@ class Detector:
         as two overlapping boxes under different classes. Unless self.agnostic_nms_thresh is 0
         (disabled), a second torchvision.ops.nms pass (no class grouping) runs after it to
         collapse those."""
-        bgr = rgb[:, :, ::-1]
-        height, width = bgr.shape[:2]
+        height, width = rgb.shape[:2]
         model = self._predictor.model
 
         with torch.no_grad():
-            image = self._predictor.aug.get_transform(bgr).apply_image(bgr)
-            image = torch.as_tensor(image.astype("float32").transpose(2, 0, 1))
-            inputs = {"image": image, "height": height, "width": width}
-
-            images = model.preprocess_image([inputs])
-            features = model.backbone(images.tensor)
+            features, images, _ = self._backbone(rgb)
             proposals, _ = model.proposal_generator(images, features, None)
 
-            roi_heads = model.roi_heads
-            pooled = roi_heads.box_pooler([features[f] for f in roi_heads.box_in_features], [p.proposal_boxes for p in proposals])
-            box_features = roi_heads.box_head(pooled)
-            predictions = roi_heads.box_predictor(box_features)
-
-            boxes = roi_heads.box_predictor.predict_boxes(predictions, proposals)
-            probs = roi_heads.box_predictor.predict_probs(predictions, proposals)
+            boxes, probs, box_predictor = self._box_predictions(features, proposals)
             instances, kept = fast_rcnn_inference(
                 boxes, probs, [p.image_size for p in proposals],
-                roi_heads.box_predictor.test_score_thresh,
-                roi_heads.box_predictor.test_nms_thresh,
-                roi_heads.box_predictor.test_topk_per_image,
+                box_predictor.test_score_thresh,
+                box_predictor.test_nms_thresh,
+                box_predictor.test_topk_per_image,
             )
             instances[0].class_probs = probs[0][kept[0]]
-            instances = roi_heads.forward_with_given_boxes(features, instances)
+            instances[0].region_features = self._region_embeddings(features, instances[0].pred_boxes)
+            instances = model.roi_heads.forward_with_given_boxes(features, instances)
 
-            result = GeneralizedRCNN._postprocess(instances, [inputs], images.image_sizes)[0]["instances"]
+            result = GeneralizedRCNN._postprocess(instances, [{"height": height, "width": width}], images.image_sizes)[0]["instances"]
 
         result = result.to("cpu")
         if self.agnostic_nms_thresh > 0.0 and len(result) > 0:

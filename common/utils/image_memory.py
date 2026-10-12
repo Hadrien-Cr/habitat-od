@@ -1,9 +1,9 @@
+from collections import defaultdict
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 import torch
-from detectron2.structures.instances import Instances
 
 from common.utils.projection_utils import DepthCamera, ResolvedObjects
 
@@ -13,7 +13,6 @@ class Frame:
     rgb: np.ndarray
     depth: np.ndarray
     pose: np.ndarray
-    instances: Instances
 
 
 class ImageMemory:
@@ -38,16 +37,20 @@ class ImageMemory:
     def raytrace_frames(self, resolved_objects: ResolvedObjects, camera: DepthCamera, min_visibility_fraction: float) -> Dict[int, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
         """{frame id: (masks, ids, classes)} of the resolved objects raytraced in each frame at least min_visibility_fraction visible."""
         return {
-            frame_id: resolved_objects.depth_raytracing(
+            frame_id: resolved_objects.visible_objects(
                 frame.depth, frame.pose, camera.hfov, camera.min_depth, camera.max_depth, min_visibility_fraction=min_visibility_fraction,
-            )[:3]
+            )
             for frame_id, frame in self.frames.items()
         }
 
-    def frames_showing(self, resolved_objects: ResolvedObjects, object_id: int, raytraced: dict) -> List[Tuple[int, Optional[int]]]:
-        """(frame id, index of the instance detecting it or None) of every frame where the resolved object is detected or raytraced."""
-        detected = resolved_objects.source_instances(object_id)
-        return [
-            (frame_id, detected.get(frame_id)) for frame_id in self.frames
-            if frame_id in detected or (raytraced[frame_id][1] == object_id).any()
-        ]
+    def object_views(self, resolved_objects: ResolvedObjects, camera: DepthCamera, min_visibility_fraction: float) -> Dict[int, Dict[int, Tuple[np.ndarray, np.ndarray]]]:
+        """{object id: {frame id: (rgb, raytraced mask)}} of every frame showing each resolved object at least min_visibility_fraction visible."""
+        views = defaultdict(dict)
+        for frame_id, (masks, ids, _) in self.raytrace_frames(resolved_objects, camera, min_visibility_fraction).items():
+            for mask, object_id in zip(masks, ids.tolist()):
+                views[object_id][frame_id] = (self.frames[frame_id].rgb, mask.numpy())
+        return dict(views)
+
+    def frames_showing(self, object_id: int, raytraced: dict) -> List[int]:
+        """Ids of the frames raytraced (ImageMemory.raytrace_frames) to show the resolved object."""
+        return [frame_id for frame_id in self.frames if (raytraced[frame_id][1] == object_id).any()]

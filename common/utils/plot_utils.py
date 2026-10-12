@@ -302,6 +302,23 @@ def plot_exploration_map(top_down_map: np.ndarray, revealed_mask: np.ndarray, tr
     return image
 
 
+def box_crop(rgb: np.ndarray, box: list[int], size: int) -> np.ndarray:
+    """The xyxy box of rgb, stretched to size x size."""
+    x0, y0, x1, y1 = box
+    return cv2.resize(rgb[y0:y1, x0:x1], (size, size))
+
+
+def draw_ranked_classes(image: np.ndarray, names: list[str], probs: list[float], top: int = 50) -> np.ndarray:
+    """image with one "name prob" line per class, each over a bar as wide as its probability, from pixel row top down."""
+    line_height = 28
+    for rank, (name, prob) in enumerate(zip(names, probs)):
+        y = top + rank * line_height
+        cv2.rectangle(image, (0, y), (image.shape[1] - 1, y + line_height - 4), (0, 0, 0), -1)
+        cv2.rectangle(image, (0, y), (int(prob * (image.shape[1] - 1)), y + line_height - 4), (40, 110, 200), -1)
+        cv2.putText(image, f"{name} {prob:.2f}", (5, y + line_height - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+    return image
+
+
 def _padded_row(tiles: list[np.ndarray], width: int) -> np.ndarray:
     return np.hstack(tiles + [np.zeros_like(tiles[0])] * (width - len(tiles)))
 

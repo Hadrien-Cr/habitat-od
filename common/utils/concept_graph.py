@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field, replace
-from typing import Dict, List, Tuple, Union
+from typing import List, Union
 
 import numpy as np
 import torch
@@ -8,9 +8,12 @@ from detectron2.structures import Instances
 from scipy.spatial.kdtree import KDTree
 
 from common.utils.projection_utils import (
-    DepthCamera, ResolvedObjects, denoise, downsample_points, instance_logits, instance_masks_and_classes, object_points,
+    DepthCamera, ResolvedObjects, denoise, downsample_points, instance_masks_and_classes, object_points,
 )
 from common.utils.similarity_utils import overlap_ratio_matrix, visual_similarity_matrix
+
+
+UNCLASSIFIED = -1
 
 
 @dataclass(frozen=True)
@@ -30,24 +33,20 @@ class ConceptGraphConfig:
 
 @dataclass(eq=False)
 class ConceptGraphObject:
-    """One mapped object: world points, normalized CLIP feature, summed class logits, detection count and (frame id, instance index) of each detection."""
+    """One mapped object: world points, normalized Detic region embedding (CLIP text space) and detection count."""
 
     points: np.ndarray
-    clip_feature: torch.Tensor
-    class_logits: torch.Tensor
+    region_feature: torch.Tensor
     num_detections: int = 1
-    sources: List[Tuple[int, int]] = field(default_factory=list)
 
     def merged_with(self, other: "ConceptGraphObject", voxel_size: float) -> "ConceptGraphObject":
-        """concept-graphs' merge_obj2_into_obj1: fused points, detection-weighted CLIP feature, summed logits."""
+        """concept-graphs' merge_obj2_into_obj1: fused points and detection-weighted region embedding."""
         num_detections = self.num_detections + other.num_detections
-        clip_feature = (self.clip_feature * self.num_detections + other.clip_feature * other.num_detections) / num_detections
+        region_feature = (self.region_feature * self.num_detections + other.region_feature * other.num_detections) / num_detections
         return ConceptGraphObject(
             points=downsample_points(np.concatenate([self.points, other.points]), voxel_size),
-            clip_feature=F.normalize(clip_feature, dim=0),
-            class_logits=self.class_logits + other.class_logits,
+            region_feature=F.normalize(region_feature, dim=0),
             num_detections=num_detections,
-            sources=self.sources + other.sources,
         )
 
 
@@ -58,29 +57,25 @@ def project_detections_to_objects(
     hfov: int,
     min_depth: float,
     max_depth: float,
-) -> "ConceptGraphObjectSet":
-    """One raw ConceptGraphObject per instance; instances must carry clip_features, gt_logits or class_probs, and infos with a frame_id."""
+) -> List[ConceptGraphObject]:
+    """One raw ConceptGraphObject per instance; instances must carry region_features."""
     masks, _ = instance_masks_and_classes(instances)
     camera = DepthCamera(hfov, min_depth, max_depth)
-    objects = [
+    return [
         ConceptGraphObject(
             points=object_points(depth, pose, mask, camera),
-            clip_feature=clip_feature,
-            class_logits=logits,
-            sources=[(info["frame_id"], instance_idx)],
+            region_feature=region_feature,
         )
-        for instance_idx, (mask, clip_feature, logits, info) in enumerate(zip(masks, instances.clip_features, instance_logits(instances), instances.infos))
+        for mask, region_feature in zip(masks, instances.region_features)
     ]
-    return ConceptGraphObjectSet(objects)
 
 
 @dataclass(eq=False)
 class ConceptGraphObjectSet(ResolvedObjects):
-    """Objects fused across frames with +; resolve() derives resolved_points/resolved_infos/resolved_logits from them."""
+    """Objects fused across frames with +; resolve() derives resolved_points/resolved_infos from them, left unclassified for Detector.classify_objects."""
 
     objects: List[ConceptGraphObject] = field(default_factory=list)
     config: ConceptGraphConfig = field(default_factory=ConceptGraphConfig)
-    resolved_sources: Dict[int, Dict[int, int]] = field(init=False, default_factory=dict)
 
     def __len__(self) -> int:
         return len(self.objects)
@@ -91,12 +86,9 @@ class ConceptGraphObjectSet(ResolvedObjects):
     def object_logits(self, object_id: int) -> torch.Tensor:
         return self.resolved_logits[object_id].unsqueeze(0)
 
-    def source_instances(self, object_id: int) -> Dict[int, int]:
-        return self.resolved_sources[object_id]
-
-    def __add__(self, detections: "ConceptGraphObjectSet") -> "ConceptGraphObjectSet":
+    def __add__(self, detections: List[ConceptGraphObject]) -> "ConceptGraphObjectSet":
         """Matches each detection to its most similar object, merging it there or adding it as a new object."""
-        processed = [self._processed(detection) for detection in detections.objects if len(detection.points) >= max(self.config.min_points_threshold, 5)]
+        processed = [self._processed(detection) for detection in detections if len(detection.points) >= max(self.config.min_points_threshold, 5)]
         if not processed or not self.objects:
             self.objects.extend(processed)
             return self
@@ -113,17 +105,17 @@ class ConceptGraphObjectSet(ResolvedObjects):
         return replace(detection, points=denoise(detection.points, self.config.downsample_voxel_size, self.config.dbscan_eps, self.config.dbscan_min_points))
 
     def _match_similarities(self, detections: List[ConceptGraphObject]) -> torch.Tensor:
-        """(detections, objects) spatial overlap + CLIP similarity, computed before any merge of this frame."""
+        """(detections, objects) spatial overlap + region-embedding similarity, computed before any merge of this frame."""
         spatial_sim = torch.from_numpy(overlap_ratio_matrix(
             [detection.points for detection in detections], [obj.points for obj in self.objects], self.config.downsample_voxel_size,
         )).float()
         visual_sim = visual_similarity_matrix(
-            torch.stack([detection.clip_feature for detection in detections]), torch.stack([obj.clip_feature for obj in self.objects]),
+            torch.stack([detection.region_feature for detection in detections]), torch.stack([obj.region_feature for obj in self.objects]),
         )
         return spatial_sim + visual_sim
 
     def resolve(self) -> None:
-        """concept-graphs' end-of-run post-processing (denoise, filter, overlap merge) into the resolved_* outputs."""
+        """concept-graphs' end-of-run post-processing (denoise, filter, overlap merge) into the resolved_* outputs, every object of class UNCLASSIFIED."""
         objects = [self._denoised(obj) for obj in self.objects]
         objects = [
             obj for obj in objects
@@ -141,7 +133,7 @@ class ConceptGraphObjectSet(ResolvedObjects):
             return objects
         overlap = overlap_ratio_matrix([obj.points for obj in objects], [obj.points for obj in objects], self.config.downsample_voxel_size)
         np.fill_diagonal(overlap, 0)
-        visual_sim = visual_similarity_matrix(torch.stack([obj.clip_feature for obj in objects]), torch.stack([obj.clip_feature for obj in objects]))
+        visual_sim = visual_similarity_matrix(torch.stack([obj.region_feature for obj in objects]), torch.stack([obj.region_feature for obj in objects]))
         kept = np.ones(len(objects), dtype=bool)
         for source, target in zip(*np.unravel_index(np.argsort(-overlap, axis=None), overlap.shape)):
             if overlap[source, target] <= self.config.merge_overlap_thresh:
@@ -152,10 +144,8 @@ class ConceptGraphObjectSet(ResolvedObjects):
         return [obj for obj, keep in zip(objects, kept) if keep]
 
     def _set_resolved(self, objects: List[ConceptGraphObject]) -> None:
-        self.resolved_points = np.concatenate([obj.points for obj in objects]) if objects else np.empty((0, 3))
-        self.resolved_infos = np.concatenate([
-            np.tile([int(obj.class_logits.argmax()), object_id], (len(obj.points), 1)) for object_id, obj in enumerate(objects)
-        ]) if objects else np.empty((0, 2), dtype=int)
-        self.resolved_logits = {object_id: obj.class_logits / obj.num_detections for object_id, obj in enumerate(objects)}
-        self.resolved_sources = {object_id: dict(obj.sources) for object_id, obj in enumerate(objects)}
-        self.kdtree = KDTree(self.resolved_points) if objects else None
+        if not objects:
+            return
+        self.resolved_points = np.concatenate([obj.points for obj in objects])
+        self.resolved_infos = np.concatenate([np.tile([UNCLASSIFIED, object_id], (len(obj.points), 1)) for object_id, obj in enumerate(objects)])
+        self.kdtree = KDTree(self.resolved_points)
