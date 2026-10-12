@@ -404,7 +404,7 @@ class ObjectDetectorGTSensorConfig(LabSensorConfig):
     vocab_name: str = "NYU40"
     area_thr: float = 1000.0
     filter_low_visibility: bool = True
-    min_visibility_fraction: float = 0.3
+    min_visibility_fraction: float = 0.2
     # Allow-list of classes to keep; None/empty keeps every class (except "unknown", always dropped).
     filter_classes: Optional[List[str]] = None
 

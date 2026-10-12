@@ -5,6 +5,7 @@ Reuses test_semantic_point_cloud.py's FrontierAgent-driven write/read harness. E
 frame's gt_instances (GT masks, depth and one-hot class logits) get a CLIP feature of their padded
 box crop, are projected with project_detections_to_objects, merged into the map via
 ConceptGraphObjectSet.__add__, and .resolve() runs concept-graphs' denoise/filter/overlap-merge.
+Then saves the same retrieval_mosaic.png as test_semantic_point_cloud.py.
 
 Has no pytest test functions - run it directly.
 """
@@ -16,7 +17,7 @@ from detectron2.structures import Instances
 
 from common.utils.concept_graph import ConceptGraphObjectSet, project_detections_to_objects
 from common.utils.similarity_utils import ClipCropEncoder
-from test_semantic_point_cloud import HFOV_DEG, MAX_DEPTH, MIN_DEPTH, run_viewer, viewer_arg_parser
+from test_semantic_point_cloud import HFOV_DEG, MAX_DEPTH, MIN_DEPTH, run_viewer, save_retrieval_mosaic, viewer_arg_parser
 
 
 def frame_objects(encoder: ClipCropEncoder, rgb: np.ndarray, depth: np.ndarray, pose: np.ndarray, gt_instances: Instances) -> ConceptGraphObjectSet:
@@ -28,4 +29,5 @@ if __name__ == "__main__":
     parser = viewer_arg_parser(__doc__, "ConceptGraphObjectSet")
     parser.add_argument("--clip-model", default="openai/clip-vit-base-patch32", help="Hugging Face CLIP checkpoint used for the per-detection features")
     args = parser.parse_args()
-    run_viewer(args, "test_concept_graph", ConceptGraphObjectSet(), partial(frame_objects, ClipCropEncoder(args.clip_model)))
+    viewer, fused, memory = run_viewer(args, "test_concept_graph", ConceptGraphObjectSet(), partial(frame_objects, ClipCropEncoder(args.clip_model)))
+    save_retrieval_mosaic(viewer, fused, memory, args.retrieval_objects)

@@ -154,7 +154,7 @@ def test_generates_cross_env_detection_mosaics():
 
             config = ObjectDetectorGTSensorConfig(
                 env_name=env_name, vocab_name=spec["vocab_name"],
-                area_thr=250, filter_low_visibility=True, min_visibility_fraction=0.15,
+                area_thr=250, filter_low_visibility=True, min_visibility_fraction=0.2,
                 filter_classes=[],
             )
             sensor = ObjectDetectorGTSensor(sim, config)

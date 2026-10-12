@@ -14,7 +14,7 @@ object_params:
   vocab_name: "ProcTHOR-native"
   area_thr: 400
   filter_low_visibility: True
-  min_visibility_fraction: 0.15
+  min_visibility_fraction: 0.2
   # classes.py::PROCTHOR_SHORT_CLASSES -- the 49-class shortlist reproduced from
   # the original repo's OBJECTS_PROCTHOR_SHORT.
   filter_classes: [

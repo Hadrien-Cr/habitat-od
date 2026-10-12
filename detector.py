@@ -28,13 +28,18 @@ class Detector:
     def __init__(
         self, config_file: str, weights_path: str, classes: list,
         score_thresh: Optional[float] = 0.5, agnostic_nms_thresh: float = 0.5,
+        mask_on: bool = True, device: str = "cuda",
     ):
         self.classes = classes
         self.agnostic_nms_thresh = agnostic_nms_thresh
         cfg = get_cfg()
         cfg.merge_from_file(config_file)
+
         cfg.MODEL.ROI_HEADS.NUM_CLASSES = len(classes)
         cfg.MODEL.WEIGHTS = weights_path
+        cfg.MODEL.MASK_ON = mask_on
+        cfg.MODEL.DEVICE = device
+
         if score_thresh is not None:
             cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = score_thresh
         self._predictor = DefaultPredictor(cfg)
@@ -79,7 +84,7 @@ class Detector:
         rule). box_features (common/samplers/similarity.py's diversity distance) come from a
         separate frozen crop-feature extractor (see _crop_features), not this detector's own
         RoI head. Returns detectron2 Instances (pred_boxes/pred_classes/scores/class_probs/
-        box_features) on CPU, image-sized.
+        box_features, plus pred_masks when predicts_masks) on CPU, image-sized.
 
         fast_rcnn_inference's own NMS is per-class (detectron2 has no config flag for
         class-agnostic NMS -- it always groups by predicted class, see
@@ -114,6 +119,7 @@ class Detector:
                 roi_heads.box_predictor.test_topk_per_image,
             )
             instances[0].class_probs = probs[0][kept[0]]
+            instances = roi_heads.forward_with_given_boxes(features, instances)
 
             result = GeneralizedRCNN._postprocess(instances, [inputs], images.image_sizes)[0]["instances"]
 
@@ -123,6 +129,10 @@ class Detector:
             result = result[keep]
         result.box_features = torch.from_numpy(self._crop_features(rgb, result.pred_boxes.tensor.numpy()))
         return result
+
+    @property
+    def predicts_masks(self) -> bool:
+        return self._predictor.cfg.MODEL.MASK_ON
 
     def class_name(self, class_id: int) -> str:
         return self.classes[class_id]

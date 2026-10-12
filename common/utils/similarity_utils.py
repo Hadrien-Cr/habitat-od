@@ -22,11 +22,6 @@ def visual_similarity_matrix(features_a: torch.Tensor, features_b: torch.Tensor)
     return F.normalize(features_a, dim=-1) @ F.normalize(features_b, dim=-1).T
 
 
-def aggregate_similarities(spatial_sim: torch.Tensor, visual_sim: torch.Tensor, phys_bias: float = 0.0) -> torch.Tensor:
-    """concept-graphs' "sim_sum" matching score."""
-    return (1 + phys_bias) * spatial_sim + (1 - phys_bias) * visual_sim
-
-
 class ClipCropEncoder:
     """Hugging Face CLIP image features of padded bounding-box crops, as concept-graphs computes them."""
 

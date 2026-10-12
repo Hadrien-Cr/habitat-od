@@ -18,6 +18,7 @@ habitat:
   simulator:
     scene_dataset: "data/scene_datasets/hssd-hab/hssd-hab.scene_dataset_config.json"
     turn_angle: 30
+    navmesh_include_static_objects: True
     agents:
       main_agent:
         height: 0.88
@@ -43,7 +44,7 @@ habitat:
 
     habitat_sim_v0:
       gpu_device_id: 0
-      allow_sliding: False
+      allow_sliding: True
       enable_hbao: True
       enable_physics: True
       

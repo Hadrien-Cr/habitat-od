@@ -59,20 +59,26 @@ class FrontierAgent(Agent):
         self._found_frontier = True
         return self._point_turn_action(position, heading, self.closest_frontier_waypoint)
 
-    def _meters_per_pixel(self) -> float:
+    def meters_per_pixel(self) -> float:
         return maps.calculate_meters_per_pixel(self.config.map_resolution, pathfinder=self.pathfinder)
 
     def _pixels(self, meters: float) -> int:
-        return int(meters / self._meters_per_pixel())
+        return int(meters / self.meters_per_pixel())
 
     def _own_island_map(self, position: np.ndarray) -> np.ndarray:
         """Navigable mask of the agent's own navmesh island only - get_topdown_view's +-0.5 m slab would also count furniture tops (e.g. a mattress) as floor."""
-        islands = self.pathfinder.get_topdown_island_view(self._meters_per_pixel(), position[1])
+        islands = self.pathfinder.get_topdown_island_view(self.meters_per_pixel(), position[1])
         return np.ascontiguousarray(islands == self.pathfinder.get_island(mn.Vector3(*position)), dtype=np.uint8)
 
     def to_pixel(self, position: np.ndarray) -> np.ndarray:
         """(row, col) of a world position on top_down_map."""
-        return np.array(maps.to_grid(position[2], position[0], self.top_down_map.shape, pathfinder=self.pathfinder))
+        return self.to_pixels(np.asarray(position)[None])[0]
+
+    def to_pixels(self, positions: np.ndarray) -> np.ndarray:
+        """(N, 2) (row, col) of (N, 3) world positions on top_down_map - a vectorized maps.to_grid."""
+        lower, upper = (np.array(bound)[[2, 0]] for bound in self.pathfinder.get_bounds())
+        cell_size = np.abs(upper - lower) / np.array(self.top_down_map.shape)
+        return ((positions[:, [2, 0]] - lower) / cell_size).astype(int)
 
     def _to_world(self, pixels: np.ndarray, height: float) -> np.ndarray:
         """Navmesh-snapped world points of (row, col) map pixels."""

@@ -200,14 +200,43 @@ def eval_checkpoint(
     return eval_results
 
 
-def main(args: argparse.Namespace) -> None:
-    object_params = {
+def add_object_args(parser: argparse.ArgumentParser) -> None:
+    """ObjectDetectorGTSensor/vocabulary flags shared with habitat_embodied_sl/main.py."""
+    parser.add_argument("--env-name", default="ProcTHOR-hab")
+    parser.add_argument("--vocab-name", default="ProcTHOR-native")
+    parser.add_argument("--area-thr", type=float, default=400.0)
+    parser.add_argument("--filter-low-visibility", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--min-visibility-fraction", type=float, default=0.2)
+    parser.add_argument("--filter-classes", nargs="*", default=PROCTHOR_SHORT_CLASSES, help="Allow-list of classes to keep; pass an empty list to keep every class.")
+
+
+def object_params_from_args(args: argparse.Namespace) -> dict:
+    return {
         "env_name": args.env_name, "vocab_name": args.vocab_name, "area_thr": args.area_thr,
         "filter_low_visibility": args.filter_low_visibility, "min_visibility_fraction": args.min_visibility_fraction,
         "filter_classes": args.filter_classes,
     }
+
+
+def kept_classes_from_args(args: argparse.Namespace) -> list:
+    """The vocabulary's classes the detector predicts: --filter-classes' allow-list, minus "unknown"."""
     full_classes = resolve_classes(args.env_name, args.vocab_name)
-    kept_classes = [c for c in full_classes if c != "unknown" and (not args.filter_classes or c in args.filter_classes)]
+    return [c for c in full_classes if c != "unknown" and (not args.filter_classes or c in args.filter_classes)]
+
+
+def build_env(scene_name: str, seed: int, max_steps: int, object_params: dict):
+    """(ExplorationEnv on scene_name, its habitat config), not yet reset."""
+    habitat_cfg = habitat.get_config(config_path="common/config/hssd-hab/default.yaml")
+    with read_write(habitat_cfg):
+        habitat_cfg.habitat.seed = seed
+    configure_scene(habitat_cfg, [scene_name], max_steps, object_params)
+    return ExplorationEnv(config=habitat_cfg), habitat_cfg
+
+
+def main(args: argparse.Namespace) -> None:
+    object_params = object_params_from_args(args)
+    full_classes = resolve_classes(args.env_name, args.vocab_name)
+    kept_classes = kept_classes_from_args(args)
     checkpoint = args.init_checkpoint
 
     # set up the validation dataset
@@ -237,13 +266,7 @@ def main(args: argparse.Namespace) -> None:
 
     # set up detector, scene, env, sampler
     detector = Detector(args.config_file, checkpoint, kept_classes, agnostic_nms_thresh=args.agnostic_nms_thresh)
-    habitat_cfg = habitat.get_config(config_path="common/config/hssd-hab/default.yaml")
-    with read_write(habitat_cfg):
-        habitat_cfg.habitat.seed = args.seed
-
-
-    configure_scene(habitat_cfg, [args.scene_name], args.timesteps, object_params)
-    env = ExplorationEnv(config=habitat_cfg)
+    env, habitat_cfg = build_env(args.scene_name, args.seed, args.timesteps, object_params)
     rng = np.random.default_rng(args.seed)
     env.reset(env.episodes[0], rng=rng)
     sampler = build_sampler(args.sampler, args.scoring, args.budget_expanding_ratio, rng, full_classes)
@@ -326,12 +349,7 @@ if __name__ == "__main__":
     parser.add_argument("--init-checkpoint", required=True)
     parser.add_argument("--agnostic-nms-thresh", type=float, default=0.5, help="Collapses same-box detections across classes -- detectron2's own NMS is per-class only. Pass 0.0 to disable.")
 
-    parser.add_argument("--env-name", default="ProcTHOR-hab")
-    parser.add_argument("--vocab-name", default="ProcTHOR-native")
-    parser.add_argument("--area-thr", type=float, default=400.0)
-    parser.add_argument("--filter-low-visibility", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--min-visibility-fraction", type=float, default=0.15)
-    parser.add_argument("--filter-classes", nargs="*", default=PROCTHOR_SHORT_CLASSES, help="Allow-list of classes to keep; pass an empty list to keep every class.")
+    add_object_args(parser)
 
     parser.add_argument(
         "opts", default=None, nargs=argparse.REMAINDER,

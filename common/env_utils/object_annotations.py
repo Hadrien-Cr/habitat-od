@@ -8,6 +8,7 @@ from typing import Optional
 import magnum as mn
 import numpy as np
 import pandas as pd
+import trimesh
 import habitat_sim # type: ignore
 import habitat.sims.habitat_simulator.sim_utilities as sutils # type: ignore
 
@@ -32,6 +33,18 @@ def get_obj_from_id(sim: habitat_sim.Simulator, obj_id: int):
     if rom.get_library_has_id(obj_id):
         return rom.get_object_by_id(obj_id)
     return None
+
+def object_world_mesh(obj) -> Optional[trimesh.Trimesh]:
+    """obj's render mesh scaled and posed in world coordinates, or None without a render asset on disk."""
+    asset_path = obj.creation_attributes.render_asset_fullpath
+    if not asset_path or not os.path.exists(asset_path):
+        return None
+    mesh = trimesh.load(asset_path, force="mesh")
+    # rigid-body transformation carries no scale, so the template's obj.scale is applied separately
+    mesh.apply_scale(np.array(obj.scale))
+    mesh.apply_transform(np.array(obj.transformation))
+    return mesh
+
 
 def object_shortname_from_handle(object_handle: str) -> str:
     """Strips the :_xxxx suffix habitat_sim appends to an object handle to distinguish

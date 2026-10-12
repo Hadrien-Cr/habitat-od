@@ -2,7 +2,6 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, Tuple, Union
 
 import cc3d
-import cv2
 import numpy as np
 import torch
 from detectron2.structures import Instances
@@ -11,7 +10,14 @@ from scipy.sparse.csgraph import connected_components
 from scipy.spatial.kdtree import KDTree
 import open3d as o3d
 
-from common.utils.projection_utils import ResolvedObjects, instance_masks_and_classes, project_batch_masks
+from common.utils.projection_utils import (
+    DepthCamera, ResolvedObjects, denoise, instance_logits, instance_masks_and_classes, object_points,
+)
+
+_DENOISE_VOXEL_SIZE = 0.025
+_DBSCAN_EPS = 0.1
+_DBSCAN_MIN_POINTS = 10
+_MIN_SOURCE_FRACTION = 0.3
 
 
 def solve_inconsistency(
@@ -73,7 +79,7 @@ def _logits_per_component(components: np.ndarray, voxel_results: dict) -> dict:
 
 
 def project_semantic_masks_to_3d(
-    depth: torch.Tensor,
+    depth: Union[torch.Tensor, np.ndarray],
     pose: Union[torch.Tensor, np.ndarray],
     instances: Instances,
     infos,
@@ -94,31 +100,27 @@ def project_semantic_masks_to_3d(
     if n_instances == 0:
         return SemanticPointCloud()
 
-    instance_points, instance_infos, object_id_to_logits = [], [], {}
+    instance_points, instance_infos, object_id_to_logits, mask_infos = [], [], {}, {}
+    camera = DepthCamera(hfov, min_depth, max_depth)
     masks, classes = instance_masks_and_classes(instances)
+    logits = instance_logits(instances)
     for i in range(n_instances):
         mask, cls = masks[i], classes[i]
-
-        kernel = np.ones((5, 5), 'uint8')
-
-        mask = torch.tensor(
-            cv2.erode(mask.cpu().numpy().astype('uint8'), kernel, iterations=1),
-        )
-        if mask.sum() == 0:
+        points = denoise(object_points(depth, pose, mask.cpu(), camera), _DENOISE_VOXEL_SIZE, _DBSCAN_EPS, _DBSCAN_MIN_POINTS)
+        if len(points) == 0:
             continue
-
-        points = project_batch_masks(depth, pose, mask, hfov=hfov, min_depth=min_depth, max_depth=max_depth)
 
         points_cls = np.ones((points.shape[0], 1)) * cls.cpu().numpy()
 
         points_obj_ids = np.ones((points.shape[0], 1)) * infos[i]['id_object'] # distinct id (does not need consistency across frames)
         instance_points.append(np.asarray(points))
         instance_infos.append(np.hstack((points_cls, points_obj_ids)))
-        object_id_to_logits[infos[i]['id_object']] = instances[i].gt_logits
+        object_id_to_logits[infos[i]['id_object']] = logits[i]
+        mask_infos[infos[i]['id_object']] = {**infos[i], "instance_idx": i}
 
     if not instance_points:
         return SemanticPointCloud()
-    return SemanticPointCloud(np.concatenate(instance_points), np.concatenate(instance_infos), object_id_to_logits)
+    return SemanticPointCloud(np.concatenate(instance_points), np.concatenate(instance_infos), object_id_to_logits, mask_infos)
 
 
 @dataclass(eq=False)
@@ -128,8 +130,10 @@ class SemanticPointCloud(ResolvedObjects):
     points: np.ndarray = field(default_factory=lambda: np.empty((0, 3)))
     infos: np.ndarray = field(default_factory=lambda: np.empty((0, 2)))
     object_id_to_logits: Dict = field(default_factory=dict)
+    mask_infos: Dict = field(default_factory=dict)
     voxel_size: float = 0.05
     solve: Callable = _seal_impl
+    point_objects: np.ndarray = field(init=False, default_factory=lambda: np.empty(0, dtype=int))
 
     def __post_init__(self) -> None:
         self.points = np.asarray(self.points).reshape(-1, 3)
@@ -149,6 +153,7 @@ class SemanticPointCloud(ResolvedObjects):
         self.points = np.concatenate([self.points, x.points])
         self.infos = np.concatenate([self.infos, np.stack([x.infos[:, 0], x.infos[:, 1] + offset], 1)])
         self.object_id_to_logits.update({key + offset: logits for key, logits in x.object_id_to_logits.items()})
+        self.mask_infos.update({key + offset: info for key, info in x.mask_infos.items()})
         return self
 
     def _voxelize(self) -> Tuple[np.ndarray, np.ndarray, tuple]:
@@ -174,11 +179,23 @@ class SemanticPointCloud(ResolvedObjects):
 
         components = cc3d.connected_components(class_grid, connectivity=26)
         components = _merge_components_sharing_masks(components, class_grid, voxel_ids, self.infos)
+        self.point_objects = components.flat[voxel_ids]
         occupied = components > 0
         self.resolved_points = (np.argwhere(occupied) + grid_origin + 0.5) * self.voxel_size
         self.resolved_infos = np.stack([class_grid[occupied] - 1, components[occupied]], 1).astype(int)
         self.resolved_logits = _logits_per_component(components, voxel_results)
         self.kdtree = KDTree(self.resolved_points)
+
+    def source_instances(self, object_id: int) -> Dict[int, int]:
+        """{frame id: instance index} of the masks holding at least _MIN_SOURCE_FRACTION of their points in the resolved object."""
+        mask_ids = self.infos[:, 1].astype(int)
+        in_object = self.point_objects == object_id
+        shares = {mask_id: in_object[mask_ids == mask_id].mean() for mask_id in np.unique(mask_ids[in_object])}
+        # ascending share, so a frame with several qualifying masks keeps its best one
+        return {
+            self.mask_infos[mask_id]["frame_id"]: self.mask_infos[mask_id]["instance_idx"]
+            for mask_id in sorted(shares, key=shares.get) if shares[mask_id] >= _MIN_SOURCE_FRACTION
+        }
 
     def save(self, idx="0") -> None:
         _pcd = o3d.geometry.PointCloud()

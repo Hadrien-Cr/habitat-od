@@ -20,7 +20,7 @@ object_params:
   vocab_name: "ProcTHOR-native"
   area_thr: 400
   filter_low_visibility: True
-  min_visibility_fraction: 0.15
+  min_visibility_fraction: 0.2
   # kept identical to ds_procthor_reproduce.yaml's filter_classes so both
   # datasets share the exact same 49-class category space.
   filter_classes: [

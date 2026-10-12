@@ -117,6 +117,9 @@ class ExplorationEnv(RLEnv):
     def get_pathfinder(self) -> habitat_sim.PathFinder:
         return self._env.sim.pathfinder
 
+    def get_sim(self) -> habitat_sim.Simulator:
+        return self._env.sim
+
     def get_map_bounds(self) -> tuple[tuple[float, float], tuple[float, float]]:
         l, u = self._env.sim.pathfinder.get_bounds()
         return l, u
@@ -134,19 +137,32 @@ class ExplorationEnv(RLEnv):
     _STEP_WALK_METERS = 0.25  # waypoint spacing along find_shortest_path_waypoints's route (embodied-active-learning-od's own grid spacing)
 
     def get_navmesh_grid(self) -> np.ndarray:
-        r"""Boolean navigable-cell mask at _GROUND_FLOOR_MPP resolution, lazily built and
-        cached per scene (reset on reset()/change_scene()) -- shared by get_random_point/
-        find_shortest_path_waypoints below."""
+        r"""Navigable-cell mask of the floor's main navmesh island at _GROUND_FLOOR_MPP resolution,
+        lazily built and cached per scene (reset on reset()/change_scene()) -- shared by
+        get_random_point/find_shortest_path_waypoints below. Furniture tops baked into the navmesh
+        (navmesh_include_static_objects) form small islands within the floor's height slab; only the
+        largest island is kept so spawns and waypoints never land on them."""
         if self._tdmap is None:
             lower_bound, _ = self._env.sim.pathfinder.get_bounds()
-            self._tdmap = self._env.sim.pathfinder.get_topdown_view(
+            islands = self._env.sim.pathfinder.get_topdown_island_view(
                 meters_per_pixel=self._GROUND_FLOOR_MPP, height=lower_bound[1]
-            ).astype(np.uint8)
+            )
+            self._floor_island = int(np.bincount(islands[islands >= 0]).argmax())
+            self._tdmap = (islands == self._floor_island).astype(np.uint8)
         return self._tdmap
+
+    def get_floor_island(self) -> int:
+        r"""Navmesh island index of get_navmesh_grid()'s main floor island."""
+        self.get_navmesh_grid()
+        return self._floor_island
+
+    def _snap_to_floor(self, x: float, z: float) -> np.ndarray:
+        pathfinder = self._env.sim.pathfinder
+        lower_bound, _ = pathfinder.get_bounds()
+        return np.array(pathfinder.snap_point(mn.Vector3(x, lower_bound[1], z), island_index=self.get_floor_island()))
 
     def get_random_point(self, rng: Optional[np.random.Generator] = None, min_distance: float = 0.0, max_retries: int = 100) -> np.ndarray:
         pathfinder = self._env.sim.pathfinder
-        lower_bound, _ = pathfinder.get_bounds()
         tdmap = self.get_navmesh_grid()
 
         rows, cols = np.nonzero(tdmap)
@@ -156,16 +172,16 @@ class ExplorationEnv(RLEnv):
         while k < max_retries:
             idx = rng.integers(len(rows)) if rng is not None else np.random.randint(len(rows))
             z, x = maps.from_grid(rows[idx], cols[idx], tdmap.shape, pathfinder=pathfinder)
-            snapped = pathfinder.snap_point(mn.Vector3(x, lower_bound[1], z))
+            snapped = self._snap_to_floor(x, z)
 
             if min_distance > 0:
                 agent_state = self._env.sim.agents[0].get_state()
-                dist = np.linalg.norm(np.array([snapped.x, snapped.y, snapped.z]) - np.array(agent_state.position))
+                dist = np.linalg.norm(snapped - np.array(agent_state.position))
                 if dist < min_distance:
                     continue
             k += 1
 
-        return np.array(snapped)
+        return snapped
     
     def get_random_rotation(self, rng: Optional[np.random.Generator] = None) -> np.ndarray:
         if rng is None:
@@ -207,13 +223,14 @@ class ExplorationEnv(RLEnv):
         return out
 
     def get_point_near(self, position: np.ndarray, radius: float = 1.5, max_tries: int = 100) -> Optional[np.ndarray]:
-        r"""Random navigable point within `radius` of `position`, or None if none found."""
-        point = np.array(self._env.sim.pathfinder.get_random_navigable_point_near(mn.Vector3(*position), radius, max_tries=max_tries))
+        r"""Random navigable point of the floor island within `radius` of `position`, or None if none found."""
+        point = np.array(self._env.sim.pathfinder.get_random_navigable_point_near(
+            mn.Vector3(*position), radius, max_tries=max_tries, island_index=self.get_floor_island(),
+        ))
         return None if np.isnan(point).any() else point
 
     def find_shortest_path_waypoints(self, start: np.ndarray, end: np.ndarray) -> Optional[list[np.ndarray]]:
         pathfinder = self._env.sim.pathfinder
-        lower_bound, _ = pathfinder.get_bounds()
         tdmap = self.get_navmesh_grid()
 
         start_row, start_col = maps.to_grid(start[2], start[0], tdmap.shape, pathfinder=pathfinder)
@@ -229,7 +246,7 @@ class ExplorationEnv(RLEnv):
         points = []
         for col, row in path_px:
             z, x = maps.from_grid(row, col, self._tdmap.shape, pathfinder=pathfinder)
-            points.append(np.array(pathfinder.snap_point(mn.Vector3(x, lower_bound[1], z))))
+            points.append(self._snap_to_floor(x, z))
         return points
 
     def get_env_name(self) -> str:

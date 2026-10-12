@@ -7,7 +7,7 @@ object_params:
   vocab_name: "ProcTHOR-native"
   area_thr: 400
   filter_low_visibility: True
-  min_visibility_fraction: 0.15
+  min_visibility_fraction: 0.2
   filter_classes: [ "Toaster", "Microwave", "Fridge", "Cabinet", "Chair", "DiningTable",
     "CounterTop", "Television", "Toilet", "Bathtub", "Bed", "Mirror", "ArmChair", "Ottoman",
     "Sofa", "Shelf", "Dresser", "Desk", "SideTable", "TVStand", "CoffeeTable", "ShelvingUnit",

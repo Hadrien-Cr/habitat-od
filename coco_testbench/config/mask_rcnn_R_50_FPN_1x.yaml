@@ -1,0 +1,12 @@
+# Mirrors detectron2's own configs/COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_1x.yaml
+# verbatim (MODEL_ZOO.md "Mask R-CNN R50-FPN 1x": box AP 38.6, mask AP 35.2, model id
+# 137260431), just pointed at the local Base-RCNN-FPN.yaml copy in this directory.
+#
+# WEIGHTS is ImageNet-pretrained backbone only (RPN/ROI/mask heads start random). 1x schedule:
+# Base-RCNN-FPN.yaml's own STEPS/MAX_ITER (60000/80000, 90000 total) apply unchanged.
+_BASE_: "Base-RCNN-FPN.yaml"
+MODEL:
+  WEIGHTS: "detectron2://ImageNetPretrained/MSRA/R-50.pkl"
+  MASK_ON: True
+  RESNETS:
+    DEPTH: 50

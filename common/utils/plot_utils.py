@@ -5,7 +5,6 @@ from typing import Optional
 from matplotlib.pyplot import text
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy import ndimage
 from PIL import Image, ImageDraw
 import cv2
 from detectron2.utils.visualizer import Visualizer as DetVisualizer
@@ -15,6 +14,7 @@ from detectron2.data import Metadata
 # Fixed-order categorical hues (validated for CVD/contrast) -- reused as-is,
 # never cycled per-key, so the same slot always means the same series.
 _SERIES_COLORS = ["#2a78d6", "#008300", "#e87ba4", "#eda100"]
+_MIN_LABEL_AREA_M2 = 0.01
 
 
 def load_metrics(metrics_json: Path) -> list[dict]:
@@ -107,33 +107,18 @@ def plot_al_history(history: list[dict], out_path: Path) -> Path:
 
 def plot_semantic_2d_map(
     bg_grid,
-    sem_grid,
+    footprints: list[tuple[int, np.ndarray]],
     colors: dict[int, tuple[int,int,int]],
     classes: dict[int, str],
     meters_per_grid_pixel: float = 0.01,
     scale=1.0
 ) -> Image.Image:
-    # sem: (h, w, nc)
-    num_sem_classes = sem_grid.shape[-1]
-
-    colored = np.zeros((*sem_grid.shape[:2], 3), dtype=np.uint8)
-    colored[bg_grid == 0] = [235, 235, 235]
-    colored[bg_grid == 1] = [30, 30, 30]
-    areas_m = np.zeros(num_sem_classes, dtype=np.float32)
-
-    for c in range(num_sem_classes):
-        object_mask = (sem_grid[:, :, c] == 1)
-        areas_m[c] = np.sum(object_mask) * meters_per_grid_pixel ** 2
-
-    for c in sorted(range(num_sem_classes), key=lambda x: areas_m[x], reverse=True):
-        object_mask = (sem_grid[:, :, c] == 1)
-        if not np.any(object_mask):
-            continue
-        
-        if c not in colors:
-            colored[object_mask] = [50 + 50*areas_m[c], 50 + 50*areas_m[c], 50 + 50*areas_m[c]]
-        else:
-            colored[object_mask] = colors[c]
+    """bg_grid's navigable map with each object's (class, top-down mask) footprint colored by class, labelled once at its centroid."""
+    footprints = sorted(footprints, key=lambda footprint: footprint[1].sum(), reverse=True)
+    colored = np.zeros((*bg_grid.shape, 3), dtype=np.uint8)
+    colored[bg_grid == 1] = [100, 100, 100]
+    for class_id, mask in footprints:
+        colored[mask] = colors[class_id]
 
     img = Image.fromarray(colored)
     img = img.resize(
@@ -141,36 +126,13 @@ def plot_semantic_2d_map(
         resample=Image.NEAREST  # type: ignore
     )
     draw = ImageDraw.Draw(img)
-    
-    for c in sorted(range(num_sem_classes), key=lambda x: areas_m[x], reverse=True):
-        object_mask = (sem_grid[:, :, c] == 1)
-        
-        if not np.any(object_mask):
+    for class_id, mask in footprints:
+        area_m = mask.sum() * meters_per_grid_pixel ** 2
+        if area_m < _MIN_LABEL_AREA_M2:
             continue
+        y, x = np.argwhere(mask).mean(axis=0) * scale
+        draw.text((x, y), classes[class_id], fill=(255,255,255), font_size= 4 * np.clip(np.sqrt(area_m), 1, 4) * scale, anchor="mm")
 
-        object_mask = (sem_grid[:, :, c] == 1)
-
-        labeled_mask, num = ndimage.label(object_mask)
-
-        for i in range(1, num + 1):
-            region = labeled_mask == i
-            coords = np.column_stack(np.where(region))
-
-            if areas_m[c] < 0.05:
-                continue
-
-            y, x = coords.mean(axis=0)
-
-            x *= scale
-            y *= scale
-
-            draw.text(
-                (x, y),
-                classes[c],
-                fill=(255,255,255),
-                font_size = 1.5 * np.clip(np.sqrt(areas_m[c]), 0.1, 2) * scale,
-                anchor="mm"  # center text on region centroid
-            )
     return img
 
 def draw_line(
@@ -340,12 +302,18 @@ def plot_exploration_map(top_down_map: np.ndarray, revealed_mask: np.ndarray, tr
     return image
 
 
+def _padded_row(tiles: list[np.ndarray], width: int) -> np.ndarray:
+    return np.hstack(tiles + [np.zeros_like(tiles[0])] * (width - len(tiles)))
+
+
 def make_mosaic(
     list_fnames_images: list[tuple[str, np.ndarray]],
     target_size: int = 1_000_000,
     N_cols: int = 4,
     tile_colors: Optional[list[Optional[tuple[int, int, int]]]] = None,
+    row_sizes: Optional[list[int]] = None,
 ) -> Image.Image:
+    """Grid of the labelled tiles, N_cols per row, or row_sizes[i] tiles on row i (padded to the longest row) when given."""
     n =  len(list_fnames_images)
     processed_images = []
 
@@ -366,23 +334,11 @@ def make_mosaic(
         processed_images.append(img)
 
 
-    # 3. Create the nx4 mosaic
-    rows = []
-    for i in range((n + N_cols - 1) // N_cols):
-        # Stack 4 images horizontally (cols)
-        start_idx = i * N_cols
-        end_idx = (i + 1) * N_cols
-        row_of_images = processed_images[start_idx:end_idx]
-        if len(row_of_images) == 0:
-            continue
-        elif len(row_of_images) == N_cols:
-            rows.append(np.hstack(row_of_images))
-        else:
-            # If not enough images to fill the last row, pad with black images
-            n_missing = N_cols - len(row_of_images)
-            black_image = np.zeros_like(processed_images[0])
-            row_of_images.extend([black_image] * n_missing)
-            rows.append(np.hstack(row_of_images))
+    width = max(row_sizes) if row_sizes else N_cols
+    if row_sizes is None:
+        row_sizes = [min(N_cols, n - start) for start in range(0, n, N_cols)]
+    bounds = np.cumsum([0, *row_sizes])
+    rows = [_padded_row(processed_images[start:end], width) for start, end in zip(bounds[:-1], bounds[1:]) if end > start]
 
     final_mosaic = np.vstack(rows)
 

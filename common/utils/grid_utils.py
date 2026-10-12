@@ -66,30 +66,19 @@ class HabitatObjOccupancyGrid:
         into the object occupancy top-down grid.
         """
 
-        def order_polygon_points(pts):
-            center = pts.mean(axis=0)
-            angles = np.arctan2(
-                pts[:,1] - center[1],   # y - cy
-                pts[:,0] - center[0]    # x - cx
-            )
-            return pts[np.argsort(angles)]
-        
         if len(obj_corners) != 4:
             raise ValueError("obj_corners must contain exactly 4 corners")
 
-        H, W = self.topdown_view.shape
-
-        grid_pts = []
-        for (x,y) in obj_corners:
-            row, col = self.world_to_grid((x,y), do_round=True)
-            grid_pts.append([col, row])
-
-        pts = np.array(grid_pts, dtype=np.int32)
-        pts[:, 0] = np.clip(pts[:, 0], 0, W - 1)
-        pts[:, 1] = np.clip(pts[:, 1], 0, H - 1)
-        pts = order_polygon_points(pts)
-
-        mask = np.zeros((H, W), dtype=np.uint8)
-        cv2.fillPoly(mask, [pts], 1) # type: ignore
-
+        corners_rc = np.array([self.world_to_grid((x, y), do_round=True) for x, y in obj_corners])
+        mask = quadrilateral_mask(corners_rc, self.topdown_view.shape)
         self.obj_occupancy_td_view[:, :, obj_id][mask == 1] = 1
+
+
+def quadrilateral_mask(corners_rc: np.ndarray, shape: tuple) -> np.ndarray:
+    """(H, W) uint8 mask of the quadrilateral with (4, 2) unordered (row, col) corners, clipped to the grid."""
+    pts = np.clip(corners_rc[:, ::-1], 0, np.array(shape[::-1]) - 1).astype(np.int32)
+    center = pts.mean(axis=0)
+    pts = pts[np.argsort(np.arctan2(pts[:, 1] - center[1], pts[:, 0] - center[0]))]
+    mask = np.zeros(shape, dtype=np.uint8)
+    cv2.fillPoly(mask, [pts], 1)  # type: ignore
+    return mask
