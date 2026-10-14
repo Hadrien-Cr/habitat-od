@@ -13,6 +13,9 @@ from common.utils.plot_utils import make_mosaic, plot_segmentation, plot_segment
 from common.utils.projection_utils import ResolvedObjects
 
 
+_ROW_FRAMES = 5
+
+
 @dataclass(frozen=True)
 class SegmentationStyle:
     classes: list
@@ -47,14 +50,19 @@ def retrieval_mosaic(fused: ResolvedObjects, memory: ImageMemory, raytraced: dic
 
 
 def _retrieval_row(memory: ImageMemory, raytraced: dict, style: SegmentationStyle, object_id: int) -> List[Tuple[str, np.ndarray]]:
-    return [
-        _retrieval_tile(memory.get_frame(frame_id), frame_id, object_id, raytraced[frame_id], style)
-        for frame_id in memory.frames_showing(object_id, raytraced)
-    ][0:10]  # limit to 10 frames per object
+    """The object's 10 largest raytraced views, largest first."""
+    frame_ids = sorted(memory.frames_showing(object_id, raytraced), key=lambda frame_id: -_mask_area(raytraced[frame_id], object_id))
+    return [_retrieval_tile(memory.get_frame(frame_id), frame_id, object_id, raytraced[frame_id], style) for frame_id in frame_ids[:_ROW_FRAMES]]
+
+
+def _mask_area(frame_raytraced: tuple, object_id: int) -> int:
+    masks, ids, _ = frame_raytraced
+    return int(masks[ids == object_id].sum())
 
 
 def _retrieval_tile(frame: Frame, frame_id: int, object_id: int, frame_raytraced: tuple, style: SegmentationStyle) -> Tuple[str, np.ndarray]:
-    """frame with the object's raytraced mask and resolved class."""
+    """frame with the box and resolved class of the object's raytraced mask, the mask itself left undrawn."""
     masks, ids, classes = frame_raytraced
     instances = instances_from_masks(masks[ids == object_id], classes[ids == object_id], frame.depth.shape)
+    instances.remove("gt_masks")
     return segmentation_tile(frame.rgb, instances, style, f"object{object_id} frame{frame_id:03d}")

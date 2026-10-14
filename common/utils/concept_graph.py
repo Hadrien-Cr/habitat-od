@@ -105,9 +105,11 @@ class ConceptGraphObjectSet(ResolvedObjects):
         return replace(detection, points=denoise(detection.points, self.config.downsample_voxel_size, self.config.dbscan_eps, self.config.dbscan_min_points))
 
     def _match_similarities(self, detections: List[ConceptGraphObject]) -> torch.Tensor:
-        """(detections, objects) spatial overlap + region-embedding similarity, computed before any merge of this frame."""
-        spatial_sim = torch.from_numpy(overlap_ratio_matrix(
-            [detection.points for detection in detections], [obj.points for obj in self.objects], self.config.downsample_voxel_size,
+        """(detections, objects) spatial overlap, in whichever direction is larger, + region-embedding similarity, computed before any merge of this frame."""
+        detection_points, object_points = [detection.points for detection in detections], [obj.points for obj in self.objects]
+        radius = self.config.downsample_voxel_size
+        spatial_sim = torch.from_numpy(np.maximum(
+            overlap_ratio_matrix(detection_points, object_points, radius), overlap_ratio_matrix(object_points, detection_points, radius).T,
         )).float()
         visual_sim = visual_similarity_matrix(
             torch.stack([detection.region_feature for detection in detections]), torch.stack([obj.region_feature for obj in self.objects]),

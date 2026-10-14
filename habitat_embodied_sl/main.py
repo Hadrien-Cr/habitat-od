@@ -1,5 +1,5 @@
 """Semantic mapping run: a FrontierAgent (common/agents/frontier_agent.py) explores --scene-name with
-vanilla actions while a Detector running Detic segments every frame; its predicted masks and region
+vanilla actions while a Detector (Detic boxes, SAM masks) segments every frame; its predicted masks and region
 embeddings are fused into a concept-graphs ConceptGraphObjectSet (common/utils/concept_graph.py),
 resolved once the exploration ends, then each object classified by Detic from the ensembled region embeddings
 of its raytraced masks in every frame showing it (Detector.classify_objects). Saves two mosaics, one tile per step (the collected predictions and
@@ -7,14 +7,13 @@ the frontier map), then from the resolved map: its point cloud, its semantic top
 top-down grid and a retrieval mosaic (every remembered frame showing each of its largest objects), plus
 the ground-truth top-down map of the scene's annotated object mesh silhouettes.
 
-Needs a mask-predicting checkpoint (MODEL.MASK_ON: True) - the point cloud is built from pred_masks.
-
 Usage (Detic's Swin-B checkpoint from https://github.com/facebookresearch/Detic's model zoo, on an HSSD-HAB
 scene; Detic classifies against the CLIP text embeddings of the --vocab-name/--filter-classes class names):
   export HABITAT_DATA=$HOME/habitat_data/data BASE_DIR=$(pwd) PYTHONNOUSERSITE=1
   PYTHONPATH=. python habitat_embodied_sl/main.py \
       --config-file third_party/Detic/configs/Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.yaml \
       --checkpoint third_party/Detic/models/Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.pth \
+      --sam-checkpoint data/sam/sam_vit_b_01ec64.pth \
       --scene-name 102816756 --env-name HSSD-HAB --vocab-name COCO80 --filter-classes \
       --steps 200
 """
@@ -43,7 +42,7 @@ from common.utils.plot_utils import box_crop, make_mosaic, plot_semantic_2d_map
 from common.utils.pose_utils import sensor_pose_matrix
 from common.utils.projection_utils import DepthCamera, save_resolved_ply
 from common.utils.retrieval import SegmentationStyle, retrieval_mosaic, segmentation_tile
-from detector import Detector, mean_view_class_probs
+from detector import Detector
 from habitat_embodied_al.reproduce.main import add_object_args, build_agent, build_env, kept_classes_from_args, object_params_from_args
 
 _MAP_SCALE = 8
@@ -145,9 +144,9 @@ def ground_truth_meshes(env: ExplorationEnv, classes: list) -> List[Tuple[int, t
     return [(class_id, mesh) for class_id, mesh in meshes if mesh is not None]
 
 
-def ground_truth_topdown(env: ExplorationEnv, agent: FrontierAgent, classes: list, colors: list) -> np.ndarray:
-    """RGB top-down map of the mesh silhouette of every scene object annotated with one of classes."""
-    footprints = [(class_id, mesh_footprint(mesh, agent)) for class_id, mesh in ground_truth_meshes(env, classes)]
+def ground_truth_topdown(meshes: List[Tuple[int, trimesh.Trimesh]], agent: FrontierAgent, classes: list, colors: list) -> np.ndarray:
+    """RGB top-down map of the silhouette of every (class, world mesh) of meshes (ground_truth_meshes)."""
+    footprints = [(class_id, mesh_footprint(mesh, agent)) for class_id, mesh in meshes]
     image = plot_semantic_2d_map(
         agent.top_down_map, footprints, dict(enumerate(colors)), dict(enumerate(classes)),
         meters_per_grid_pixel=agent.meters_per_pixel(), scale=_MAP_SCALE,
@@ -181,14 +180,11 @@ def main(args: argparse.Namespace) -> None:
         args.config_file, 
         args.checkpoint, 
         kept_classes_from_args(args), 
+        args.sam_checkpoint,
         agnostic_nms_thresh=args.agnostic_nms_thresh, 
         score_thresh=args.score_thresh, 
-        mask_on=True, 
         device=args.device
     )
-    
-    if not detector.predicts_masks:
-        raise SystemExit(f"{args.config_file} has MODEL.MASK_ON: False - semantic mapping needs a mask-predicting checkpoint")
     
     env, habitat_cfg = build_env(args.scene_name, args.seed, args.steps, object_params_from_args(args))
     agent = build_agent("fbe", np.random.default_rng(args.seed), env, habitat_cfg)
@@ -225,12 +221,10 @@ def main(args: argparse.Namespace) -> None:
             break
         obs, _, _, _ = env.step(action)
 
-    ground_truth = ground_truth_topdown(env, agent, detector.classes, colors)
+    ground_truth = ground_truth_topdown(ground_truth_meshes(env, detector.classes), agent, detector.classes, colors)
     env.close()
     fused.resolve()
-    views = memory.object_views(fused, camera, args.min_visibility_fraction)
-    object_probs = detector.classify_objects(views, out_dir / "resolved_trial_mosaic.png")
-    fused = fused.classified(mean_view_class_probs(object_probs))
+    fused = detector.classify_resolved(fused, memory, camera, args.min_visibility_fraction, out_dir / "resolved_trial_mosaic.png")
 
     make_mosaic(progress.prediction_tiles, N_cols=5).save(out_dir / "predictions_mosaic.png")
     make_mosaic(progress.ground_truth_tiles, N_cols=5).save(out_dir / "ground_truth_mosaic.png")
@@ -250,6 +244,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config-file", required=True)
     parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--sam-checkpoint", default="data/sam/sam_vit_b_01ec64.pth", help="SAM ViT-B weights prompted with Detic's boxes for masks.")
     parser.add_argument("--scene-name", required=True)
     parser.add_argument("--steps", type=int, default=200, help="Exploration steps, fewer if the FrontierAgent stops first.")
     parser.add_argument("--seed", type=int, default=0)

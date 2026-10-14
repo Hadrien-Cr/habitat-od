@@ -45,12 +45,26 @@ def path_completion_time(points: np.ndarray, initial_turn: float, speeds: PointT
     return float(np.sum(distances / speeds.linear_m_per_s + turns / speeds.angular_rad_per_s))
 
 
-def path_time_cost(pathfinder: habitat_sim.PathFinder, start: np.ndarray, polar_heading: float, end: np.ndarray, speeds: PointTurnSpeeds) -> float:
+def _path_points(pathfinder: habitat_sim.PathFinder, start: np.ndarray, end: np.ndarray) -> Optional[np.ndarray]:
     path = find_path(pathfinder, start, end)
-    if path is None or len(path.points) < 2:
+    return None if path is None or len(path.points) < 2 else np.array(path.points)
+
+
+def path_time_cost(pathfinder: habitat_sim.PathFinder, start: np.ndarray, polar_heading: float, end: np.ndarray, speeds: PointTurnSpeeds) -> float:
+    points = _path_points(pathfinder, start, end)
+    if points is None:
         return np.inf
-    points = np.array(path.points)
     return path_completion_time(points, abs(heading_error(start, points[1], polar_heading)), speeds)
+
+
+def facing_path_time_cost(pathfinder: habitat_sim.PathFinder, start: np.ndarray, polar_heading: float, end: np.ndarray, look_at: np.ndarray, speeds: PointTurnSpeeds) -> float:
+    """path_time_cost plus the final point turn from the last segment to face look_at."""
+    points = _path_points(pathfinder, start, end)
+    if points is None:
+        return np.inf
+    last_segment = points[-1] - points[-2]
+    final_turn = abs(normalize_radians(_bearings(points[-1], look_at) - np.arctan2(last_segment[2], last_segment[0])))
+    return path_completion_time(points, abs(heading_error(start, points[1], polar_heading)), speeds) + final_turn / speeds.angular_rad_per_s
 
 
 def best_first_search(candidates: np.ndarray, heuristics: np.ndarray, cost_fn: Callable[[np.ndarray], float]) -> Optional[int]:

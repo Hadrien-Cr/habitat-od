@@ -15,6 +15,8 @@ from detectron2.data import Metadata
 # never cycled per-key, so the same slot always means the same series.
 _SERIES_COLORS = ["#2a78d6", "#008300", "#e87ba4", "#eda100"]
 _MIN_LABEL_AREA_M2 = 0.01
+_TILE_BORDER_COLOR = (255, 255, 0)
+_TILE_BORDER_THICKNESS = 2
 
 
 def load_metrics(metrics_json: Path) -> list[dict]:
@@ -192,7 +194,7 @@ def plot_segmentation_pred(rgb: np.ndarray, pred_instances, classes: list[str], 
         x1, y1, x2, y2 = box
         height_ratio = (y2 - y1) / rgb.shape[0]
         font_size = (
-            np.clip((height_ratio - 0.02) / 0.08 + 1, 1.2, 2) * 0.5 * det_visualizer._default_font_size
+            np.clip((height_ratio - 0.02) / 0.08 + 1, 1, 2) * 0.5 * det_visualizer._default_font_size
         )
         det_visualizer.draw_text(
             f"{i}: pt={classes[class_id]} {round(100*score)}%",
@@ -229,12 +231,12 @@ def plot_segmentation_gt(rgb: np.ndarray, gt_instances, classes: list[str], colo
         x1, y1, x2, y2 = box
         height_ratio = (y2 - y1) / rgb.shape[0]
         font_size = (
-            np.clip((height_ratio - 0.02) / 0.08 + 1, 1.2, 2) * 0.5 * det_visualizer._default_font_size
+            np.clip((height_ratio - 0.02) / 0.08 + 1, 1, 2) * 0.5 * det_visualizer._default_font_size
         )
         det_visualizer.draw_text(
             f"{i}: gt={classes[class_id]}",
             font_size=font_size,
-            position=(x1, y2 - 1.5 * font_size),
+            position=(x1, y2),
             horizontal_alignment="left",
             color="#{:02x}{:02x}{:02x}".format(*colors[class_id])
         )
@@ -323,6 +325,11 @@ def _padded_row(tiles: list[np.ndarray], width: int) -> np.ndarray:
     return np.hstack(tiles + [np.zeros_like(tiles[0])] * (width - len(tiles)))
 
 
+def _draw_label(img: np.ndarray, label: str) -> np.ndarray:
+    cv2.putText(img, label, (5, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2, cv2.LINE_AA)
+    return img
+
+
 def make_mosaic(
     list_fnames_images: list[tuple[str, np.ndarray]],
     target_size: int = 1_000_000,
@@ -330,22 +337,13 @@ def make_mosaic(
     tile_colors: Optional[list[Optional[tuple[int, int, int]]]] = None,
     row_sizes: Optional[list[int]] = None,
 ) -> Image.Image:
-    """Grid of the labelled tiles, N_cols per row, or row_sizes[i] tiles on row i (padded to the longest row) when given."""
+    """Grid of the labelled, yellow-bordered tiles, N_cols per row, or row_sizes[i] tiles on row i (padded to the longest row) when given."""
     n =  len(list_fnames_images)
     processed_images = []
 
     for i, (filename, img) in enumerate(list_fnames_images):
-        # add text overlay with filename
-        cv2.putText(
-            img,
-            filename,
-            (5, 25),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (255, 255, 255),
-            2,
-            cv2.LINE_AA,
-        )
+        _draw_label(img, filename)
+        cv2.rectangle(img, (0, 0), (img.shape[1] - 1, img.shape[0] - 1), _TILE_BORDER_COLOR, _TILE_BORDER_THICKNESS)
         if tile_colors and tile_colors[i] is not None:
             cv2.rectangle(img, (0, 0), (img.shape[1] - 1, img.shape[0] - 1), tile_colors[i], 10)
         processed_images.append(img)

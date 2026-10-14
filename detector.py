@@ -3,7 +3,7 @@ collection rollout (see habitat_embodied_al/reproduce/main.py) -- unlike pretrai
 which only ever score a checkpoint against an already-built static COCO dataset offline, this
 wraps a trained checkpoint to run it against one simulator frame at a time as it's collected.
 Runs Detic checkpoints (third_party/Detic), whose zero-shot classifier is replaced by the CLIP text
-embeddings of `classes`.
+embeddings of `classes`; masks come from SAM prompted with Detic's boxes, not Detic's own mask head.
 """
 import sys
 from collections import defaultdict
@@ -18,13 +18,16 @@ import torchvision  # type: ignore
 from torchvision.models.feature_extraction import create_feature_extractor  # type: ignore
 from detectron2.config import CfgNode, get_cfg  # type: ignore
 from detectron2.engine import DefaultPredictor  # type: ignore
-from detectron2.modeling.meta_arch.rcnn import GeneralizedRCNN  # type: ignore
+from detectron2.modeling.postprocessing import detector_postprocess  # type: ignore
 from detectron2.modeling.roi_heads.fast_rcnn import fast_rcnn_inference  # type: ignore
 from detectron2.data.transforms import Transform  # type: ignore
 from detectron2.structures import BitMasks, Boxes, ImageList, Instances  # type: ignore
 from PIL import Image
 
+from common.utils.image_memory import ImageMemory
 from common.utils.plot_utils import box_crop, draw_ranked_classes, make_mosaic
+from common.utils.projection_utils import DepthCamera, ResolvedObjects
+from common.utils.sam import SamMasker
 
 _DETIC_ROOT = Path(__file__).resolve().parent / "third_party" / "Detic"
 sys.path[:0] = [str(_DETIC_ROOT), str(_DETIC_ROOT / "third_party" / "CenterNet2")]
@@ -60,16 +63,15 @@ class Detector:
     gives predicted class_ids a name via `class_name`."""
 
     def __init__(
-        self, config_file: str, weights_path: str, classes: list,
-        score_thresh: Optional[float] = 0.5, agnostic_nms_thresh: float = 0.5,
-        mask_on: bool = True, device: str = "cuda",
+        self, config_file: str, weights_path: str, classes: list, sam_checkpoint: str,
+        score_thresh: Optional[float] = 0.5, agnostic_nms_thresh: float = 0.5, device: str = "cuda",
     ):
         self.classes = classes
         self.agnostic_nms_thresh = agnostic_nms_thresh
         cfg = self._config(config_file)
         cfg.MODEL.ROI_HEADS.NUM_CLASSES = len(classes)
         cfg.MODEL.WEIGHTS = weights_path
-        cfg.MODEL.MASK_ON = mask_on
+        cfg.MODEL.MASK_ON = False
         cfg.MODEL.DEVICE = device
 
         if score_thresh is not None:
@@ -80,6 +82,7 @@ class Detector:
         resnet = torchvision.models.resnet18(weights="IMAGENET1K_V1")
         self._feature_extractor = create_feature_extractor(resnet, return_nodes={"avgpool": "features"})
         self._feature_extractor.to(self._device).eval()
+        self._masker = SamMasker(sam_checkpoint, device=device)
 
     def _config(self, config_file: str) -> CfgNode:
         """Detic config_file, its zero-shot classifier left to reset_cls_test and its metadata paths resolved from _DETIC_ROOT."""
@@ -184,6 +187,13 @@ class Detector:
         # return resolved.classified({object_id: probs for object_id, probs in ensembled_probs.items() if passed[object_id]})
         return {object_id: (_OBJECT_PROB_PLACEHOLDER, frame_probs) for object_id, frame_probs in view_probs.items()}
 
+    def classify_resolved(
+        self, resolved: ResolvedObjects, memory: ImageMemory, camera: DepthCamera, min_visibility_fraction: float, mosaic_path: Path,
+    ) -> ResolvedObjects:
+        """resolved, each object taking the mean class probabilities of its views raytraced in memory (classify_objects)."""
+        views = memory.object_views(resolved, camera, min_visibility_fraction)
+        return resolved.classified(mean_view_class_probs(self.classify_objects(views, mosaic_path)))
+
     def _view_embeddings(self, views: ObjectViews) -> Dict[int, Dict[int, torch.Tensor]]:
         """{object id: {frame id: region embedding of that view's mask box}}, one backbone pass per frame."""
         frame_views = defaultdict(list)
@@ -214,7 +224,7 @@ class Detector:
 
     def draw_top_classes(self, class_probs: torch.Tensor, image: np.ndarray) -> np.ndarray:
         """image with the top classes of class_probs and their probabilities drawn on it."""
-        top_probs, top_classes = class_probs.topk(_TOP_CLASSES)
+        top_probs, top_classes = class_probs.topk(min(_TOP_CLASSES, len(class_probs)))
         return draw_ranked_classes(image, [self.class_name(idx) for idx in top_classes.tolist()], top_probs.tolist())
 
     def predict(self, rgb: np.ndarray) -> Instances:
@@ -227,7 +237,7 @@ class Detector:
         rule). box_features (common/samplers/similarity.py's diversity distance) come from a
         separate frozen crop-feature extractor (see _crop_features), not this detector's own
         RoI head. Returns detectron2 Instances (pred_boxes/pred_classes/scores/class_probs/
-        region_features (see _region_embeddings)/box_features, plus pred_masks when predicts_masks) on CPU, image-sized.
+        region_features (see _region_embeddings)/box_features/pred_masks (SAM, see SamMasker)) on CPU, image-sized.
 
         fast_rcnn_inference's own NMS is per-class (detectron2 has no config flag for
         class-agnostic NMS -- it always groups by predicted class, see
@@ -251,20 +261,15 @@ class Detector:
             )
             instances[0].class_probs = probs[0][kept[0]]
             instances[0].region_features = self._region_embeddings(features, instances[0].pred_boxes)
-            instances = model.roi_heads.forward_with_given_boxes(features, instances)
-
-            result = GeneralizedRCNN._postprocess(instances, [{"height": height, "width": width}], images.image_sizes)[0]["instances"]
+            result = detector_postprocess(instances[0], height, width)
 
         result = result.to("cpu")
         if self.agnostic_nms_thresh > 0.0 and len(result) > 0:
             keep = torchvision.ops.nms(result.pred_boxes.tensor, result.scores, self.agnostic_nms_thresh)
             result = result[keep]
         result.box_features = torch.from_numpy(self._crop_features(rgb, result.pred_boxes.tensor.numpy()))
+        result.pred_masks = self._masker.masks(rgb, result.pred_boxes.tensor)
         return result
-
-    @property
-    def predicts_masks(self) -> bool:
-        return self._predictor.cfg.MODEL.MASK_ON
 
     def class_name(self, class_id: int) -> str:
         return self.classes[class_id]

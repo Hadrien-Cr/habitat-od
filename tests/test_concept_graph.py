@@ -21,7 +21,7 @@ from common.env_utils.object_annotations import resolve_classes
 from common.utils.concept_graph import ConceptGraphObject, ConceptGraphObjectSet, project_detections_to_objects
 from common.utils.image_memory import ImageMemory
 from common.utils.projection_utils import DepthCamera, ResolvedObjects
-from detector import Detector, mean_view_class_probs
+from detector import Detector
 from test_semantic_point_cloud import _ENV_NAME, _VOCAB_NAME, HFOV_DEG, MAX_DEPTH, MIN_DEPTH, run_viewer, save_retrieval_mosaic, viewer_arg_parser
 
 _MIN_VISIBILITY_FRACTION = 0.2
@@ -34,16 +34,16 @@ def frame_objects(detector: Detector, rgb: np.ndarray, depth: np.ndarray, pose: 
 
 def resolve_and_classify(detector: Detector, mosaic_path: Path, fused: ConceptGraphObjectSet, memory: ImageMemory) -> ResolvedObjects:
     fused.resolve()
-    views = memory.object_views(fused, DepthCamera(HFOV_DEG, MIN_DEPTH, MAX_DEPTH), _MIN_VISIBILITY_FRACTION)
-    return fused.classified(mean_view_class_probs(detector.classify_objects(views, mosaic_path)))
+    return detector.classify_resolved(fused, memory, DepthCamera(HFOV_DEG, MIN_DEPTH, MAX_DEPTH), _MIN_VISIBILITY_FRACTION, mosaic_path)
 
 
 if __name__ == "__main__":
     parser = viewer_arg_parser(__doc__, "ConceptGraphObjectSet")
     parser.add_argument("--config-file", required=True, help="Detic config whose region embeddings are fused")
     parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--sam-checkpoint", default="data/sam/sam_vit_b_01ec64.pth")
     args = parser.parse_args()
-    detector = Detector(args.config_file, args.checkpoint, resolve_classes(_ENV_NAME, _VOCAB_NAME))
+    detector = Detector(args.config_file, args.checkpoint, resolve_classes(_ENV_NAME, _VOCAB_NAME), args.sam_checkpoint)
     mosaic_path = Path(__file__).parent / "testdump" / "test_concept_graph" / "resolved_trial_mosaic.png"
     viewer, fused, memory = run_viewer(
         args, "test_concept_graph", ConceptGraphObjectSet(), partial(frame_objects, detector), partial(resolve_and_classify, detector, mosaic_path),
