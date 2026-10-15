@@ -40,12 +40,11 @@ import habitat_sim
 import magnum as mn
 import numpy as np
 import torch
-import trimesh
 from detectron2.structures import Instances
 
 from habitat.config.default_structured_configs import ObjectDetectorGTSensorConfig
 from common.agents.frontier_agent import FrontierAgent, FrontierAgentConfig
-from common.env_utils.object_annotations import object_world_mesh
+from common.env_utils.object_annotations import objects_world_mesh
 from common.env_utils.object_detector_sensors import ObjectDetectorGTSensor
 from common.env_utils.sense import bbs_instances_as_gt, keep_valid_instances
 from common.env_utils.vocab_constants import make_colors
@@ -53,7 +52,7 @@ from common.utils.image_memory import Frame, ImageMemory
 from common.utils.plot_utils import make_mosaic
 from common.utils.pose_utils import sensor_pose_matrix
 from common.utils.projection_utils import DepthCamera, ResolvedObjects, save_resolved_ply
-from common.utils.retrieval import SegmentationStyle, instances_from_masks, retrieval_mosaic, segmentation_tile
+from common.utils.retrieval import ROW_FRAMES, SegmentationStyle, instances_from_masks, largest_objects, retrieval_mosaic, segmentation_tile
 from common.utils.semantic_point_cloud import SemanticPointCloud, project_semantic_masks_to_3d
 
 HABITAT_DATA = os.environ.get("HABITAT_DATA")
@@ -131,25 +130,11 @@ def _random_agent_state(sim, rng, island_index: int = -1) -> habitat_sim.AgentSt
 
 
 def _export_scene_mesh(sim: habitat_sim.Simulator, out_path: str) -> None:
-    """Merges the stage + every placed rigid object's own source mesh (scaled and transformed
-    to its runtime world pose) into one .glb - habitat-sim has no built-in "export the
-    assembled scene" call, so this reassembles it piece by piece. Object-level scale
-    (obj.scale, from the object's template) is separate from obj.transformation (rotation +
-    translation only - rigid-body transforms don't carry scale), so both must be applied."""
-    meshes = []
-
-    stage_path = sim.get_stage_initialization_template().render_asset_fullpath
-    # if stage_path and os.path.exists(stage_path):
-    #     meshes.append(trimesh.load(stage_path, force="mesh"))
-
+    """Merges every placed rigid object's world mesh into one .glb - habitat-sim can't export an assembled scene."""
     rom = sim.get_rigid_object_manager()
-    for handle in rom.get_object_handles():
-        mesh = object_world_mesh(rom.get_object_by_handle(handle))
-        if mesh is not None:
-            meshes.append(mesh)
-
-    if meshes:
-        trimesh.util.concatenate(meshes).export(out_path)
+    mesh = objects_world_mesh(rom.get_object_by_handle(handle) for handle in rom.get_object_handles())
+    if not mesh.is_empty:
+        mesh.export(out_path)
 
 
 def _frame_gt_instances(sensor: ObjectDetectorGTSensor, obs: dict, classes_keep: set) -> Instances:
@@ -319,7 +304,7 @@ def _style(viewer: _Viewer) -> SegmentationStyle:
 def save_retrieval_mosaic(viewer: _Viewer, fused: ResolvedObjects, memory: ImageMemory, num_objects: int) -> None:
     """One mosaic row per largest resolved object, of every frame ImageMemory.frames_showing retrieves it in."""
     raytraced = memory.raytrace_frames(fused, DepthCamera(HFOV_DEG, MIN_DEPTH, MAX_DEPTH), viewer.sensor.min_visibility_fraction)
-    mosaic = retrieval_mosaic(fused, memory, raytraced, _style(viewer), num_objects)
+    mosaic = retrieval_mosaic(memory, raytraced, _style(viewer), largest_objects(fused, num_objects), ROW_FRAMES)
     if mosaic is not None:
         mosaic.save(os.path.join(viewer.out_dir, f"{viewer.out_stem}_retrieval_mosaic.png"))
 

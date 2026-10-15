@@ -7,11 +7,18 @@ import numpy as np
 import open3d as o3d
 import torch
 from detectron2.structures import Instances
+from scipy import ndimage
 from scipy.spatial.kdtree import KDTree
 
 from common.env_utils.visibility_utils import mesh_visibility_fraction
 
 log = logging.getLogger(__name__)
+
+_BEND_RATIO = 0.01
+_DEPTH_EDGE_RATIO = 0.02
+_MIN_SURFACE_COVERAGE = 0.5
+_BEHIND_MARGIN_M = 0.3
+_FOREGROUND_DEPTH_PERCENTILE = 95
 
 
 @dataclass(frozen=True)
@@ -78,6 +85,51 @@ def object_points(depth, pose, mask: torch.Tensor, camera: DepthCamera) -> np.nd
     in_range = (depth > camera.min_depth) & (depth < camera.max_depth)
     points = project_batch_masks(depth, pose, torch.as_tensor(mask).bool() & in_range, hfov=camera.hfov, min_depth=camera.min_depth, max_depth=camera.max_depth)
     return points.numpy()
+
+
+def surface_labels(depth, camera: DepthCamera) -> np.ndarray:
+    """depth's surfaces split where inverse depth bends: ids from 1, 0 on bends, -1 behind depth edges and out of range."""
+    depth = np.asarray(depth).squeeze()
+    in_range = (depth > camera.min_depth) & (depth < camera.max_depth)
+    bends = _inverse_depth_bends(depth)
+    labels, _ = ndimage.label(in_range & ~bends)
+    labels[~in_range | (bends & _behind_depth_edge(depth))] = -1
+    return labels
+
+
+def foreground_mask(depth, mask: torch.Tensor, surfaces: np.ndarray) -> np.ndarray:
+    """mask without the background it covers: surfaces lying mostly outside it (floor, walls) or behind its main one
+    (seen through holes), keeping the bends connected to what remains."""
+    mask = np.asarray(mask, dtype=bool) & (surfaces >= 0)
+    kept = mask & np.isin(surfaces, _object_surfaces(np.asarray(depth).squeeze(), mask, surfaces))
+    reachable, _ = ndimage.label(kept | (mask & (surfaces == 0)))
+    return np.isin(reachable, reachable[kept])
+
+
+def _object_surfaces(depth: np.ndarray, mask: np.ndarray, surfaces: np.ndarray) -> np.ndarray:
+    """Ids of mask's main surface and of the surfaces mostly inside mask, but those lying behind the main one."""
+    inside = np.bincount(surfaces[mask & (surfaces > 0)], minlength=surfaces.max() + 1)
+    if not inside.any():
+        return np.empty(0, dtype=int)
+    main = int(np.argmax(inside))
+    totals = np.bincount(surfaces[surfaces > 0], minlength=len(inside))
+    candidates = np.union1d(np.flatnonzero((inside > 0) & (inside >= _MIN_SURFACE_COVERAGE * totals)), [main])
+    depth_gate = np.percentile(depth[mask & (surfaces == main)], _FOREGROUND_DEPTH_PERCENTILE) + _BEHIND_MARGIN_M
+    return candidates[np.asarray(ndimage.mean(depth, np.where(mask, surfaces, 0), candidates)) <= depth_gate]
+
+
+def _inverse_depth_bends(depth: np.ndarray) -> np.ndarray:
+    """Depth edges and creases: pixels where inverse depth, linear across a plane, bends by more than _BEND_RATIO of itself."""
+    inverse_depth = 1.0 / np.maximum(depth, np.finfo(np.float32).tiny)
+    bends = np.zeros(depth.shape, dtype=bool)
+    bends[1:-1] |= np.abs(np.diff(inverse_depth, n=2, axis=0)) > _BEND_RATIO * inverse_depth[1:-1]
+    bends[:, 1:-1] |= np.abs(np.diff(inverse_depth, n=2, axis=1)) > _BEND_RATIO * inverse_depth[:, 1:-1]
+    return bends
+
+
+def _behind_depth_edge(depth: np.ndarray) -> np.ndarray:
+    """Pixels with a 4-neighbour nearer by more than _DEPTH_EDGE_RATIO of their depth."""
+    return depth > (1 + _DEPTH_EDGE_RATIO) * ndimage.minimum_filter(depth, footprint=ndimage.generate_binary_structure(2, 1))
 
 
 def downsample_points(points: np.ndarray, voxel_size: float) -> np.ndarray:

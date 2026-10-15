@@ -25,6 +25,8 @@ dependencies:
   - pip
   - habitat-sim=0.3.2
   - withbullet
+  - headless # EGL build: the default display build needs an X server
+  - libopengl # completes the env's libglvnd, else it mixes with the system's and GL calls fail
   - pip: 
     - numpy==1.26.4 # certain deprecated operations were used in other deps
     - setuptools==69.5.1
@@ -63,3 +65,4 @@ dependencies:
     - yapf
     - timm
     - supervision
+    - git+https://github.com/facebookresearch/segment-anything.git

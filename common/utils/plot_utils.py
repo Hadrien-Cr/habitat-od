@@ -236,7 +236,7 @@ def plot_segmentation_gt(rgb: np.ndarray, gt_instances, classes: list[str], colo
         det_visualizer.draw_text(
             f"{i}: gt={classes[class_id]}",
             font_size=font_size,
-            position=(x1, y2),
+            position=(x1, min(y2, rgb.shape[0]-1.5*font_size)),
             horizontal_alignment="left",
             color="#{:02x}{:02x}{:02x}".format(*colors[class_id])
         )
@@ -366,3 +366,9 @@ def make_mosaic(
         ),
     )
     return Image.fromarray(final_mosaic)
+
+
+def save_gif(list_fnames_images: list[tuple[str, np.ndarray]], out_path: str, frame_ms: int) -> None:
+    """Looping gif of the labelled, yellow-bordered tiles (make_mosaic's), one frame each."""
+    frames = [make_mosaic([tile], N_cols=1) for tile in list_fnames_images]
+    frames[0].save(out_path, save_all=True, append_images=frames[1:], duration=frame_ms, loop=0)

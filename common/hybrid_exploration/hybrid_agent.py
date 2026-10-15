@@ -1,5 +1,5 @@
-"""Frontier exploration that also inspects uncertain objects from per-object sector viewpoints, picking whichever
-candidate (frontier or viewpoint) has the highest gain per point-turn completion time."""
+"""Frontier exploration that also inspects confident objects (confidence_thresh and above) from per-object sector
+viewpoints, picking whichever candidate (frontier or viewpoint) has the highest gain per point-turn completion time."""
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional, Tuple
@@ -35,7 +35,7 @@ class HybridConfig:
     viewpoint_gain: float = 1.0
     standoff_m: float = 0.75
     frontier_gain: float = 0.5
-    reach_m: float = 0.5
+    reach_m: float = 0.25
     viewpoint_mode: ViewpointMode = ViewpointMode.EXHAUSTIVE
     coverage_angle_deg: float = 60.0
 
@@ -117,7 +117,10 @@ class HybridFrontierAgent(Agent):
         return np.arange(sector - span, sector + span + 1) % self.config.n_sectors
 
     def _object_viewpoints(self, height: float) -> List[Candidate]:
-        return [viewpoint for object_id, belief in self.objects.items() for viewpoint in self._unseen_viewpoints(object_id, belief, height)]
+        return [
+            viewpoint for object_id, belief in self.objects.items() if belief.confidence >= self.config.confidence_thresh
+            for viewpoint in self._unseen_viewpoints(object_id, belief, height)
+        ]
 
     def _unseen_viewpoints(self, object_id: int, belief: ObjectBelief, height: float) -> List[Candidate]:
         center, radius = footprint(belief.points)

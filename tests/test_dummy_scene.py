@@ -1,23 +1,26 @@
 """
 Builds a synthetic flat in an empty "NONE" scene: a floor slab, 4 outer walls and inner walls with doorways
-splitting it into 4 rooms of different rectangular sizes, all STATIC flat-shaded boxes, plus 5 ProcTHOR-hab objects
-per room, 20 distinct chairs, armchairs, sofas and benches at their own scale. recompute_navmesh carves the walls and objects out of the
+splitting it into 4 rooms of different rectangular sizes, all STATIC flat-shaded boxes, plus ProcTHOR-hab objects at
+their own scale: 5 distinct chairs, armchairs, sofas and benches in each of 3 rooms, and only a table with 4 bottles on it
+in the spawn room. recompute_navmesh carves the walls and objects out of the
 floor; the ceiling is added after it, so its top face isn't walkable. Every object gets its own semantic_id,
 so the semantic sensor sees them as separate objects.
 
 Runs common/hybrid_exploration's HybridFrontierAgent in exhaustive mode in the flat, fed by an oracle detector:
 each visible object's points come from its semantic mask and depth.
-Into tests/testdump/test_dummy_scene/ (emptied when the test starts) go the last step's decision (current view in
-yellow, candidates labelled with u*t above and t below, chosen goal ringed) to decision.png, its believed object
+Into tests/testdump/test_dummy_scene/ (emptied when the test starts) go every step's decision (current view in
+yellow, candidates labelled with u*t above and t below, chosen goal ringed) as one frame of decision.gif, the last step's believed object
 occupancy (object points in white, explored area green, the rest gray) to object.png, and every step's
-Detic predictions drawn on its rgb as one tile of predictions_mosaic.png, as main.py's. Walls, floor and ceiling are flat-shaded.
+Detic predictions drawn on its rgb as one frame of predictions.gif. Walls, floor and ceiling are flat-shaded.
 
-Alongside, as in habitat_embodied_sl/main.py, Detic (Swin-B, classifying against chair, couch and bench only)
+Alongside, as in habitat_embodied_sl/main.py, Detic (Swin-B, classifying against chair, couch, bench, table and bottle only)
 detects in every frame and SAM masks its boxes, and its masks and region embeddings are fused into a concept-graphs
 ConceptGraphObjectSet (common/utils/concept_graph.py). Once the run ends it is resolved, each object classified by
-Detector.classify_resolved from its raytraced views (their trials to resolved_trial_mosaic.png), then drawn
-by class on the agent's map to semantic_topdown.png next to the placed objects' mesh silhouettes in
-ground_truth_topdown.png (both main.py's), and retrieval_mosaic.png gets one row per resolved object of the remembered frames showing it.
+Detector.classify_resolved from its raytraced views, its points saved
+colored by class to semantic_point_cloud.ply, then drawn by class on the agent's map to semantic_topdown.png next to the placed objects' mesh silhouettes in
+ground_truth_topdown.png (both main.py's), ground_truth_mesh.glb merges every box and object but the ceiling, and retrieval_mosaic.png gets one row per resolved object of the remembered frames showing it,
+greedy_retrieval_mosaic.png the same rows of above-mean-visibility, geometrically diverse frames
+(main.py's greedy_object_frames).
 
 Needs ProcTHOR-hab's objects under HABITAT_DATA/scene_datasets/ai2thor-hab, a GPU, Detic's Swin-B checkpoint
 under third_party/Detic/models and SAM's ViT-B checkpoint under data/sam.
@@ -25,6 +28,8 @@ under third_party/Detic/models and SAM's ViT-B checkpoint under data/sam.
 
 import os
 import shutil
+import tempfile
+from pathlib import Path
 
 import habitat_sim
 import magnum as mn
@@ -38,16 +43,15 @@ from tqdm import tqdm
 from common.hybrid_exploration.exploration_map import MapConfig
 from common.hybrid_exploration.hybrid_agent import HybridConfig, HybridFrontierAgent, ViewpointMode
 from common.hybrid_exploration.object_viewpoints import ObjectBelief
-from common.env_utils.object_annotations import object_world_mesh
+from common.env_utils.object_annotations import object_world_mesh, objects_world_mesh
 from common.env_utils.vocab_constants import make_colors
 from common.utils.concept_graph import ConceptGraphObjectSet
 from common.utils.image_memory import Frame, ImageMemory
-from common.utils.plot_utils import make_mosaic
 from common.utils.pose_utils import sensor_pose_matrix
-from common.utils.projection_utils import DepthCamera, downsample_points, object_points
-from common.utils.retrieval import SegmentationStyle, retrieval_mosaic, segmentation_tile
+from common.utils.projection_utils import DepthCamera, downsample_points, object_points, save_resolved_ply
+from common.utils.retrieval import ROW_FRAMES, SegmentationStyle, objects_by_size, retrieval_mosaic, segmentation_tile, views_mosaic
 from detector import Detector
-from habitat_embodied_sl.main import ground_truth_topdown, predicted_objects, semantic_topdown
+from habitat_embodied_sl.main import greedy_object_frames, ground_truth_topdown, predicted_objects, save_exploration_gifs, semantic_topdown
 
 _ROOM_HALF_EXTENTS = (8.0, 6.0)
 _WALL_HEIGHT = 2.0
@@ -63,20 +67,24 @@ _DOOR_WIDTH = 1.0
 _INNER_WALLS = [("z", -2.0, (-6.0, 6.0), (-3.0, 3.0)), ("x", 0.0, (-2.0, 8.0), (6.0,)), ("z", 4.0, (0.0, 6.0), (3.0,))]
 _HABITAT_DATA = os.environ.get("HABITAT_DATA", "")
 _PROCTHOR_OBJECTS_DIR = os.path.join(_HABITAT_DATA, "scene_datasets", "ai2thor-hab", "ai2thor-hab", "configs", "objects")
-# (semantic_id, ground-truth class, ProcTHOR-hab object, floor center xz): 20 models at their own scale, one per
+# (semantic_id, ground-truth class, ProcTHOR-hab object, floor center xz): 16 models at their own scale, one per
 # model family; sofas and benches stand along walls, clear of the doorways
 _WALL_OBJECT = (13, "chair", "Chair_007_4", (-7.68, 3.0))  # 0.1 m off the outer wall x = -8
-_CLOSE_OBJECTS = [(14, "chair", "Chair_205_1", (0.0, -4.0)), (15, "chair", "Chair_203_1", (0.81, -4.0))]  # 0.4 m apart
-_OBJECTS = [
+_TABLE = (14, "table", "Dining_Table_205_1", (3.0, -3.0))
+# on _TABLE's top, 0.25 m off its center along both axes; the last one lies on its side
+_TABLETOP_OBJECTS = [
+    (15, "bottle", "Wine_Bottle_1", (2.75, -3.25)),
+    (19, "bottle", "Spray_Bottle_1", (3.25, -3.25)),
+    (20, "bottle", "Soap_Bottle_10", (2.75, -2.75)),
+    (21, "bottle", "FloorPlan28_physics-Bottle", (3.25, -2.75)),
+]
+_FLOOR_OBJECTS = [
     _WALL_OBJECT,
     (16, "couch", "Sofa_221_1", (-5.0, -5.5)),
     (17, "bench", "FloorPlan527_physics-Bench_4", (-5.0, 5.4)),
     (11, "chair", "Armchair_204_1", (-4.0, -2.0)),
     (18, "chair", "Chair_002_1", (-3.5, 1.0)),
-    *_CLOSE_OBJECTS,
-    (19, "couch", "Sofa_201_3", (3.5, -5.45)),
-    (20, "bench", "FloorPlan516_physics-Bench_6", (2.5, -0.5)),
-    (21, "chair", "Armchair_227_1", (-1.0, -1.5)),
+    _TABLE,
     (12, "couch", "Sofa_227_1", (1.0, 5.45)),
     (22, "chair", "Chair_204_1", (-1.0, 5.0)),
     (23, "chair", "Armchair_201_3", (3.0, 1.0)),
@@ -88,11 +96,12 @@ _OBJECTS = [
     (28, "chair", "Chair_210_1", (5.0, 1.5)),
     (29, "chair", "Chair_313_1", (7.3, 4.5)),
 ]
+_OBJECTS = [*_FLOOR_OBJECTS, *_TABLETOP_OBJECTS]
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _DETIC_ROOT = os.path.join(_REPO_ROOT, "third_party", "Detic")
 _DETIC_CONFIG = os.path.join(_DETIC_ROOT, "configs", "Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.yaml")
 _DETIC_CHECKPOINT = os.path.join(_DETIC_ROOT, "models", "Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.pth")
-_DETIC_CLASSES = ["chair", "couch", "bench"]
+_DETIC_CLASSES = ["chair", "couch", "bench", "table", "bottle"]
 _SAM_CHECKPOINT = os.path.join(_REPO_ROOT, "data", "sam", "sam_vit_b_01ec64.pth")
 
 pytestmark = [
@@ -101,17 +110,16 @@ pytestmark = [
     pytest.mark.skipif(not os.path.exists(_SAM_CHECKPOINT), reason="requires SAM's ViT-B checkpoint"),
 ]
 _CAMERA_HEIGHT = 1.0
-_RESOLUTION = [256, 256]
+_RESOLUTION = [640, 640]
 _MAX_DEPTH_M = 2 * max(_ROOM_HALF_EXTENTS)
 _TESTDUMP_DIR = os.path.join(os.path.dirname(__file__), "testdump", "test_dummy_scene")
 _DEPTH_CAMERA = DepthCamera(hfov=90.0, min_depth=0.1, max_depth=_MAX_DEPTH_M)
 _FULL_CONFIDENCE_AREA = 0.05
-_MIN_VISIBLE_PIXELS = 20
+_MIN_VISIBLE_PIXELS = 125
 _POINTS_VOXEL_M = 0.05
 _TURN_ANGLE_DEG = 45.0
 _START = (6.0, 0.0, -4.0)
-_MAX_STEPS = 50
-_PREDICTION_MOSAIC_COLS = 5
+_MAX_STEPS = 1000
 _MIN_VISIBILITY_FRACTION = 0.2
 _DETIC_STYLE = SegmentationStyle(_DETIC_CLASSES, make_colors(len(_DETIC_CLASSES), seed=0, ctype=0))
 
@@ -141,16 +149,17 @@ def _add_box(sim: habitat_sim.Simulator, asset: str, center: tuple, size: tuple,
     box.motion_type = habitat_sim.physics.MotionType.STATIC
 
 
-def _add_procthor_object(sim: habitat_sim.Simulator, name: str, center: tuple, semantic_id: int) -> None:
-    """Static ProcTHOR-hab object at its own scale, its bounding box standing on the floor around center."""
+def _add_procthor_object(sim: habitat_sim.Simulator, name: str, center: tuple, semantic_id: int, base_y: float = 0.0):
+    """Static ProcTHOR-hab object at its own scale, its bounding box standing at height base_y around center."""
     config = os.path.join(_PROCTHOR_OBJECTS_DIR, f"{name}.object_config.json")
     template_id = sim.get_object_template_manager().load_configs(config)[0]
     obj = sim.get_rigid_object_manager().add_object_by_template_id(template_id)
     box = obj.root_scene_node.cumulative_bb
-    obj.translation = mn.Vector3(center[0] - box.center().x, -box.min.y, center[1] - box.center().z)
+    obj.translation = mn.Vector3(center[0] - box.center().x, base_y - box.min.y, center[1] - box.center().z)
     for node in obj.visual_scene_nodes:
         node.semantic_id = semantic_id
     obj.motion_type = habitat_sim.physics.MotionType.STATIC
+    return obj
 
 
 def _wall_boxes() -> list:
@@ -179,8 +188,11 @@ def _build_room(sim: habitat_sim.Simulator, assets: dict) -> None:
         _add_box(sim, assets["wall"], center, size, semantic_id)
     for center, size in (piece for wall in _INNER_WALLS for piece in _wall_pieces(*wall)):
         _add_box(sim, assets["wall"], center, size, _INNER_WALL_ID)
-    for semantic_id, _, name, center in _OBJECTS:
-        _add_procthor_object(sim, name, center, semantic_id)
+    placed = {name: _add_procthor_object(sim, name, center, semantic_id) for semantic_id, _, name, center in _FLOOR_OBJECTS}
+    table = placed[_TABLE[2]]
+    table_top_y = table.translation.y + table.root_scene_node.cumulative_bb.max.y
+    for semantic_id, _, name, center in _TABLETOP_OBJECTS:
+        _add_procthor_object(sim, name, center, semantic_id, table_top_y)
 
 
 def _add_ceiling(sim: habitat_sim.Simulator, assets: dict) -> None:
@@ -198,29 +210,6 @@ def _camera_spec(uuid: str, sensor_type: habitat_sim.SensorType) -> habitat_sim.
     return spec
 
 
-@pytest.fixture(scope="module")
-def sim(tmp_path_factory):
-    assets = _box_assets(str(tmp_path_factory.mktemp("boxes")))
-    backend_cfg = habitat_sim.SimulatorConfiguration()
-    backend_cfg.scene_id = "NONE"
-    backend_cfg.enable_physics = True
-    agent_cfg = habitat_sim.agent.AgentConfiguration()
-    agent_cfg.sensor_specifications = [
-        _camera_spec("rgb", habitat_sim.SensorType.COLOR),
-        _camera_spec("semantic", habitat_sim.SensorType.SEMANTIC),
-        _camera_spec("depth", habitat_sim.SensorType.DEPTH),
-    ]
-    for action in ("turn_left", "turn_right"):
-        agent_cfg.action_space[action].actuation.amount = _TURN_ANGLE_DEG
-    s = habitat_sim.Simulator(habitat_sim.Configuration(backend_cfg, [agent_cfg]))
-    _build_room(s, assets)
-    nav_settings = habitat_sim.NavMeshSettings()
-    nav_settings.set_defaults()
-    nav_settings.include_static_objects = True
-    assert s.recompute_navmesh(s.pathfinder, nav_settings)
-    _add_ceiling(s, assets)  # after the navmesh, so its top face isn't walkable
-    yield s
-    s.close()
 
 
 def _object_belief(obs: dict, pose: np.ndarray, semantic_id: int, previous: ObjectBelief) -> ObjectBelief:
@@ -239,23 +228,24 @@ def _oracle_beliefs(beliefs: dict, obs: dict, pose: np.ndarray) -> dict:
 
 
 def _explore(sim: habitat_sim.Simulator, config: HybridConfig) -> tuple:
-    """(agent, every step's agent state) of one HybridFrontierAgent run."""
+    """(agent, every step's agent state, every step's decision map tile) of one HybridFrontierAgent run."""
     sim_agent = sim.get_agent(0)
     start = habitat_sim.AgentState()
     start.position = np.array(_START)
     sim_agent.set_state(start)
     agent = HybridFrontierAgent(sim.pathfinder, config, np.random.default_rng(0))
-    beliefs, states = {}, []
+    beliefs, states, decision_tiles = {}, [], []
     for _ in tqdm(range(_MAX_STEPS)):
         state, obs = sim_agent.get_state(), sim.get_sensor_observations()
         states.append(state)
         beliefs = _oracle_beliefs(beliefs, obs, sensor_pose_matrix(state.sensor_states["depth"]))
         agent.update_objects(beliefs)
         action = agent.act(state)
+        decision_tiles.append(agent.map_tile())
         if action == "stop":
             break
         sim.step(action)
-    return agent, states
+    return agent, states, decision_tiles
 
 
 def _observe(sim: habitat_sim.Simulator, state: habitat_sim.AgentState) -> Frame:
@@ -278,57 +268,73 @@ def _fuse_predictions(sim: habitat_sim.Simulator, states: list, detector: Detect
     return prediction_tiles, fused, memory
 
 
+def _placed_object(sim: habitat_sim.Simulator, name: str):
+    return next(iter(sim.get_rigid_object_manager().get_objects_by_handle_substring(name).values()))
+
+
 def _ground_truth_meshes(sim: habitat_sim.Simulator) -> list:
     """(class, world mesh) of every placed object, as main.py's ground_truth_meshes."""
     class_ids = {name: idx for idx, name in enumerate(_DETIC_CLASSES)}
-    objects = sim.get_rigid_object_manager()
-    return [
-        (class_ids[category], object_world_mesh(next(iter(objects.get_objects_by_handle_substring(name).values()))))
-        for _, category, name, _ in _OBJECTS
-    ]
+    return [(class_ids[category], object_world_mesh(_placed_object(sim, name))) for _, category, name, _ in _OBJECTS]
 
 
 def _save_resolved_maps(sim: habitat_sim.Simulator, agent: HybridFrontierAgent, fused: ConceptGraphObjectSet, memory: ImageMemory, detector: Detector) -> None:
-    """Resolves and classifies fused as main.py does, then saves its semantic_topdown.png, ground_truth_topdown.png and
-    retrieval_mosaic.png (one row per object of the frames showing it)."""
+    """Resolves and classifies fused as main.py does, then saves its semantic_point_cloud.ply, semantic_topdown.png,
+    ground_truth_topdown.png, retrieval_mosaic.png (one row per object of the frames showing it) and greedy_retrieval_mosaic.png."""
     fused.resolve()
-    fused = detector.classify_resolved(fused, memory, _DEPTH_CAMERA, _MIN_VISIBILITY_FRACTION, os.path.join(_TESTDUMP_DIR, "resolved_trial_mosaic.png"))
+    fused = detector.classify_resolved(fused, memory, _DEPTH_CAMERA, _MIN_VISIBILITY_FRACTION)
     colors = _DETIC_STYLE.colors
+    save_resolved_ply(fused, colors, os.path.join(_TESTDUMP_DIR, "semantic_point_cloud.ply"))
     Image.fromarray(semantic_topdown(fused, agent, _DETIC_CLASSES, colors)).save(os.path.join(_TESTDUMP_DIR, "semantic_topdown.png"))
     Image.fromarray(ground_truth_topdown(_ground_truth_meshes(sim), agent, _DETIC_CLASSES, colors)).save(os.path.join(_TESTDUMP_DIR, "ground_truth_topdown.png"))
     raytraced = memory.raytrace_frames(fused, _DEPTH_CAMERA, _MIN_VISIBILITY_FRACTION)
-    retrieval_mosaic(fused, memory, raytraced, _DETIC_STYLE, len(_OBJECTS)).save(os.path.join(_TESTDUMP_DIR, "retrieval_mosaic.png"))
+    retrieval_mosaic(memory, raytraced, _DETIC_STYLE, objects_by_size(fused), ROW_FRAMES).save(os.path.join(_TESTDUMP_DIR, "retrieval_mosaic.png"))
+    object_frames = greedy_object_frames(fused, memory, raytraced, ROW_FRAMES, _DEPTH_CAMERA.hfov)
+    views_mosaic(memory, raytraced, _DETIC_STYLE, object_frames).save(os.path.join(_TESTDUMP_DIR, "greedy_retrieval_mosaic.png"))
 
 
-@pytest.fixture(scope="module", autouse=True)
-def empty_testdump():
+def _save_ground_truth_mesh(sim: habitat_sim.Simulator) -> None:
+    """ground_truth_mesh.glb merging the floor, walls and placed objects, without the ceiling."""
+    objects = sim.get_rigid_object_manager().get_objects_by_handle_substring().values()
+    objects_world_mesh(obj for obj in objects if obj.semantic_id != _CEILING_ID).export(os.path.join(_TESTDUMP_DIR, "ground_truth_mesh.glb"))
+
+
+def _dummy_sim(assets_dir: str) -> habitat_sim.Simulator:
+    """Simulator of the synthetic flat, its box assets written to assets_dir."""
+    assets = _box_assets(assets_dir)
+    backend_cfg = habitat_sim.SimulatorConfiguration()
+    backend_cfg.scene_id = "NONE"
+    backend_cfg.enable_physics = True
+    agent_cfg = habitat_sim.agent.AgentConfiguration()
+    agent_cfg.sensor_specifications = [
+        _camera_spec("rgb", habitat_sim.SensorType.COLOR),
+        _camera_spec("semantic", habitat_sim.SensorType.SEMANTIC),
+        _camera_spec("depth", habitat_sim.SensorType.DEPTH),
+    ]
+    for action in ("turn_left", "turn_right"):
+        agent_cfg.action_space[action].actuation.amount = _TURN_ANGLE_DEG
+    sim = habitat_sim.Simulator(habitat_sim.Configuration(backend_cfg, [agent_cfg]))
+    _build_room(sim, assets)
+    nav_settings = habitat_sim.NavMeshSettings()
+    nav_settings.set_defaults()
+    nav_settings.include_static_objects = True
+    assert sim.recompute_navmesh(sim.pathfinder, nav_settings)
+    _add_ceiling(sim, assets)  # after the navmesh, so its top face isn't walkable
+    return sim
+
+
+def test_exhaustive_mode_reaches_viewpoints():
     shutil.rmtree(_TESTDUMP_DIR, ignore_errors=True)
     os.makedirs(_TESTDUMP_DIR)
-
-
-def _save_maps_and_predictions(agent: HybridFrontierAgent, prediction_tiles: list) -> None:
-    """decision.png and object.png of the last step, and predictions_mosaic.png of every step's predictions, as main.py's."""
-    for stem, tile in {"decision": agent.map_tile(), "object": agent.object_map_tile()}.items():
-        make_mosaic([tile], N_cols=1).save(os.path.join(_TESTDUMP_DIR, f"{stem}.png"))
-    make_mosaic(prediction_tiles, N_cols=_PREDICTION_MOSAIC_COLS).save(os.path.join(_TESTDUMP_DIR, "predictions_mosaic.png"))
-
-
-@pytest.fixture(scope="module")
-def detector():
-    return Detector(_DETIC_CONFIG, _DETIC_CHECKPOINT, _DETIC_CLASSES, _SAM_CHECKPOINT, agnostic_nms_thresh=0.7)
-
-
-@pytest.fixture(scope="module")
-def explored(sim):
-    return _explore(sim, HybridConfig(MapConfig(fov_deg=90.0, resolution=512), _TURN_ANGLE_DEG, viewpoint_mode=ViewpointMode.EXHAUSTIVE))
-
-
-def test_exhaustive_mode_reaches_viewpoints(sim, explored, detector):
-    agent, states = explored
+    with tempfile.TemporaryDirectory() as assets_dir:
+        sim = _dummy_sim(assets_dir)
+        _save_ground_truth_mesh(sim)  # inside, since it reloads the box assets
+    detector = Detector(_DETIC_CONFIG, _DETIC_CHECKPOINT, _DETIC_CLASSES, _SAM_CHECKPOINT, agnostic_nms_thresh=0.7)
+    agent, states, decision_tiles = _explore(sim, HybridConfig(MapConfig(fov_deg=90.0, resolution=512), _TURN_ANGLE_DEG, viewpoint_mode=ViewpointMode.EXHAUSTIVE))
     prediction_tiles, fused, memory = _fuse_predictions(sim, states, detector)
-    _save_maps_and_predictions(agent, prediction_tiles)
+    save_exploration_gifs(agent, decision_tiles, prediction_tiles, Path(_TESTDUMP_DIR))
     _save_resolved_maps(sim, agent, fused, memory, detector)
-    assert any(seen.any() for seen in agent.seen_sectors.values()), f"no object viewpoint reached in {_MAX_STEPS} steps"
+    sim.close()
 
 
 if __name__ == "__main__":

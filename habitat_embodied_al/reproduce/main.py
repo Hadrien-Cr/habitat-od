@@ -55,6 +55,8 @@ from detectron2.config import get_cfg  # type: ignore
 from common.agents.abstract_agent import Agent
 from common.agents.frontier_agent import FrontierAgent, FrontierAgentConfig
 from common.agents.random_agent import RandomAgent
+from common.hybrid_exploration.exploration_map import MapConfig
+from common.hybrid_exploration.hybrid_agent import HybridConfig, HybridFrontierAgent
 from common.utils.interface import Candidate
 from common.env_utils.env_base import ExplorationEnv
 from common.env_utils.object_annotations import resolve_classes
@@ -122,10 +124,12 @@ def build_sampler(sampler_name: str, scoring: Optional[str], budget_expanding_ra
 def build_agent(agent_name: str, rng: np.random.Generator, env: ExplorationEnv, habitat_cfg) -> Agent:
     if agent_name == "random":
         return RandomAgent(rng, [action for action in env.get_legal_actions() if action != "stop"])
+    simulator_cfg = habitat_cfg.habitat.simulator
+    fov = simulator_cfg.agents.main_agent.sim_sensors.rgb_sensor.hfov
     if agent_name == "fbe":
-        simulator_cfg = habitat_cfg.habitat.simulator
-        fov = simulator_cfg.agents.main_agent.sim_sensors.rgb_sensor.hfov
         return FrontierAgent(env.get_pathfinder(), FrontierAgentConfig(fov, simulator_cfg.turn_angle), rng)
+    if agent_name == "hybrid":
+        return HybridFrontierAgent(env.get_pathfinder(), HybridConfig(MapConfig(fov, resolution=512), simulator_cfg.turn_angle), rng)
     raise ValueError(f"Unknown agent {agent_name!r}")
 
 

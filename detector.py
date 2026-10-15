@@ -5,9 +5,7 @@ wraps a trained checkpoint to run it against one simulator frame at a time as it
 Runs Detic checkpoints (third_party/Detic), whose zero-shot classifier is replaced by the CLIP text
 embeddings of `classes`; masks come from SAM prompted with Detic's boxes, not Detic's own mask head.
 """
-import sys
 from collections import defaultdict
-from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import cv2
@@ -16,32 +14,23 @@ import torch
 import torch.nn.functional as F
 import torchvision  # type: ignore
 from torchvision.models.feature_extraction import create_feature_extractor  # type: ignore
-from detectron2.config import CfgNode, get_cfg  # type: ignore
 from detectron2.engine import DefaultPredictor  # type: ignore
 from detectron2.modeling.postprocessing import detector_postprocess  # type: ignore
 from detectron2.modeling.roi_heads.fast_rcnn import fast_rcnn_inference  # type: ignore
 from detectron2.data.transforms import Transform  # type: ignore
 from detectron2.structures import BitMasks, Boxes, ImageList, Instances  # type: ignore
-from PIL import Image
 
 from common.utils.image_memory import ImageMemory
-from common.utils.plot_utils import box_crop, draw_ranked_classes, make_mosaic
+from common.utils.plot_utils import draw_ranked_classes
 from common.utils.projection_utils import DepthCamera, ResolvedObjects
 from common.utils.sam import SamMasker
-
-_DETIC_ROOT = Path(__file__).resolve().parent / "third_party" / "Detic"
-sys.path[:0] = [str(_DETIC_ROOT), str(_DETIC_ROOT / "third_party" / "CenterNet2")]
-
-from centernet.config import add_centernet_config  # type: ignore  # noqa: E402
-from detic.config import add_detic_config  # type: ignore  # noqa: E402
-from detic.modeling.roi_heads.detic_fast_rcnn import DeticFastRCNNOutputLayers  # type: ignore  # noqa: E402
-from detic.modeling.utils import reset_cls_test  # type: ignore  # noqa: E402
-from detic.predictor import get_clip_embeddings  # type: ignore  # noqa: E402
+from common.vision.detic import detic_cfg
+from detic.modeling.roi_heads.detic_fast_rcnn import DeticFastRCNNOutputLayers  # type: ignore
+from detic.modeling.utils import reset_cls_test  # type: ignore
+from detic.predictor import get_clip_embeddings  # type: ignore
 
 _CROP_SIZE = 128
-_TILE_SIZE = 320
 _TOP_CLASSES = 5
-_TRIAL_ROW_VIEWS = 10
 _OBJECT_PROB_PLACEHOLDER = 1.0
 
 ObjectViews = Dict[int, Dict[int, Tuple[np.ndarray, np.ndarray]]]
@@ -68,7 +57,8 @@ class Detector:
     ):
         self.classes = classes
         self.agnostic_nms_thresh = agnostic_nms_thresh
-        cfg = self._config(config_file)
+        cfg = detic_cfg(config_file)
+        cfg.MODEL.ROI_BOX_HEAD.ZEROSHOT_WEIGHT_PATH = "rand"
         cfg.MODEL.ROI_HEADS.NUM_CLASSES = len(classes)
         cfg.MODEL.WEIGHTS = weights_path
         cfg.MODEL.MASK_ON = False
@@ -83,16 +73,6 @@ class Detector:
         self._feature_extractor = create_feature_extractor(resnet, return_nodes={"avgpool": "features"})
         self._feature_extractor.to(self._device).eval()
         self._masker = SamMasker(sam_checkpoint, device=device)
-
-    def _config(self, config_file: str) -> CfgNode:
-        """Detic config_file, its zero-shot classifier left to reset_cls_test and its metadata paths resolved from _DETIC_ROOT."""
-        cfg = get_cfg()
-        add_centernet_config(cfg)
-        add_detic_config(cfg)
-        cfg.merge_from_file(config_file)
-        cfg.MODEL.ROI_BOX_HEAD.ZEROSHOT_WEIGHT_PATH = "rand"
-        cfg.MODEL.ROI_BOX_HEAD.CAT_FREQ_PATH = str(_DETIC_ROOT / cfg.MODEL.ROI_BOX_HEAD.CAT_FREQ_PATH)
-        return cfg
 
     def _box_predictions(self, features: dict, proposals: list) -> Tuple[tuple, tuple, DeticFastRCNNOutputLayers]:
         """DeticCascadeROIHeads._forward_box's inference: stage-averaged class probabilities, times the proposal score, on the last stage's boxes."""
@@ -168,31 +148,21 @@ class Detector:
         cls_score = self._predictor.model.roi_heads.box_predictor[-1].cls_score
         return (cls_score.norm_temperature * embeddings.to(self._device) @ cls_score.zs_weight[:, :-1]).sigmoid().cpu()
 
-    def classify_objects(self, views: ObjectViews, mosaic_path: Path) -> Dict[int, Tuple[float, Dict[int, torch.Tensor]]]:
-        """{object id: (p(object), {frame id: class probabilities of that view's mask-box region embedding})}; saves each
-        object's ensembled-embedding and per-view top classes to mosaic_path."""
+    def classify_objects(self, views: ObjectViews) -> Dict[int, Tuple[float, Dict[int, torch.Tensor]]]:
+        """{object id: (p(object), {frame id: class probabilities of that view's mask-box region embedding})}."""
         embeddings = self._view_embeddings(views)
         view_probs = {
             object_id: dict(zip(frame_embeddings, self.region_class_probs(torch.stack(list(frame_embeddings.values())))))
             for object_id, frame_embeddings in embeddings.items()
         }
-        ensembled_probs = {
-            object_id: self.region_class_probs(F.normalize(torch.stack(list(frame_embeddings.values())).mean(dim=0), dim=0)[None])[0]
-            for object_id, frame_embeddings in embeddings.items()
-        }
-        # top_two = {object_id: probs.topk(2).values for object_id, probs in ensembled_probs.items()}
-        # passed = {object_id: bool(top[0] >= min_class_margin * top[1]) for object_id, top in top_two.items()}
-        if view_probs:
-            self._trial_mosaic(views, ensembled_probs, view_probs).save(mosaic_path)
-        # return resolved.classified({object_id: probs for object_id, probs in ensembled_probs.items() if passed[object_id]})
         return {object_id: (_OBJECT_PROB_PLACEHOLDER, frame_probs) for object_id, frame_probs in view_probs.items()}
 
     def classify_resolved(
-        self, resolved: ResolvedObjects, memory: ImageMemory, camera: DepthCamera, min_visibility_fraction: float, mosaic_path: Path,
+        self, resolved: ResolvedObjects, memory: ImageMemory, camera: DepthCamera, min_visibility_fraction: float,
     ) -> ResolvedObjects:
         """resolved, each object taking the mean class probabilities of its views raytraced in memory (classify_objects)."""
         views = memory.object_views(resolved, camera, min_visibility_fraction)
-        return resolved.classified(mean_view_class_probs(self.classify_objects(views, mosaic_path)))
+        return resolved.classified(mean_view_class_probs(self.classify_objects(views)))
 
     def _view_embeddings(self, views: ObjectViews) -> Dict[int, Dict[int, torch.Tensor]]:
         """{object id: {frame id: region embedding of that view's mask box}}, one backbone pass per frame."""
@@ -206,21 +176,6 @@ class Detector:
             for (object_id, _, _), embedding in zip(object_boxes, self.encode_regions(rgb, np.array([box for _, _, box in object_boxes]))):
                 embeddings[object_id][frame_id] = embedding
         return dict(embeddings)
-
-    def _trial_mosaic(self, views: ObjectViews, ensembled_probs: Dict[int, torch.Tensor], view_probs: Dict[int, Dict[int, torch.Tensor]]) -> Image.Image:
-        """One row per object: its ensembled-embedding top classes, then each view's crop with its own top classes."""
-        rows = [self._trial_row(object_id, views[object_id], probs, view_probs[object_id]) for object_id, probs in ensembled_probs.items()]
-        return make_mosaic([tile for row in rows for tile in row], row_sizes=[len(row) for row in rows])
-
-    def _trial_row(
-        self, object_id: int, object_views: Dict[int, Tuple[np.ndarray, np.ndarray]], ensembled_probs: torch.Tensor, frame_probs: Dict[int, torch.Tensor],
-    ) -> List[Tuple[str, np.ndarray]]:
-        blank = np.zeros((_TILE_SIZE, _TILE_SIZE, 3), dtype=np.uint8)
-        crops = [
-            (f"frame{frame_id:03d}", self.draw_top_classes(probs, box_crop(object_views[frame_id][0], _mask_box(object_views[frame_id][1]), _TILE_SIZE)))
-            for frame_id, probs in list(frame_probs.items())[:_TRIAL_ROW_VIEWS]
-        ]
-        return [(f"object{object_id} ensembled", self.draw_top_classes(ensembled_probs, blank)), *crops]
 
     def draw_top_classes(self, class_probs: torch.Tensor, image: np.ndarray) -> np.ndarray:
         """image with the top classes of class_probs and their probabilities drawn on it."""

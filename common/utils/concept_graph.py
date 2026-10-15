@@ -8,7 +8,7 @@ from detectron2.structures import Instances
 from scipy.spatial.kdtree import KDTree
 
 from common.utils.projection_utils import (
-    DepthCamera, ResolvedObjects, denoise, downsample_points, instance_masks_and_classes, object_points,
+    DepthCamera, ResolvedObjects, denoise, downsample_points, foreground_mask, instance_masks_and_classes, object_points, surface_labels,
 )
 from common.utils.similarity_utils import overlap_ratio_matrix, visual_similarity_matrix
 
@@ -61,9 +61,10 @@ def project_detections_to_objects(
     """One raw ConceptGraphObject per instance; instances must carry region_features."""
     masks, _ = instance_masks_and_classes(instances)
     camera = DepthCamera(hfov, min_depth, max_depth)
+    surfaces = surface_labels(depth, camera)
     return [
         ConceptGraphObject(
-            points=object_points(depth, pose, mask, camera),
+            points=object_points(depth, pose, foreground_mask(depth, mask, surfaces), camera),
             region_feature=region_feature,
         )
         for mask, region_feature in zip(masks, instances.region_features)

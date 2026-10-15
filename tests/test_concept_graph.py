@@ -11,7 +11,6 @@ Has no pytest test functions - run it directly.
 """
 
 from functools import partial
-from pathlib import Path
 from typing import List
 
 import numpy as np
@@ -32,9 +31,9 @@ def frame_objects(detector: Detector, rgb: np.ndarray, depth: np.ndarray, pose: 
     return project_detections_to_objects(depth, pose, gt_instances, hfov=HFOV_DEG, min_depth=MIN_DEPTH, max_depth=MAX_DEPTH)
 
 
-def resolve_and_classify(detector: Detector, mosaic_path: Path, fused: ConceptGraphObjectSet, memory: ImageMemory) -> ResolvedObjects:
+def resolve_and_classify(detector: Detector, fused: ConceptGraphObjectSet, memory: ImageMemory) -> ResolvedObjects:
     fused.resolve()
-    return detector.classify_resolved(fused, memory, DepthCamera(HFOV_DEG, MIN_DEPTH, MAX_DEPTH), _MIN_VISIBILITY_FRACTION, mosaic_path)
+    return detector.classify_resolved(fused, memory, DepthCamera(HFOV_DEG, MIN_DEPTH, MAX_DEPTH), _MIN_VISIBILITY_FRACTION)
 
 
 if __name__ == "__main__":
@@ -44,8 +43,7 @@ if __name__ == "__main__":
     parser.add_argument("--sam-checkpoint", default="data/sam/sam_vit_b_01ec64.pth")
     args = parser.parse_args()
     detector = Detector(args.config_file, args.checkpoint, resolve_classes(_ENV_NAME, _VOCAB_NAME), args.sam_checkpoint)
-    mosaic_path = Path(__file__).parent / "testdump" / "test_concept_graph" / "resolved_trial_mosaic.png"
     viewer, fused, memory = run_viewer(
-        args, "test_concept_graph", ConceptGraphObjectSet(), partial(frame_objects, detector), partial(resolve_and_classify, detector, mosaic_path),
+        args, "test_concept_graph", ConceptGraphObjectSet(), partial(frame_objects, detector), partial(resolve_and_classify, detector),
     )
     save_retrieval_mosaic(viewer, fused, memory, args.retrieval_objects)

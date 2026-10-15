@@ -32,6 +32,25 @@ git submodule init && git submodule update
 mkdir third_party/Detic/models
 wget --no-check-certificate https://dl.fbaipublicfiles.com/detic/Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.pth -P third_party/Detic/models/
 ```
+```
+# Data for reproducing Detic's BoxSup-C2_L_CLIP_SwinB_896b32_4x training (habitat_embodied_sl/pretrain.py):
+# LVIS v1 annotations, COCO 2017 images and the converted Swin-B ImageNet-22k backbone, under third_party/Detic/{datasets,models}.
+# --coco-images symlinks an existing COCO copy's train2017/ and val2017/; omit it to download them (~19GB).
+common/vision/setup_detic_data.sh --coco-images <path/to/coco/images>
+```
+```
+# Download SAM's ViT-B checkpoint (masks prompted with Detic's boxes)
+wget https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth -P $HABITAT_DATA/sam/
+```
+
+```
+# Test data: habitat-sim's test scenes, and its test_assets (shipped in its repo, not downloadable).
+# Same habitat-sim clone as scripts/gen_gibson_semantics.sh's Datatool build.
+python -m habitat_sim.utils.datasets_download --uids habitat_test_scenes --data-path $HABITAT_DATA
+git clone --branch v0.3.2 --recurse-submodules --shallow-submodules https://github.com/facebookresearch/habitat-sim.git third_party/habitat-sim
+ln -s $(pwd)/third_party/habitat-sim/data/test_assets $HABITAT_DATA/test_assets
+PYTHONPATH=. BASE_DIR=$(pwd) python -m pytest tests
+```
 
 ```
 # Download HSSD scene data & ObjectNav Dataset

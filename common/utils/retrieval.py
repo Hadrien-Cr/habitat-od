@@ -1,6 +1,6 @@
 """Retrieval mosaic of a resolved map: for its largest objects, every remembered frame showing them."""
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -13,7 +13,7 @@ from common.utils.plot_utils import make_mosaic, plot_segmentation, plot_segment
 from common.utils.projection_utils import ResolvedObjects
 
 
-_ROW_FRAMES = 5
+ROW_FRAMES = 5
 
 
 @dataclass(frozen=True)
@@ -41,18 +41,35 @@ def segmentation_tile(rgb: np.ndarray, instances: Instances, style: Segmentation
     return label, np.array(plot_segmentation(rgb=rgb.copy(), gt_instances=instances, pred_instances=None, classes=style.classes, colors=style.colors))
 
 
-def retrieval_mosaic(fused: ResolvedObjects, memory: ImageMemory, raytraced: dict, style: SegmentationStyle, num_objects: int) -> Optional[Image.Image]:
-    """One mosaic row per largest resolved object, of every frame ImageMemory.frames_showing retrieves it in from raytraced (ImageMemory.raytrace_frames)."""
+def retrieval_mosaic(memory: ImageMemory, raytraced: dict, style: SegmentationStyle, object_ids: List[int], num_frames: int) -> Optional[Image.Image]:
+    """One mosaic row per object of object_ids, of its num_frames largest views ImageMemory.frames_showing retrieves from raytraced (ImageMemory.raytrace_frames)."""
+    return views_mosaic(memory, raytraced, style, {object_id: _largest_views(memory, raytraced, object_id, num_frames) for object_id in object_ids})
+
+
+def objects_by_size(fused: ResolvedObjects) -> List[int]:
+    """Ids of every resolved object, the one with the most points first."""
     object_ids, sizes = np.unique(fused.resolved_infos[:, 1], return_counts=True)
-    rows = [_retrieval_row(memory, raytraced, style, int(object_id)) for object_id in object_ids[np.argsort(-sizes)[:num_objects]]]
+    return [int(object_id) for object_id in object_ids[np.argsort(-sizes)]]
+
+
+def largest_objects(fused: ResolvedObjects, num_objects: int) -> List[int]:
+    """Ids of the num_objects resolved objects with the most points, largest first."""
+    return objects_by_size(fused)[:num_objects]
+
+
+def views_mosaic(memory: ImageMemory, raytraced: dict, style: SegmentationStyle, object_frames: Dict[int, List[int]]) -> Optional[Image.Image]:
+    """One mosaic row per object of object_frames, of its frames in order."""
+    rows = [
+        [_retrieval_tile(memory.get_frame(frame_id), frame_id, object_id, raytraced[frame_id], style) for frame_id in frame_ids]
+        for object_id, frame_ids in object_frames.items()
+    ]
     tiles = [tile for row in rows for tile in row]
     return make_mosaic(tiles, row_sizes=[len(row) for row in rows]) if tiles else None
 
 
-def _retrieval_row(memory: ImageMemory, raytraced: dict, style: SegmentationStyle, object_id: int) -> List[Tuple[str, np.ndarray]]:
-    """The object's 10 largest raytraced views, largest first."""
-    frame_ids = sorted(memory.frames_showing(object_id, raytraced), key=lambda frame_id: -_mask_area(raytraced[frame_id], object_id))
-    return [_retrieval_tile(memory.get_frame(frame_id), frame_id, object_id, raytraced[frame_id], style) for frame_id in frame_ids[:_ROW_FRAMES]]
+def _largest_views(memory: ImageMemory, raytraced: dict, object_id: int, num_frames: int) -> List[int]:
+    """Ids of the object's num_frames largest raytraced views, largest first."""
+    return sorted(memory.frames_showing(object_id, raytraced), key=lambda frame_id: -_mask_area(raytraced[frame_id], object_id))[:num_frames]
 
 
 def _mask_area(frame_raytraced: tuple, object_id: int) -> int:

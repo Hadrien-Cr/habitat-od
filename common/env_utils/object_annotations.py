@@ -40,10 +40,16 @@ def object_world_mesh(obj) -> Optional[trimesh.Trimesh]:
     if not asset_path or not os.path.exists(asset_path):
         return None
     mesh = trimesh.load(asset_path, force="mesh")
-    # rigid-body transformation carries no scale, so the template's obj.scale is applied separately
+    # the first visual node carries the COM recentering on top of obj.transformation, but not the template scale
     mesh.apply_scale(np.array(obj.scale))
-    mesh.apply_transform(np.array(obj.transformation))
+    mesh.apply_transform(np.array(obj.visual_scene_nodes[0].absolute_transformation()))
     return mesh
+
+
+def objects_world_mesh(objects) -> trimesh.Trimesh:
+    """One mesh merging every object's object_world_mesh, skipping those without a render asset on disk."""
+    meshes = [object_world_mesh(obj) for obj in objects]
+    return trimesh.util.concatenate([mesh for mesh in meshes if mesh is not None])
 
 
 def object_shortname_from_handle(object_handle: str) -> str:
