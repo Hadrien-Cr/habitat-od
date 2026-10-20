@@ -18,9 +18,8 @@ Read: queries each held-out frame (the ones in between, never fused) through .de
 GT sensor's own min_visibility_fraction, tiled into a backprojected_mosaic.png, showing how well the map
 generalizes to unseen views.
 Retrieve: every exploration frame (fused and held-out) is kept in an ImageMemory; for each of the
---retrieval-objects largest resolved objects, ImageMemory.frames_showing lists the frames it appears in, tiled one
-object per row into a retrieval_mosaic.png - the matched instance where it was fused, its raytraced mask where it is
-only visible (held-out frames, or filtered out of GT).
+--retrieval-objects largest resolved objects, common/utils/retrieval.py's retrieve_views selects diverse frames it
+appears in, tiled one object per row into a retrieval_mosaic.png.
 Finally saves the FrontierAgent's exploration_map.png (navigable map, revealed area, trajectory,
 circled closest frontier) and an exploration_mosaic.png of that map at every step.
 
@@ -52,7 +51,7 @@ from common.utils.image_memory import Frame, ImageMemory
 from common.utils.plot_utils import make_mosaic
 from common.utils.pose_utils import sensor_pose_matrix
 from common.utils.projection_utils import DepthCamera, ResolvedObjects, save_resolved_ply
-from common.utils.retrieval import ROW_FRAMES, SegmentationStyle, instances_from_masks, largest_objects, retrieval_mosaic, segmentation_tile
+from common.utils.retrieval import SegmentationStyle, ViewSelection, instances_from_masks, largest_objects, retrieve_views, segmentation_tile, views_mosaic
 from common.utils.semantic_point_cloud import SemanticPointCloud, project_semantic_masks_to_3d
 
 HABITAT_DATA = os.environ.get("HABITAT_DATA")
@@ -302,9 +301,11 @@ def _style(viewer: _Viewer) -> SegmentationStyle:
 
 
 def save_retrieval_mosaic(viewer: _Viewer, fused: ResolvedObjects, memory: ImageMemory, num_objects: int) -> None:
-    """One mosaic row per largest resolved object, of every frame ImageMemory.frames_showing retrieves it in."""
-    raytraced = memory.raytrace_frames(fused, DepthCamera(HFOV_DEG, MIN_DEPTH, MAX_DEPTH), viewer.sensor.min_visibility_fraction)
-    mosaic = retrieval_mosaic(memory, raytraced, _style(viewer), largest_objects(fused, num_objects), ROW_FRAMES)
+    """One mosaic row per largest resolved object, of the frames retrieve_views selects."""
+    camera = DepthCamera(HFOV_DEG, MIN_DEPTH, MAX_DEPTH)
+    raytraced = memory.raytrace_frames(fused, camera, viewer.sensor.min_visibility_fraction)
+    object_frames = retrieve_views(fused, memory, raytraced, camera, ViewSelection())
+    mosaic = views_mosaic(memory, raytraced, _style(viewer), {object_id: object_frames[object_id] for object_id in largest_objects(fused, num_objects)})
     if mosaic is not None:
         mosaic.save(os.path.join(viewer.out_dir, f"{viewer.out_stem}_retrieval_mosaic.png"))
 

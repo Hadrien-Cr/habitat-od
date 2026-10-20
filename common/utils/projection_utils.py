@@ -1,24 +1,24 @@
 import logging
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import open3d as o3d
 import torch
 from detectron2.structures import Instances
-from scipy import ndimage
 from scipy.spatial.kdtree import KDTree
 
 from common.env_utils.visibility_utils import mesh_visibility_fraction
 
 log = logging.getLogger(__name__)
 
-_BEND_RATIO = 0.01
-_DEPTH_EDGE_RATIO = 0.02
-_MIN_SURFACE_COVERAGE = 0.5
-_BEHIND_MARGIN_M = 0.3
 _FOREGROUND_DEPTH_PERCENTILE = 95
+_FLOOR_MARGIN_M = 0.02
+_PLANE_DISTANCE_M = 0.02
+_PLANE_RANSAC_ITERATIONS = 1000
+_MAX_VERTICAL_NORMAL_UP = 0.1
+_MAX_WALLS = 3
 
 
 @dataclass(frozen=True)
@@ -33,6 +33,16 @@ def camera_intrinsics(width: int, height: int, hfov: float) -> Tuple[float, floa
     fx = width / 2.0 / np.tan(np.deg2rad(hfov) / 2.0)
     fy = height / 2.0 / np.tan(np.deg2rad(hfov) / 2.0)
     return fx, fy, (width - 1.0) / 2.0, (height - 1.0) / 2.0
+
+
+def world_to_pixels(points: np.ndarray, pose, image_shape, hfov: float) -> Tuple[np.ndarray, np.ndarray]:
+    """(N, 2) (column, row) pixels and camera depths of world points seen from pose, project_batch_masks' inverse."""
+    fx, fy, xc, yc = camera_intrinsics(image_shape[1], image_shape[0], hfov)
+    camera_points = (np.linalg.inv(np.asarray(pose, dtype=float)) @ np.c_[points, np.ones(len(points))].T).T
+    depths = -camera_points[:, 2]
+    safe_depths = np.where(depths > 0, depths, np.inf)
+    pixels = np.stack([camera_points[:, 0] / safe_depths * fx + xc, -camera_points[:, 1] / safe_depths * fy + yc], axis=1)
+    return np.rint(pixels).astype(int), depths
 
 
 def project_batch_masks(
@@ -84,76 +94,102 @@ def object_points(depth, pose, mask: torch.Tensor, camera: DepthCamera) -> np.nd
     depth = torch.as_tensor(depth).squeeze()
     in_range = (depth > camera.min_depth) & (depth < camera.max_depth)
     points = project_batch_masks(depth, pose, torch.as_tensor(mask).bool() & in_range, hfov=camera.hfov, min_depth=camera.min_depth, max_depth=camera.max_depth)
-    return points.numpy()
+    # open3d's Vector3dVector is ~3x slower on the non-contiguous array project_batch_masks' permute leaves
+    return np.ascontiguousarray(points.numpy())
 
 
-def surface_labels(depth, camera: DepthCamera) -> np.ndarray:
-    """depth's surfaces split where inverse depth bends: ids from 1, 0 on bends, -1 behind depth edges and out of range."""
-    depth = np.asarray(depth).squeeze()
-    in_range = (depth > camera.min_depth) & (depth < camera.max_depth)
-    bends = _inverse_depth_bends(depth)
-    labels, _ = ndimage.label(in_range & ~bends)
-    labels[~in_range | (bends & _behind_depth_edge(depth))] = -1
-    return labels
+def yaw_bins(points: np.ndarray, viewpoint: np.ndarray, num_bins: int) -> np.ndarray:
+    """Which of num_bins equal yaw sectors the horizontal direction from each point to viewpoint falls in."""
+    offsets = viewpoint - points
+    yaws = np.arctan2(offsets[:, 0], offsets[:, 2])
+    return np.floor((yaws + np.pi) / (2 * np.pi) * num_bins).astype(int) % num_bins
 
 
-def foreground_mask(depth, mask: torch.Tensor, surfaces: np.ndarray) -> np.ndarray:
-    """mask without the background it covers: surfaces lying mostly outside it (floor, walls) or behind its main one
-    (seen through holes), keeping the bends connected to what remains."""
-    mask = np.asarray(mask, dtype=bool) & (surfaces >= 0)
-    kept = mask & np.isin(surfaces, _object_surfaces(np.asarray(depth).squeeze(), mask, surfaces))
-    reachable, _ = ndimage.label(kept | (mask & (surfaces == 0)))
-    return np.isin(reachable, reachable[kept])
+def floor_mask(points: np.ndarray, floor_height: float) -> np.ndarray:
+    """Points at most _FLOOR_MARGIN_M above floor_height."""
+    return points[:, 1] <= floor_height + _FLOOR_MARGIN_M
 
 
-def _object_surfaces(depth: np.ndarray, mask: np.ndarray, surfaces: np.ndarray) -> np.ndarray:
-    """Ids of mask's main surface and of the surfaces mostly inside mask, but those lying behind the main one."""
-    inside = np.bincount(surfaces[mask & (surfaces > 0)], minlength=surfaces.max() + 1)
-    if not inside.any():
-        return np.empty(0, dtype=int)
-    main = int(np.argmax(inside))
-    totals = np.bincount(surfaces[surfaces > 0], minlength=len(inside))
-    candidates = np.union1d(np.flatnonzero((inside > 0) & (inside >= _MIN_SURFACE_COVERAGE * totals)), [main])
-    depth_gate = np.percentile(depth[mask & (surfaces == main)], _FOREGROUND_DEPTH_PERCENTILE) + _BEHIND_MARGIN_M
-    return candidates[np.asarray(ndimage.mean(depth, np.where(mask, surfaces, 0), candidates)) <= depth_gate]
+def background_wall_mask(points: np.ndarray, camera_center: np.ndarray) -> np.ndarray:
+    """Points of the walls behind points, peeled one RANSAC plane at a time while the largest one is a _wall_behind."""
+    walls = np.zeros(len(points), dtype=bool)
+    for _ in range(_MAX_WALLS):
+        remaining = np.flatnonzero(~walls)
+        wall = _wall_behind(points[remaining], camera_center) if len(remaining) > 3 else np.zeros(0, dtype=bool)
+        if not wall.any():
+            break
+        walls[remaining[wall]] = True
+    return walls
 
 
-def _inverse_depth_bends(depth: np.ndarray) -> np.ndarray:
-    """Depth edges and creases: pixels where inverse depth, linear across a plane, bends by more than _BEND_RATIO of itself."""
-    inverse_depth = 1.0 / np.maximum(depth, np.finfo(np.float32).tiny)
-    bends = np.zeros(depth.shape, dtype=bool)
-    bends[1:-1] |= np.abs(np.diff(inverse_depth, n=2, axis=0)) > _BEND_RATIO * inverse_depth[1:-1]
-    bends[:, 1:-1] |= np.abs(np.diff(inverse_depth, n=2, axis=1)) > _BEND_RATIO * inverse_depth[:, 1:-1]
-    return bends
+def _wall_behind(points: np.ndarray, camera_center: np.ndarray) -> np.ndarray:
+    """Inliers of points' largest plane if it is vertical and its median camera distance is beyond the
+    _FOREGROUND_DEPTH_PERCENTILE-th percentile of the other points', else none."""
+    plane, inliers = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(points)).segment_plane(_PLANE_DISTANCE_M, 3, _PLANE_RANSAC_ITERATIONS)
+    is_plane = np.zeros(len(points), dtype=bool)
+    is_plane[inliers] = True
+    if is_plane.all() or abs(plane[1]) > _MAX_VERTICAL_NORMAL_UP:
+        return np.zeros(len(points), dtype=bool)
+    distances = np.linalg.norm(points - camera_center, axis=1)
+    depth_gate = np.percentile(distances[~is_plane], _FOREGROUND_DEPTH_PERCENTILE)
+    return is_plane if np.median(distances[is_plane]) > depth_gate else np.zeros(len(points), dtype=bool)
 
 
-def _behind_depth_edge(depth: np.ndarray) -> np.ndarray:
-    """Pixels with a 4-neighbour nearer by more than _DEPTH_EDGE_RATIO of their depth."""
-    return depth > (1 + _DEPTH_EDGE_RATIO) * ndimage.minimum_filter(depth, footprint=ndimage.generate_binary_structure(2, 1))
+def foreground_points(points: np.ndarray, floor_height: float, camera_center: np.ndarray) -> np.ndarray:
+    """points without the floor and the walls behind them."""
+    points = points[~floor_mask(points, floor_height)]
+    return points[~background_wall_mask(points, camera_center)]
 
 
 def downsample_points(points: np.ndarray, voxel_size: float) -> np.ndarray:
     return np.asarray(o3d.geometry.PointCloud(o3d.utility.Vector3dVector(points)).voxel_down_sample(voxel_size).points)
 
 
+def _voxel_reduce(points: np.ndarray, counts: np.ndarray, voxel_size: float, reduce: np.ufunc) -> Tuple[np.ndarray, np.ndarray]:
+    """Points averaged and counts reduced per voxel of a world-anchored grid of voxel_size."""
+    _, voxel_ids = np.unique(np.floor(points / voxel_size).astype(np.int64), axis=0, return_inverse=True)
+    voxel_ids = voxel_ids.reshape(-1)
+    voxel_points = np.zeros((voxel_ids.max() + 1, 3))
+    np.add.at(voxel_points, voxel_ids, points)
+    voxel_counts = np.zeros(voxel_ids.max() + 1, dtype=counts.dtype)
+    reduce.at(voxel_counts, voxel_ids, counts)
+    return voxel_points / np.bincount(voxel_ids)[:, None], voxel_counts
+
+
+def voxel_merge(clouds: List[Tuple[np.ndarray, np.ndarray]], voxel_size: float) -> Tuple[np.ndarray, np.ndarray]:
+    """(points, counts) clouds downsampled together, each voxel's count the sum over clouds of their max count in it."""
+    per_cloud = [_voxel_reduce(points, counts, voxel_size, np.maximum) for points, counts in clouds]
+    return _voxel_reduce(np.concatenate([points for points, _ in per_cloud]), np.concatenate([counts for _, counts in per_cloud]), voxel_size, np.add)
+
+
+def dbscan_labels(points: np.ndarray, eps: float, min_points: int) -> np.ndarray:
+    """Open3D DBSCAN cluster id of every point, -1 for noise."""
+    return np.array(o3d.geometry.PointCloud(o3d.utility.Vector3dVector(points)).cluster_dbscan(eps=eps, min_points=min_points))
+
+
+def largest_cluster_mask(points: np.ndarray, eps: float, min_points: int) -> np.ndarray:
+    """Points of the largest DBSCAN cluster, or all of them if it has fewer than 5 points."""
+    labels = dbscan_labels(points, eps, min_points)
+    cluster_sizes = Counter(labels[labels >= 0])
+    if not cluster_sizes or cluster_sizes.most_common(1)[0][1] < 5:
+        return np.ones(len(points), dtype=bool)
+    return labels == cluster_sizes.most_common(1)[0][0]
+
+
 def denoise(points: np.ndarray, voxel_size: float, eps: float, min_points: int) -> np.ndarray:
     """concept-graphs' process_pcd: voxel downsampling, then the largest DBSCAN cluster unless it has fewer than 5 points."""
     points = downsample_points(points, voxel_size)
-
-    o3d_pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(points))
-    labels = np.array(o3d_pcd.cluster_dbscan(eps=eps, min_points=min_points))
-    cluster_sizes = Counter(labels[labels >= 0])
-
-    if not cluster_sizes or cluster_sizes.most_common(1)[0][1] < 5:
-        return points
-    return points[labels == cluster_sizes.most_common(1)[0][0]]
+    return points[largest_cluster_mask(points, eps, min_points)]
 
 
 def save_resolved_ply(resolved: "ResolvedObjects", colors: list, out_path: str) -> None:
     """Writes resolved_points as a .ply, each point colored by its resolved class (colors in 0-255)."""
-    pcd = o3d.geometry.PointCloud()
-    pcd.points = o3d.utility.Vector3dVector(resolved.resolved_points)
-    pcd.colors = o3d.utility.Vector3dVector(np.asarray(colors)[resolved.resolved_infos[:, 0]] / 255.0)
+    _save_class_colored_ply(resolved.resolved_points, resolved.resolved_infos[:, 0], colors, out_path)
+
+
+def _save_class_colored_ply(points: np.ndarray, class_ids: np.ndarray, colors: list, out_path: str) -> None:
+    pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(points))
+    pcd.colors = o3d.utility.Vector3dVector(np.asarray(colors)[class_ids] / 255.0)
     o3d.io.write_point_cloud(str(out_path), pcd)
 
 
@@ -187,13 +223,23 @@ class ResolvedObjects:
         """(1, num_classes) logits of one resolved object."""
         raise NotImplementedError
 
+    def raytraced_point_indices(self, depth, pose, mask: torch.Tensor, camera: DepthCamera, object_id: int) -> np.ndarray:
+        """Indices of the object's resolved points nearest, within raytrace_radius, to mask's depth pixels seen from pose."""
+        nearest = self.kdtree.query(object_points(depth, pose, mask, camera), distance_upper_bound=self.raytrace_radius(), k=1, workers=-1)[1]
+        nearest = nearest[nearest < len(self.resolved_points)]
+        return np.unique(nearest[self.resolved_infos[nearest, 1] == object_id])
+
     def classified(self, class_probs: Dict[int, torch.Tensor]) -> "ResolvedObjects":
         """self restricted to the objects of class_probs, each taking its most probable class."""
-        kept = np.isin(self.resolved_infos[:, 1], list(class_probs))
-        self.resolved_points, self.resolved_infos = self.resolved_points[kept], self.resolved_infos[kept]
+        self.subset(np.isin(self.resolved_infos[:, 1], list(class_probs)))
         object_classes = {object_id: int(probs.argmax()) for object_id, probs in class_probs.items()}
         self.resolved_infos[:, 0] = [object_classes[object_id] for object_id in self.resolved_infos[:, 1]]
         self.resolved_logits = class_probs
+        return self
+
+    def subset(self, kept: np.ndarray) -> "ResolvedObjects":
+        """self restricted to its kept points, its lookup tree rebuilt."""
+        self.resolved_points, self.resolved_infos = self.resolved_points[kept], self.resolved_infos[kept]
         self.kdtree = KDTree(self.resolved_points) if len(self.resolved_points) else None
         return self
 

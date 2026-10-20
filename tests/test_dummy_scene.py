@@ -11,24 +11,26 @@ each visible object's points come from its semantic mask and depth.
 Into tests/testdump/test_dummy_scene/ (emptied when the test starts) go every step's decision (current view in
 yellow, candidates labelled with u*t above and t below, chosen goal ringed) as one frame of decision.gif, the last step's believed object
 occupancy (object points in white, explored area green, the rest gray) to object.png, and every step's
-Detic predictions drawn on its rgb as one frame of predictions.gif. Walls, floor and ceiling are flat-shaded.
+Detic predictions drawn on its rgb as one tile of predictions_mosaic.png. Walls, floor and ceiling are flat-shaded.
 
 Alongside, as in habitat_embodied_sl/main.py, Detic (Swin-B, classifying against chair, couch, bench, table and bottle only)
 detects in every frame and SAM masks its boxes, and its masks and region embeddings are fused into a concept-graphs
-ConceptGraphObjectSet (common/utils/concept_graph.py). Once the run ends it is resolved, each object classified by
-Detector.classify_resolved from its raytraced views, its points saved
-colored by class to semantic_point_cloud.ply, then drawn by class on the agent's map to semantic_topdown.png next to the placed objects' mesh silhouettes in
-ground_truth_topdown.png (both main.py's), ground_truth_mesh.glb merges every box and object but the ceiling, and retrieval_mosaic.png gets one row per resolved object of the remembered frames showing it,
-greedy_retrieval_mosaic.png the same rows of above-mean-visibility, geometrically diverse frames
-(main.py's greedy_object_frames).
+ConceptGraphMemory (common/utils/concept_graph.py). Once the run ends it is resolved, carved by SAM masks of a few diverse views of each object (ConceptGraphMemory.refine), each object classified by
+ConceptGraphMemory.classify from its raytraced views, then drawn by class on the agent's map to semantic_topdown.png
+next to the placed objects' mesh silhouettes, saved as semantic_point_cloud.ply with its objects' box wireframes in semantic_wireframes.glb, in ground_truth_topdown.png (both main.py's), scored against the placed objects by
+eval_utils.evaluate_scene's 3D box AP and confusion_matrix.png, ground_truth_mesh.glb merges every box and object but the ceiling, and retrieval_mosaic.png gets one row per resolved object of
+the diverse remembered views of it common/utils/retrieval.py's retrieve_views selects, retrieval_first_views.png its first column as a single row.
 
 Needs ProcTHOR-hab's objects under HABITAT_DATA/scene_datasets/ai2thor-hab, a GPU, Detic's Swin-B checkpoint
 under third_party/Detic/models and SAM's ViT-B checkpoint under data/sam.
+_MASK_SOURCE = "detic" fuses Detic's mask-head masks instead of SAM's.
 """
 
 import os
 import shutil
 import tempfile
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import habitat_sim
@@ -45,13 +47,17 @@ from common.hybrid_exploration.hybrid_agent import HybridConfig, HybridFrontierA
 from common.hybrid_exploration.object_viewpoints import ObjectBelief
 from common.env_utils.object_annotations import object_world_mesh, objects_world_mesh
 from common.env_utils.vocab_constants import make_colors
-from common.utils.concept_graph import ConceptGraphObjectSet
-from common.utils.image_memory import Frame, ImageMemory
+from common.utils.concept_graph import ConceptGraphMemory
+from common.utils.eval_utils import GroundTruthObjects, evaluate_scene, save_resolved_wireframes, scene_confusion_matrix
+from common.utils.image_memory import Frame
 from common.utils.pose_utils import sensor_pose_matrix
 from common.utils.projection_utils import DepthCamera, downsample_points, object_points, save_resolved_ply
-from common.utils.retrieval import ROW_FRAMES, SegmentationStyle, objects_by_size, retrieval_mosaic, segmentation_tile, views_mosaic
+from common.utils.sam_refinement import RefinementConfig
+from common.utils.retrieval import SegmentationStyle, ViewSelection, first_views_mosaic, retrieve_views, segmentation_tile, views_mosaic
 from detector import Detector
-from habitat_embodied_sl.main import greedy_object_frames, ground_truth_topdown, predicted_objects, save_exploration_gifs, semantic_topdown
+from habitat_embodied_sl.main import (
+    ground_truth_topdown, predicted_objects, save_exploration_visuals, semantic_topdown,
+)
 
 _ROOM_HALF_EXTENTS = (8.0, 6.0)
 _WALL_HEIGHT = 2.0
@@ -101,8 +107,9 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _DETIC_ROOT = os.path.join(_REPO_ROOT, "third_party", "Detic")
 _DETIC_CONFIG = os.path.join(_DETIC_ROOT, "configs", "Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.yaml")
 _DETIC_CHECKPOINT = os.path.join(_DETIC_ROOT, "models", "Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.pth")
-_DETIC_CLASSES = ["chair", "couch", "bench", "table", "bottle"]
+_DETIC_CLASSES = ["chair", "couch", "bench", "table", "bottle", "object"]
 _SAM_CHECKPOINT = os.path.join(_REPO_ROOT, "data", "sam", "sam_vit_b_01ec64.pth")
+_MASK_SOURCE = "sam"
 
 pytestmark = [
     pytest.mark.skipif(not os.path.isdir(_PROCTHOR_OBJECTS_DIR), reason="requires HABITAT_DATA pointing at a real ai2thor-hab dataset (see INSTALL.MD)"),
@@ -119,7 +126,7 @@ _MIN_VISIBLE_PIXELS = 125
 _POINTS_VOXEL_M = 0.05
 _TURN_ANGLE_DEG = 45.0
 _START = (6.0, 0.0, -4.0)
-_MAX_STEPS = 1000
+_MAX_STEPS = 500
 _MIN_VISIBILITY_FRACTION = 0.2
 _DETIC_STYLE = SegmentationStyle(_DETIC_CLASSES, make_colors(len(_DETIC_CLASSES), seed=0, ctype=0))
 
@@ -227,45 +234,41 @@ def _oracle_beliefs(beliefs: dict, obs: dict, pose: np.ndarray) -> dict:
     return {**beliefs, **{semantic_id: _object_belief(obs, pose, semantic_id, beliefs.get(semantic_id)) for semantic_id in visible}}
 
 
-def _explore(sim: habitat_sim.Simulator, config: HybridConfig) -> tuple:
-    """(agent, every step's agent state, every step's decision map tile) of one HybridFrontierAgent run."""
-    sim_agent = sim.get_agent(0)
+def _start_agent(sim: habitat_sim.Simulator, config: HybridConfig) -> HybridFrontierAgent:
+    """HybridFrontierAgent of a run starting at _START."""
     start = habitat_sim.AgentState()
     start.position = np.array(_START)
-    sim_agent.set_state(start)
-    agent = HybridFrontierAgent(sim.pathfinder, config, np.random.default_rng(0))
-    beliefs, states, decision_tiles = {}, [], []
+    sim.get_agent(0).set_state(start)
+    return HybridFrontierAgent(sim.pathfinder, config, np.random.default_rng(0))
+
+
+def _explore_and_fuse(sim: habitat_sim.Simulator, config: HybridConfig, detector: Detector) -> tuple:
+    """(agent, every step's decision map tile, concept graph fused from every step's predictions and frames, every step's
+    predictions) of one HybridFrontierAgent run steered by oracle beliefs."""
+    sim_agent, agent = sim.get_agent(0), _start_agent(sim, config)
+    beliefs, decision_tiles, fused, predictions = {}, [], ConceptGraphMemory(), []
     for _ in tqdm(range(_MAX_STEPS)):
         state, obs = sim_agent.get_state(), sim.get_sensor_observations()
-        states.append(state)
-        beliefs = _oracle_beliefs(beliefs, obs, sensor_pose_matrix(state.sensor_states["depth"]))
+        frame = Frame(obs["rgb"][:, :, :3], obs["depth"], sensor_pose_matrix(state.sensor_states["depth"]))
+        fused.image_memory.add_frame(frame)
+        predictions.append(detector.predict(frame.rgb))
+        fused = fused + predicted_objects(frame, predictions[-1], _DEPTH_CAMERA, state.position[1])
+        beliefs = _oracle_beliefs(beliefs, obs, frame.pose)
         agent.update_objects(beliefs)
         action = agent.act(state)
         decision_tiles.append(agent.map_tile())
         if action == "stop":
             break
         sim.step(action)
-    return agent, states, decision_tiles
+    return agent, decision_tiles, fused, predictions
 
 
-def _observe(sim: habitat_sim.Simulator, state: habitat_sim.AgentState) -> Frame:
-    """The frame seen from agent state."""
-    sim_agent = sim.get_agent(0)
-    sim_agent.set_state(state)
-    obs = sim.get_sensor_observations()
-    return Frame(obs["rgb"][:, :, :3], obs["depth"], sensor_pose_matrix(sim_agent.get_state().sensor_states["depth"]))
-
-
-def _fuse_predictions(sim: habitat_sim.Simulator, states: list, detector: Detector) -> tuple:
-    """(every state's labelled detector predictions drawn on its rgb, concept graph fused from them, every frame)."""
-    fused, memory, prediction_tiles = ConceptGraphObjectSet(), ImageMemory(), []
-    for step, state in enumerate(tqdm(states)):
-        frame = _observe(sim, state)
-        memory.add_frame(frame)
-        instances = detector.predict(frame.rgb)
-        prediction_tiles.append(segmentation_tile(frame.rgb, instances, _DETIC_STYLE, f"step{step:03d}"))
-        fused = fused + predicted_objects(frame, instances, _DEPTH_CAMERA)
-    return prediction_tiles, fused, memory
+def _prediction_tiles(fused: ConceptGraphMemory, predictions: list) -> list:
+    """Every step's labelled detector predictions drawn on its rgb."""
+    return [
+        segmentation_tile(fused.image_memory.get_frame(step).rgb, instances, _DETIC_STYLE, f"step{step:03d}")
+        for step, instances in enumerate(predictions)
+    ]
 
 
 def _placed_object(sim: habitat_sim.Simulator, name: str):
@@ -278,19 +281,50 @@ def _ground_truth_meshes(sim: habitat_sim.Simulator) -> list:
     return [(class_ids[category], object_world_mesh(_placed_object(sim, name))) for _, category, name, _ in _OBJECTS]
 
 
-def _save_resolved_maps(sim: habitat_sim.Simulator, agent: HybridFrontierAgent, fused: ConceptGraphObjectSet, memory: ImageMemory, detector: Detector) -> None:
-    """Resolves and classifies fused as main.py does, then saves its semantic_point_cloud.ply, semantic_topdown.png,
-    ground_truth_topdown.png, retrieval_mosaic.png (one row per object of the frames showing it) and greedy_retrieval_mosaic.png."""
-    fused.resolve()
-    fused = detector.classify_resolved(fused, memory, _DEPTH_CAMERA, _MIN_VISIBILITY_FRACTION)
-    colors = _DETIC_STYLE.colors
-    save_resolved_ply(fused, colors, os.path.join(_TESTDUMP_DIR, "semantic_point_cloud.ply"))
-    Image.fromarray(semantic_topdown(fused, agent, _DETIC_CLASSES, colors)).save(os.path.join(_TESTDUMP_DIR, "semantic_topdown.png"))
-    Image.fromarray(ground_truth_topdown(_ground_truth_meshes(sim), agent, _DETIC_CLASSES, colors)).save(os.path.join(_TESTDUMP_DIR, "ground_truth_topdown.png"))
-    raytraced = memory.raytrace_frames(fused, _DEPTH_CAMERA, _MIN_VISIBILITY_FRACTION)
-    retrieval_mosaic(memory, raytraced, _DETIC_STYLE, objects_by_size(fused), ROW_FRAMES).save(os.path.join(_TESTDUMP_DIR, "retrieval_mosaic.png"))
-    object_frames = greedy_object_frames(fused, memory, raytraced, ROW_FRAMES, _DEPTH_CAMERA.hfov)
-    views_mosaic(memory, raytraced, _DETIC_STYLE, object_frames).save(os.path.join(_TESTDUMP_DIR, "greedy_retrieval_mosaic.png"))
+@contextmanager
+def _timed(phase: str):
+    print(f"{phase}...")
+    start = time.perf_counter()
+    yield
+    print(f"{phase} done in {time.perf_counter() - start:.1f}s")
+
+
+def _resolve_and_classify(fused: ConceptGraphMemory, detector: Detector) -> None:
+    """Resolves, refines and classifies fused as main.py does."""
+    with _timed("Resolving"):
+        fused.resolve()
+    if detector.masker is not None:
+        with _timed("Refining"):
+            fused.refine(detector.masker, _DEPTH_CAMERA, RefinementConfig(min_visibility_fraction=_MIN_VISIBILITY_FRACTION))
+    with _timed("Classifying"):
+        fused.classify(detector, _DEPTH_CAMERA, _MIN_VISIBILITY_FRACTION)
+
+
+def _save_resolved_maps(sim: habitat_sim.Simulator, agent: HybridFrontierAgent, fused: ConceptGraphMemory) -> None:
+    """Evaluates fused's resolved objects against the placed objects, then saves their semantic_point_cloud.ply,
+    semantic_wireframes.glb, semantic_topdown.png, ground_truth_topdown.png and confusion_matrix.png."""
+    resolved, colors = fused.resolved_objects, _DETIC_STYLE.colors
+    with _timed("Saving point cloud"):
+        save_resolved_ply(resolved, colors, os.path.join(_TESTDUMP_DIR, "semantic_point_cloud.ply"))
+        save_resolved_wireframes(resolved, _DETIC_CLASSES, colors, os.path.join(_TESTDUMP_DIR, "semantic_wireframes.glb"))
+    meshes = _ground_truth_meshes(sim)
+    with _timed("Evaluating"):
+        ground_truth = GroundTruthObjects.from_meshes(meshes)
+        evaluate_scene(resolved, ground_truth, _DETIC_CLASSES)
+        scene_confusion_matrix(resolved, ground_truth, _DETIC_CLASSES, os.path.join(_TESTDUMP_DIR, "confusion_matrix.png"))
+    with _timed("Saving topdown maps"):
+        Image.fromarray(semantic_topdown(resolved, agent, _DETIC_CLASSES, colors)).save(os.path.join(_TESTDUMP_DIR, "semantic_topdown.png"))
+        Image.fromarray(ground_truth_topdown(meshes, agent, _DETIC_CLASSES, colors)).save(os.path.join(_TESTDUMP_DIR, "ground_truth_topdown.png"))
+
+
+def _save_retrieval_mosaics(fused: ConceptGraphMemory) -> None:
+    """retrieval_mosaic.png (one row per object of the views retrieve_views selects) and retrieval_first_views.png (its
+    first column as a single row)."""
+    resolved, memory = fused.resolved_objects, fused.image_memory
+    raytraced = memory.raytrace_frames(resolved, _DEPTH_CAMERA, _MIN_VISIBILITY_FRACTION)
+    object_frames = retrieve_views(resolved, memory, raytraced, _DEPTH_CAMERA, ViewSelection())
+    views_mosaic(memory, raytraced, _DETIC_STYLE, object_frames).save(os.path.join(_TESTDUMP_DIR, "retrieval_mosaic.png"))
+    first_views_mosaic(memory, raytraced, _DETIC_STYLE, object_frames).save(os.path.join(_TESTDUMP_DIR, "retrieval_first_views.png"))
 
 
 def _save_ground_truth_mesh(sim: habitat_sim.Simulator) -> None:
@@ -326,14 +360,24 @@ def _dummy_sim(assets_dir: str) -> habitat_sim.Simulator:
 def test_exhaustive_mode_reaches_viewpoints():
     shutil.rmtree(_TESTDUMP_DIR, ignore_errors=True)
     os.makedirs(_TESTDUMP_DIR)
+
     with tempfile.TemporaryDirectory() as assets_dir:
         sim = _dummy_sim(assets_dir)
         _save_ground_truth_mesh(sim)  # inside, since it reloads the box assets
-    detector = Detector(_DETIC_CONFIG, _DETIC_CHECKPOINT, _DETIC_CLASSES, _SAM_CHECKPOINT, agnostic_nms_thresh=0.7)
-    agent, states, decision_tiles = _explore(sim, HybridConfig(MapConfig(fov_deg=90.0, resolution=512), _TURN_ANGLE_DEG, viewpoint_mode=ViewpointMode.EXHAUSTIVE))
-    prediction_tiles, fused, memory = _fuse_predictions(sim, states, detector)
-    save_exploration_gifs(agent, decision_tiles, prediction_tiles, Path(_TESTDUMP_DIR))
-    _save_resolved_maps(sim, agent, fused, memory, detector)
+
+    with _timed("Model loading"):
+        detector = Detector(_DETIC_CONFIG, _DETIC_CHECKPOINT, _DETIC_CLASSES,
+            sam_checkpoint=_SAM_CHECKPOINT if _MASK_SOURCE == "sam" else None, score_thresh=0.5, agnostic_nms_thresh=0.5, mask_thresh=0.5, objectness_weight=0.75)
+    config = HybridConfig(MapConfig(fov_deg=90.0, resolution=512), _TURN_ANGLE_DEG, viewpoint_mode=ViewpointMode.EXHAUSTIVE)
+    with _timed("Exploring and fusing"):
+        agent, decision_tiles, fused, predictions = _explore_and_fuse(sim, config, detector)
+
+    with _timed("Visualisation"):
+        save_exploration_visuals(agent, decision_tiles, _prediction_tiles(fused, predictions), Path(_TESTDUMP_DIR))
+    _resolve_and_classify(fused, detector)
+    _save_resolved_maps(sim, agent, fused)
+    with _timed("Retrieval mosaics"):
+        _save_retrieval_mosaics(fused)
     sim.close()
 
 

@@ -35,7 +35,7 @@ class HybridConfig:
     viewpoint_gain: float = 1.0
     standoff_m: float = 0.75
     frontier_gain: float = 0.5
-    reach_m: float = 0.25
+    reach_m: float = 0.5
     viewpoint_mode: ViewpointMode = ViewpointMode.EXHAUSTIVE
     coverage_angle_deg: float = 60.0
 

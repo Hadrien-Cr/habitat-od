@@ -1,9 +1,7 @@
 """Pairwise frame-similarity for diversity_sampler.py's distance matrix. Ported from
 habitat_embodied_al/third_party/embodied-active-learning-od's uutils/similarity_utils.py:
-`feature`/`other_feature` are detector.py's `box_features`, a frozen ImageNet-ResNet18
-embedding of each detection's own cropped patch (see Detector._crop_features) -- same
-source as the original's `bbx_features`, just computed inline instead of via a separate
-CLIP-ish extractor."""
+`feature`/`other_feature` are detector.py's `box_features`, each detection's RoI-pooled
+box-head features (see Detector._box_head_features)."""
 import numpy as np
 from detectron2.structures import Instances  # type: ignore
 

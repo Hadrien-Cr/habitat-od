@@ -1,13 +1,15 @@
 """Semantic mapping run: common/hybrid_exploration's HybridFrontierAgent explores the HSSD-HAB scene --scene-name in
 exhaustive mode while a Detector (Detic boxes, SAM masks) segments every frame; its predicted masks and region
-embeddings are fused into a concept-graphs ConceptGraphObjectSet (common/utils/concept_graph.py), whose objects
+embeddings are fused into a concept-graphs ConceptGraphMemory (common/utils/concept_graph.py), whose objects
 are the agent's beliefs (object_beliefs: confidence linear in detections, full at _FULL_CONFIDENCE_DETECTIONS).
-Once the exploration ends it is resolved, then each object classified by Detic from the ensembled region embeddings
-of its raytraced masks in every frame showing it (Detector.classify_objects). Saves, as tests/test_dummy_scene.py,
-every step's decision map and predictions as decision.gif and predictions.gif, the last step's believed object
+Once the exploration ends it is resolved, carved by SAM masks of a few diverse views of each object (with a SAM
+checkpoint, ConceptGraphMemory.refine), then each object classified by Detic from the ensembled region embeddings
+of its raytraced masks in every frame showing it (ConceptGraphMemory.classify). Saves, as tests/test_dummy_scene.py,
+every step's decision map as decision.gif and predictions as predictions_mosaic.png, the last step's believed object
 occupancy to object.png, mosaics of every step's ground truth and region crops, then from the resolved map: its
-point cloud, its semantic top-down map on the agent's top-down grid, a retrieval mosaic (one row per resolved object,
-of its --k-retrieval largest remembered views) and its greedy_retrieval_mosaic.png counterpart (greedy_object_frames), plus
+point cloud and its objects' box wireframes (semantic_wireframes.glb, one node per object), its semantic top-down map on the agent's top-down grid, a retrieval mosaic (one row per resolved object,
+of the --k-retrieval diverse remembered views common/utils/retrieval.py's retrieve_views selects) and its first
+column as the single row retrieval_first_views.png, plus
 the ground-truth top-down map of the scene's annotated object mesh silhouettes and ground_truth_mesh.glb merging
 every placed object of the scene, without its stage.
 
@@ -18,12 +20,12 @@ against the CLIP text embeddings of the --vocab-name/--filter-classes class name
       --config-file third_party/Detic/configs/Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.yaml \
       --checkpoint third_party/Detic/models/Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.pth \
       --sam-checkpoint data/sam/sam_vit_b_01ec64.pth \
-      --scene-name 102816756 --steps 200
+      --scene-name 102344022 --steps 500
 """
 import argparse
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Tuple
+from typing import Dict, List, Tuple
 
 import cv2
 import numpy as np
@@ -35,18 +37,18 @@ from tqdm import tqdm
 
 from common.hybrid_exploration.hybrid_agent import HybridFrontierAgent
 from common.hybrid_exploration.object_viewpoints import ObjectBelief
-from common.utils.concept_graph import ConceptGraphObject, ConceptGraphObjectSet, project_detections_to_objects
+from common.utils.concept_graph import ConceptGraphMemory, FrameDetections, project_detections_to_objects
+from common.utils.eval_utils import GroundTruthObjects, evaluate_scene, save_resolved_wireframes, scene_confusion_matrix
 from common.env_utils.env_base import ExplorationEnv
 from common.env_utils.object_annotations import get_obj_from_id, object_world_mesh, objects_world_mesh, resolve_classes
 from common.env_utils.sense import bbs_instances_as_gt, keep_valid_instances
 from common.env_utils.vocab_constants import make_colors
-from common.utils.midas import Midas
-from common.utils.image_memory import Frame, ImageMemory
+from common.utils.image_memory import Frame
 from common.utils.plot_utils import box_crop, make_mosaic, plot_semantic_2d_map, save_gif
 from common.utils.pose_utils import sensor_pose_matrix
-from common.utils.projection_utils import DepthCamera, save_resolved_ply
-from common.utils.retrieval import ROW_FRAMES, SegmentationStyle, objects_by_size, retrieval_mosaic, segmentation_tile, views_mosaic
-from common.utils.view_selection import ViewSelection, above_mean_quality, object_view_geometry, select_views
+from common.utils.projection_utils import DepthCamera, ResolvedObjects, save_resolved_ply
+from common.utils.sam_refinement import RefinementConfig
+from common.utils.retrieval import SegmentationStyle, ViewSelection, first_views_mosaic, retrieve_views, segmentation_tile, views_mosaic
 from detector import Detector
 from habitat_embodied_al.reproduce.main import add_object_args, build_agent, build_env, kept_classes_from_args, object_params_from_args
 
@@ -55,7 +57,7 @@ _FOOTPRINT_CLOSING_ITERATIONS = 2
 _CROP_TILE_SIZE = 320
 _FULL_CONFIDENCE_DETECTIONS = 5
 _GIF_FRAME_MS = 300
-_VIEW_SELECTION = ViewSelection(k=ROW_FRAMES, diversity_weight=1.0, bandwidth=np.pi / 4, quality_filter=above_mean_quality)
+_RETRIEVAL_K = 10
 
 
 @dataclass
@@ -71,17 +73,17 @@ def depth_camera(habitat_cfg) -> DepthCamera:
     return DepthCamera(depth_cfg.hfov, depth_cfg.min_depth, depth_cfg.max_depth)
 
 
-def predicted_objects(frame: Frame, instances: Instances, camera: DepthCamera) -> List[ConceptGraphObject]:
+def predicted_objects(frame: Frame, instances: Instances, camera: DepthCamera, floor_height: float) -> FrameDetections:
     """One ConceptGraphObject per prediction on frame, with its Detic region embedding."""
     if len(instances) == 0:
-        return []
-    return project_detections_to_objects(frame.depth, frame.pose, instances, camera.hfov, camera.min_depth, camera.max_depth)
+        return FrameDetections([], np.empty((0, 3)))
+    return project_detections_to_objects(frame.depth, frame.pose, instances, camera, floor_height)
 
 
-def object_beliefs(fused: ConceptGraphObjectSet) -> Dict[int, ObjectBelief]:
+def object_beliefs(fused: ConceptGraphMemory) -> Dict[int, ObjectBelief]:
     """Every fused object's points, its confidence growing linearly with its detections up to _FULL_CONFIDENCE_DETECTIONS."""
     return {
-        object_id: ObjectBelief(min(obj.num_detections, _FULL_CONFIDENCE_DETECTIONS) / _FULL_CONFIDENCE_DETECTIONS, obj.points)
+        object_id: ObjectBelief(min(obj.object_num_dets, _FULL_CONFIDENCE_DETECTIONS) / _FULL_CONFIDENCE_DETECTIONS, obj.points)
         for object_id, obj in enumerate(fused.objects)
     }
 
@@ -116,12 +118,12 @@ def filled_footprint(pixels: np.ndarray, shape: tuple) -> np.ndarray:
     return ndimage.binary_fill_holes(ndimage.binary_closing(mask, iterations=_FOOTPRINT_CLOSING_ITERATIONS) | mask)
 
 
-def object_footprints(fused: ConceptGraphObjectSet, agent: HybridFrontierAgent) -> List[Tuple[int, np.ndarray]]:
+def object_footprints(fused: ResolvedObjects, agent: HybridFrontierAgent) -> List[Tuple[int, np.ndarray]]:
     """(class, filled top-down footprint) of every resolved object on the agent's map."""
 
 
 
-def semantic_topdown(fused: ConceptGraphObjectSet, agent: HybridFrontierAgent, classes: list, colors: list) -> np.ndarray:
+def semantic_topdown(fused: ResolvedObjects, agent: HybridFrontierAgent, classes: list, colors: list) -> np.ndarray:
     """RGB top-down map of fused's resolved objects, by class, over the agent's navigable map."""
     pixels = agent.to_pixels(fused.resolved_points)
     inside = ((pixels >= 0) & (pixels < np.array(agent.top_down_map.shape))).all(axis=1)
@@ -170,45 +172,30 @@ def ground_truth_topdown(meshes: List[Tuple[int, trimesh.Trimesh]], agent: Hybri
     return np.array(image)
 
 
-def depth_estimator(depth_source: str, camera: DepthCamera, device: str) -> Callable[[np.ndarray, np.ndarray], np.ndarray]:
-    """(rgb, sensor depth) -> depth: the sensor's own, or MiDaS' fitted to its unclipped pixels."""
-    if depth_source == "sensor":
-        return lambda rgb, depth: depth
-    midas = Midas(device)
-    return lambda rgb, depth: midas.depth_estimate(rgb, np.where((depth > camera.min_depth) & (depth < camera.max_depth), depth, 0.0))[0]
-
-
-def greedy_object_frames(fused: ConceptGraphObjectSet, memory: ImageMemory, raytraced: dict, num_frames: int, hfov: float) -> Dict[int, List[int]]:
-    """{object id: num_frames frames _VIEW_SELECTION selects} of every resolved object of fused, largest first."""
-    selection = replace(_VIEW_SELECTION, k=num_frames)
-    return {
-        object_id: select_views(object_view_geometry(fused, memory, raytraced, object_id, hfov), selection)
-        for object_id in objects_by_size(fused)
-    }
-
-
-def save_exploration_gifs(agent: HybridFrontierAgent, decision_tiles: list, prediction_tiles: list, out_dir: Path) -> None:
-    """decision.gif and predictions.gif of every step, and object.png of the last step."""
+def save_exploration_visuals(agent: HybridFrontierAgent, decision_tiles: list, prediction_tiles: list, out_dir: Path) -> None:
+    """decision.gif and predictions_mosaic.png of every step, and object.png of the last step."""
     save_gif(decision_tiles, str(out_dir / "decision.gif"), _GIF_FRAME_MS)
-    save_gif(prediction_tiles, str(out_dir / "predictions.gif"), _GIF_FRAME_MS)
+    make_mosaic(prediction_tiles, N_cols=5).save(out_dir / "predictions_mosaic.png")
     make_mosaic([agent.object_map_tile()], N_cols=1).save(out_dir / "object.png")
 
 
-def retrieval_mosaics(fused: ConceptGraphObjectSet, memory: ImageMemory, camera: DepthCamera, style: SegmentationStyle, args: argparse.Namespace) -> dict:
-    """{file name: mosaic or None} of retrieval_mosaic.png and greedy_retrieval_mosaic.png, one row per resolved object of --k-retrieval frames."""
-    raytraced = memory.raytrace_frames(fused, camera, args.min_visibility_fraction)
-    object_frames = greedy_object_frames(fused, memory, raytraced, args.k_retrieval, camera.hfov)
-    return {
-        "retrieval_mosaic.png": retrieval_mosaic(memory, raytraced, style, objects_by_size(fused), args.k_retrieval),
-        "greedy_retrieval_mosaic.png": views_mosaic(memory, raytraced, style, object_frames),
-    }
+def save_retrieval_mosaics(fused: ConceptGraphMemory, camera: DepthCamera, style: SegmentationStyle, args: argparse.Namespace, out_dir: Path) -> None:
+    """retrieval_mosaic.png, one row per resolved object, largest first, of the --k-retrieval views retrieve_views selects,
+    and retrieval_first_views.png, its first column as a single row."""
+    resolved, memory = fused.resolved_objects, fused.image_memory
+    raytraced = memory.raytrace_frames(resolved, camera, args.min_visibility_fraction)
+    object_frames = retrieve_views(resolved, memory, raytraced, camera, ViewSelection(k=args.k_retrieval))
+    if not any(object_frames.values()):
+        return
+    views_mosaic(memory, raytraced, style, object_frames).save(out_dir / "retrieval_mosaic.png")
+    first_views_mosaic(memory, raytraced, style, object_frames).save(out_dir / "retrieval_first_views.png")
 
 
-def observe_frame(obs: dict, env: ExplorationEnv, estimate_depth: Callable) -> Frame:
-    """obs' rgb, estimated depth and depth-sensor pose."""
+def observe_frame(obs: dict, env: ExplorationEnv) -> Frame:
+    """obs' rgb, depth and depth-sensor pose."""
     rgb = obs["rgb"][:, :, :3]
     pose = sensor_pose_matrix(env.get_agent_state().sensor_states["depth"])
-    return Frame(rgb, estimate_depth(rgb, obs["depth"].squeeze()), pose)
+    return Frame(rgb, obs["depth"].squeeze(), pose)
 
 
 def main(args: argparse.Namespace) -> None:
@@ -219,6 +206,8 @@ def main(args: argparse.Namespace) -> None:
         args.sam_checkpoint,
         agnostic_nms_thresh=args.agnostic_nms_thresh, 
         score_thresh=args.score_thresh, 
+        mask_thresh=args.mask_thresh,
+        objectness_weight=args.objectness_weight,
         device=args.device
     )
     
@@ -231,10 +220,8 @@ def main(args: argparse.Namespace) -> None:
     vocabulary = resolve_classes(args.env_name, args.vocab_name)
     obs = env.reset(env.episodes[0], rng=agent.rng)
 
-    fused = ConceptGraphObjectSet()
-    progress, memory = MappingProgress(), ImageMemory()
+    fused, progress = ConceptGraphMemory(), MappingProgress()
     camera = depth_camera(habitat_cfg)
-    estimate_depth = depth_estimator(args.depth_source, camera, args.device)
     out_dir = Path(args.out_dir) if args.out_dir else Path("datadump/semantic_map") / f"{args.scene_name}_seed{args.seed}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -242,10 +229,10 @@ def main(args: argparse.Namespace) -> None:
     for step in tqdm(range(args.steps), desc="mapping", ncols=80):
         # print(f"Step {step}: agent at {env.get_agent_state().position}")
 
-        frame = observe_frame(obs, env, estimate_depth)
-        memory.add_frame(frame)
+        frame = observe_frame(obs, env)
+        fused.image_memory.add_frame(frame)
         instances = detector.predict(frame.rgb)
-        fused = fused + predicted_objects(frame, instances, camera)
+        fused = fused + predicted_objects(frame, instances, camera, env.get_agent_state().position[1])
         agent.update_objects(object_beliefs(fused))
         action = agent.act(env.get_agent_state())
         label = f"step{step:03d}"
@@ -258,40 +245,50 @@ def main(args: argparse.Namespace) -> None:
             break
         obs, _, _, _ = env.step(action)
 
-    ground_truth = ground_truth_topdown(ground_truth_meshes(env, detector.classes), agent, detector.classes, colors)
+    meshes = ground_truth_meshes(env, detector.classes)
+    ground_truth = ground_truth_topdown(meshes, agent, detector.classes, colors)
     objects_world_mesh(env.get_sim().get_rigid_object_manager().get_objects_by_handle_substring().values()).export(out_dir / "ground_truth_mesh.glb")
     env.close()
+
+    print("Resolving...")
     fused.resolve()
-    fused = detector.classify_resolved(fused, memory, camera, args.min_visibility_fraction)
+    if detector.masker is not None:
+        fused.refine(detector.masker, camera, RefinementConfig(min_visibility_fraction=args.min_visibility_fraction))
+    fused.classify(detector, camera, args.min_visibility_fraction)
 
-    save_exploration_gifs(agent, progress.decision_tiles, progress.prediction_tiles, out_dir)
-    make_mosaic(progress.ground_truth_tiles, N_cols=5).save(out_dir / "ground_truth_mosaic.png")
-    make_mosaic([tile for row in progress.crop_rows for tile in row], row_sizes=[len(row) for row in progress.crop_rows]).save(out_dir / "region_crops_mosaic.png")
-    save_resolved_ply(fused, colors, out_dir / "semantic_point_cloud.ply")
-    cv2.imwrite(str(out_dir / "semantic_topdown.png"), semantic_topdown(fused, agent, detector.classes, colors)[:, :, ::-1])
+    print("Saving resolved ply...")
+    save_resolved_ply(fused.resolved_objects, colors, out_dir / "semantic_point_cloud.ply")
+    save_resolved_wireframes(fused.resolved_objects, detector.classes, colors, out_dir / "semantic_wireframes.glb")
+
+    print("Saving topdown maps...")
+    cv2.imwrite(str(out_dir / "semantic_topdown.png"), semantic_topdown(fused.resolved_objects, agent, detector.classes, colors)[:, :, ::-1])
     cv2.imwrite(str(out_dir / "ground_truth_topdown.png"), ground_truth[:, :, ::-1])
-    for name, mosaic in retrieval_mosaics(fused, memory, camera, style, args).items():
-        if mosaic is not None:
-            mosaic.save(out_dir / name)
+    #save_retrieval_mosaics(fused, camera, style, args, out_dir)
 
-    print(f"{len(progress.decision_tiles)} steps mapped, mosaics and final semantic_point_cloud.ply saved to {out_dir}")
+    print("Evaluating...")
+    ground_truth_objects = GroundTruthObjects.from_meshes(meshes)
+    evaluate_scene(fused.resolved_objects, ground_truth_objects, detector.classes)
+    scene_confusion_matrix(fused.resolved_objects, ground_truth_objects, detector.classes, out_dir / "confusion_matrix.png")
+
+    print(f"{len(progress.decision_tiles)} steps mapped, mosaics and final semantic_point_cloud.ply and semantic_wireframes.glb saved to {out_dir}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config-file", default="third_party/Detic/configs/Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.yaml")
     parser.add_argument("--checkpoint", default = "third_party/Detic/models/Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.pth")
-    parser.add_argument("--sam-checkpoint", default="data/sam/sam_vit_b_01ec64.pth")
-    parser.add_argument("--scene-name", default="102816756")
-    parser.add_argument("--steps", type=int, default=500)
+    parser.add_argument("--sam-checkpoint", default=None)
+    parser.add_argument("--scene-name", default="102344022")
+    parser.add_argument("--steps", type=int, default=100)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--agnostic-nms-thresh", type=float, default=0.7)
     parser.add_argument("--out-dir", default=None)
     parser.add_argument("--score-thresh", type=float, default=0.5)
-    parser.add_argument("--depth-source", choices=["sensor", "midas"], default="sensor")
-    parser.add_argument("--k-retrieval", type=int, default=ROW_FRAMES, help="Frames per retrieval mosaic row, one row per resolved object.")
+    parser.add_argument("--mask-thresh", type=float, default=0.5)
+    parser.add_argument("--objectness-weight", type=float, default=0.75)
+    parser.add_argument("--k-retrieval", type=int, default=_RETRIEVAL_K)
     parser.add_argument("--device", default="cuda")
     
     add_object_args(parser)
-    parser.set_defaults(env_name="HSSD-HAB", vocab_name="HSSD80", filter_classes=[])
+    parser.set_defaults(env_name="HSSD-HAB", vocab_name="COCO80", filter_classes=["chair", "couch", "potted plant", "bed", "toilet", "tv"])
     main(parser.parse_args())

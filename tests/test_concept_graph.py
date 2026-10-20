@@ -1,49 +1,55 @@
 """
-Standalone viewer for common/utils/concept_graph.py::ConceptGraphObjectSet.
+Standalone viewer for common/utils/concept_graph.py::ConceptGraphMemory.
 
 Reuses test_semantic_point_cloud.py's FrontierAgent-driven write/read harness. Each fused
 frame's gt_instances (GT masks and depth) get the Detic region embedding of their box, are projected with project_detections_to_objects, merged into the map via
-ConceptGraphObjectSet.__add__, and .resolve() runs concept-graphs' denoise/filter/overlap-merge, then
-Detector.classify_objects classifies each object from its raytraced masks in every explored frame.
+ConceptGraphMemory.__add__, and .resolve() runs concept-graphs' denoise/filter/overlap-merge, then
+ConceptGraphMemory.classify classifies each object from its raytraced masks in every explored frame.
 Then saves the same retrieval_mosaic.png as test_semantic_point_cloud.py.
 
 Has no pytest test functions - run it directly.
 """
 
 from functools import partial
-from typing import List
 
 import numpy as np
-from detectron2.structures import Instances
+import torch
+from detectron2.structures import Boxes, Instances
 
 from common.env_utils.object_annotations import resolve_classes
-from common.utils.concept_graph import ConceptGraphObject, ConceptGraphObjectSet, project_detections_to_objects
+from common.utils.concept_graph import ConceptGraphMemory, FrameDetections, project_detections_to_objects
 from common.utils.image_memory import ImageMemory
 from common.utils.projection_utils import DepthCamera, ResolvedObjects
 from detector import Detector
-from test_semantic_point_cloud import _ENV_NAME, _VOCAB_NAME, HFOV_DEG, MAX_DEPTH, MIN_DEPTH, run_viewer, save_retrieval_mosaic, viewer_arg_parser
+from test_semantic_point_cloud import _AGENT_HEIGHT, _ENV_NAME, _VOCAB_NAME, HFOV_DEG, MAX_DEPTH, MIN_DEPTH, run_viewer, save_retrieval_mosaic, viewer_arg_parser
 
 _MIN_VISIBILITY_FRACTION = 0.2
 
 
-def frame_objects(detector: Detector, rgb: np.ndarray, depth: np.ndarray, pose: np.ndarray, gt_instances: Instances) -> List[ConceptGraphObject]:
-    gt_instances.region_features = detector.encode_regions(rgb, gt_instances.gt_boxes.tensor.numpy())
-    return project_detections_to_objects(depth, pose, gt_instances, hfov=HFOV_DEG, min_depth=MIN_DEPTH, max_depth=MAX_DEPTH)
+@torch.no_grad()
+def frame_objects(detector: Detector, rgb: np.ndarray, depth: np.ndarray, pose: np.ndarray, gt_instances: Instances) -> FrameDetections:
+    features, _, transform = detector._backbone(rgb)
+    boxes = Boxes(torch.as_tensor(transform.apply_box(gt_instances.gt_boxes.tensor.numpy()), dtype=torch.float32, device=detector._device))
+    gt_instances.region_features = detector._region_embeddings(detector._box_head_features(features, boxes)).cpu()
+    floor_height = pose[1, 3] - _AGENT_HEIGHT
+    return project_detections_to_objects(depth, pose, gt_instances, DepthCamera(HFOV_DEG, MIN_DEPTH, MAX_DEPTH), floor_height)
 
 
-def resolve_and_classify(detector: Detector, fused: ConceptGraphObjectSet, memory: ImageMemory) -> ResolvedObjects:
+def resolve_and_classify(detector: Detector, fused: ConceptGraphMemory, memory: ImageMemory) -> ResolvedObjects:
+    fused.image_memory = memory
     fused.resolve()
-    return detector.classify_resolved(fused, memory, DepthCamera(HFOV_DEG, MIN_DEPTH, MAX_DEPTH), _MIN_VISIBILITY_FRACTION)
+    fused.classify(detector, DepthCamera(HFOV_DEG, MIN_DEPTH, MAX_DEPTH), _MIN_VISIBILITY_FRACTION)
+    return fused.resolved_objects
 
 
 if __name__ == "__main__":
-    parser = viewer_arg_parser(__doc__, "ConceptGraphObjectSet")
+    parser = viewer_arg_parser(__doc__, "ConceptGraphMemory")
     parser.add_argument("--config-file", required=True, help="Detic config whose region embeddings are fused")
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--sam-checkpoint", default="data/sam/sam_vit_b_01ec64.pth")
     args = parser.parse_args()
     detector = Detector(args.config_file, args.checkpoint, resolve_classes(_ENV_NAME, _VOCAB_NAME), args.sam_checkpoint)
     viewer, fused, memory = run_viewer(
-        args, "test_concept_graph", ConceptGraphObjectSet(), partial(frame_objects, detector), partial(resolve_and_classify, detector),
+        args, "test_concept_graph", ConceptGraphMemory(), partial(frame_objects, detector), partial(resolve_and_classify, detector),
     )
     save_retrieval_mosaic(viewer, fused, memory, args.retrieval_objects)

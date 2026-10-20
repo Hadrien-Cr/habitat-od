@@ -14,7 +14,6 @@ from detectron2.data import Metadata
 # Fixed-order categorical hues (validated for CVD/contrast) -- reused as-is,
 # never cycled per-key, so the same slot always means the same series.
 _SERIES_COLORS = ["#2a78d6", "#008300", "#e87ba4", "#eda100"]
-_MIN_LABEL_AREA_M2 = 0.01
 _TILE_BORDER_COLOR = (255, 255, 0)
 _TILE_BORDER_THICKNESS = 2
 
@@ -130,8 +129,6 @@ def plot_semantic_2d_map(
     draw = ImageDraw.Draw(img)
     for class_id, mask in footprints:
         area_m = mask.sum() * meters_per_grid_pixel ** 2
-        if area_m < _MIN_LABEL_AREA_M2:
-            continue
         y, x = np.argwhere(mask).mean(axis=0) * scale
         draw.text((x, y), classes[class_id], fill=(255,255,255), font_size= 4 * np.clip(np.sqrt(area_m), 1, 4) * scale, anchor="mm")
 
@@ -330,6 +327,15 @@ def _draw_label(img: np.ndarray, label: str) -> np.ndarray:
     return img
 
 
+def _framed_tile(img: np.ndarray, label: str, tile_color: Optional[tuple[int, int, int]] = None) -> np.ndarray:
+    """img with its label and yellow border drawn on it, plus a tile_color border when given."""
+    _draw_label(img, label)
+    cv2.rectangle(img, (0, 0), (img.shape[1] - 1, img.shape[0] - 1), _TILE_BORDER_COLOR, _TILE_BORDER_THICKNESS)
+    if tile_color is not None:
+        cv2.rectangle(img, (0, 0), (img.shape[1] - 1, img.shape[0] - 1), tile_color, 10)
+    return img
+
+
 def make_mosaic(
     list_fnames_images: list[tuple[str, np.ndarray]],
     target_size: int = 1_000_000,
@@ -339,15 +345,10 @@ def make_mosaic(
 ) -> Image.Image:
     """Grid of the labelled, yellow-bordered tiles, N_cols per row, or row_sizes[i] tiles on row i (padded to the longest row) when given."""
     n =  len(list_fnames_images)
-    processed_images = []
-
-    for i, (filename, img) in enumerate(list_fnames_images):
-        _draw_label(img, filename)
-        cv2.rectangle(img, (0, 0), (img.shape[1] - 1, img.shape[0] - 1), _TILE_BORDER_COLOR, _TILE_BORDER_THICKNESS)
-        if tile_colors and tile_colors[i] is not None:
-            cv2.rectangle(img, (0, 0), (img.shape[1] - 1, img.shape[0] - 1), tile_colors[i], 10)
-        processed_images.append(img)
-
+    processed_images = [
+        _framed_tile(img, filename, tile_colors[i] if tile_colors else None)
+        for i, (filename, img) in enumerate(list_fnames_images)
+    ]
 
     width = max(row_sizes) if row_sizes else N_cols
     if row_sizes is None:
@@ -369,6 +370,6 @@ def make_mosaic(
 
 
 def save_gif(list_fnames_images: list[tuple[str, np.ndarray]], out_path: str, frame_ms: int) -> None:
-    """Looping gif of the labelled, yellow-bordered tiles (make_mosaic's), one frame each."""
-    frames = [make_mosaic([tile], N_cols=1) for tile in list_fnames_images]
+    """Looping gif of the labelled, yellow-bordered tiles at their own resolution, one frame each."""
+    frames = [Image.fromarray(_framed_tile(img, label)) for label, img in list_fnames_images]
     frames[0].save(out_path, save_all=True, append_images=frames[1:], duration=frame_ms, loop=0)

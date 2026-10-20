@@ -62,9 +62,9 @@ An oracle detector gives each visible object a confidence equal to its image cov
 `tests/testdump/test_dummy_scene/` is emptied when the test starts, then gets the last step's `decision.png` (decision map)
 and `object.png` (object occupancy), and `observation_mosaic.png`, one rgb | semantic | depth tile per step.
 As in `habitat_embodied_sl/main.py`, Detic (classifying against chair, couch and bench) segments every frame, its masks
-and region embeddings are fused into a concept graph (`common/utils/concept_graph.py`), resolved once the run ends,
-classified by `Detector.classify_resolved` (`resolved_trial_mosaic.png`), and `retrieval_mosaic.png` shows one row per
-resolved object of the frames showing it.
+and region embeddings are fused into a `ConceptGraphMemory` (`common/utils/concept_graph.py`), resolved once the run ends,
+classified by `ConceptGraphMemory.classify` (`resolved_trial_mosaic.png`), and `retrieval_mosaic.png` shows one row per
+resolved object of the diverse views of it `common/utils/retrieval.py`'s `retrieve_views` selects.
 
 ```bash
 BASE_DIR=$(pwd) HABITAT_DATA=$HOME/habitat_data/data PYTHONPATH=. python -m pytest tests/test_dummy_scene.py -v
