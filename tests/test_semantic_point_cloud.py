@@ -263,7 +263,7 @@ def _start_viewer(args: argparse.Namespace, out_name: str) -> _Viewer:
     sim = _build_sim(_DATASET_CONFIG, args.scene_id)
     sensor = ObjectDetectorGTSensor(sim, ObjectDetectorGTSensorConfig(
         env_name=_ENV_NAME, vocab_name=_VOCAB_NAME,
-        min_area_fraction=1e-3, filter_low_visibility=True, min_mesh_visibility_fraction=0.2,
+        min_area_fraction=2e-4, filter_low_visibility=True, min_mesh_visibility_fraction=0.2,
         filter_classes=[],
     ))
     sensor.setup_semantic_labels()

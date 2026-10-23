@@ -1,7 +1,8 @@
 """Retrieval of a resolved map: for each object, k diverse, non-redundant remembered views of it, greedily covering its
-resolved points from as many yaws as possible, optionally favouring well-visible views."""
+resolved points from as many viewing angles as possible, optionally favouring well-visible views."""
 from dataclasses import dataclass
 from collections import defaultdict
+from pathlib import Path
 from typing import Collection, Dict, List, Optional, Tuple
 
 import cv2
@@ -13,20 +14,21 @@ from PIL import Image
 from common.env_utils.visibility_utils import mesh_visibility_fraction
 from common.utils.image_memory import Frame, ImageMemory
 from common.utils.plot_utils import make_mosaic, plot_segmentation, plot_segmentation_pred, rows_mosaic
-from common.utils.projection_utils import DepthCamera, ResolvedObjects, nearest_resized, yaw_bins
+from common.utils.projection_utils import DepthCamera, ResolvedObjects, nearest_resized, viewing_angles
 
 _HIGHLIGHT_COLOR = (255, 0, 0)
 
 
 @dataclass(frozen=True)
 class ViewSelection:
-    """Greedy coverage of an object's (resolved point, yaw bin) elements: a view gains its visibility ** alpha times the
-    sum over its elements of (1 - gamma) * gamma ** (times already covered by the chosen views)."""
+    """Greedy coverage of an object's (resolved point, viewing angle) elements: a view gains its visibility ** alpha
+    times the sum over its elements of (1 - gamma) * gamma ** (effective times already covered by the chosen views,
+    nearby viewing angles for the same point sharing credit within an angular Gaussian kernel of std sigma)."""
 
     k: int = 10
     gamma: float = 0.5
     alpha: float = 1.0
-    num_yaw_bins: int = 8
+    sigma: float = np.pi / 4
 
 
 @dataclass(frozen=True)
@@ -71,6 +73,12 @@ def segmentation_tile(rgb: np.ndarray, instances: Instances, style: Segmentation
     return label, np.array(plot_segmentation(rgb=rgb.copy(), gt_instances=instances, pred_instances=None, classes=style.classes, colors=style.colors))
 
 
+def save_prediction_frame(rgb: np.ndarray, instances: Instances, style: SegmentationStyle, label: str, out_path: Path) -> None:
+    """segmentation_tile of rgb/instances/style/label, as a single labelled tile."""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    make_mosaic([segmentation_tile(rgb, instances, style, label)], N_cols=1).save(out_path)
+
+
 def retrieve_views(fused: ResolvedObjects, memory: ImageMemory, raytraced: dict, camera: DepthCamera, selection: ViewSelection) -> Dict[int, List[int]]:
     """{object id: ids of the frames selection picks among those raytraced (ImageMemory.raytrace_frames) to show it}
     of every resolved object, largest first."""
@@ -88,19 +96,40 @@ def retrieved_views(fused: ResolvedObjects, memory: ImageMemory, raytraced: dict
     ]
 
 
-def greedy_coverage(elements: List[np.ndarray], weights: np.ndarray, selection: ViewSelection) -> List[int]:
-    """Indices of up to selection.k views, each in turn the one whose weight times its elements'
-    (1 - gamma) * gamma ** (times already covered) is largest, until no view gains anything."""
-    counts = np.zeros(max((int(view.max()) + 1 for view in elements if len(view)), default=0))
+def _angular_kernel(angle_diffs: np.ndarray, sigma: float) -> np.ndarray:
+    """Gaussian falloff, peak 1 at angle_diffs == 0, of how much credit a covered angle lends to each of angle_diffs,
+    wrapped to each diff's shortest distance around the circle."""
+    wrapped = np.abs(np.mod(angle_diffs + np.pi, 2 * np.pi) - np.pi)
+    return np.exp(-0.5 * (wrapped / sigma) ** 2)
+
+
+def _effective_counts(points: np.ndarray, angles: np.ndarray, covered: Dict[int, List[float]], sigma: float) -> np.ndarray:
+    """Per element of (points, angles), the angular-kernel-weighted sum of how many times its point was already
+    covered, from how close each prior covering angle for that point is to this one."""
+    return np.array([
+        sum(_angular_kernel(angle - covered_angle, sigma) for covered_angle in covered.get(int(point), []))
+        for point, angle in zip(points, angles)
+    ])
+
+
+def greedy_coverage(elements: List[Tuple[np.ndarray, np.ndarray]], weights: np.ndarray, selection: ViewSelection) -> List[int]:
+    """Indices of up to selection.k views, each in turn the one whose weight times its elements' (point, angle) pairs'
+    (1 - gamma) * gamma ** (effective times already covered) is largest, until no view gains anything. A point is
+    covered by a prior chosen view's angle for it in proportion to an angular Gaussian kernel of std selection.sigma,
+    so nearby angles share credit instead of only exact matches."""
+    covered: Dict[int, List[float]] = defaultdict(list)
     chosen = []
     for _ in range(min(selection.k, len(elements))):
-        gains = np.array([weight * ((1 - selection.gamma) * selection.gamma ** counts[view]).sum() for weight, view in zip(weights, elements)])
+        effective = [_effective_counts(points, angles, covered, selection.sigma) for points, angles in elements]
+        gains = np.array([weight * ((1 - selection.gamma) * selection.gamma ** counts).sum() for weight, counts in zip(weights, effective)])
         gains[chosen] = -np.inf
         best = int(np.argmax(gains))
         if gains[best] <= 0:
             break
         chosen.append(best)
-        counts[elements[best]] += 1
+        best_points, best_angles = elements[best]
+        for point, angle in zip(best_points, best_angles):
+            covered[int(point)].append(float(angle))
     return chosen
 
 
@@ -165,8 +194,9 @@ def _object_frame_tile(memory: ImageMemory, raytraced: dict, style: Segmentation
 def _select_views(raytraced_map: _RaytracedMap, object_id: int, selection: ViewSelection) -> List[int]:
     frame_ids = raytraced_map.memory.frames_showing(object_id, raytraced_map.raytraced)
     visibility = np.array([_visibility(raytraced_map, frame_id, object_id) for frame_id in frame_ids])
-    elements = [_covered_elements(raytraced_map, frame_id, object_id, selection.num_yaw_bins) for frame_id in frame_ids]
-    return [frame_ids[index] for index in greedy_coverage(elements, visibility ** selection.alpha, selection)]
+    weights = visibility ** selection.alpha
+    elements = [_covered_elements(raytraced_map, frame_id, object_id) for frame_id in frame_ids]
+    return [frame_ids[index] for index in greedy_coverage(elements, weights, selection)]
 
 
 def raytraced_mask(raytraced: dict, frame_id: int, object_id: int) -> torch.Tensor:
@@ -181,11 +211,11 @@ def _visibility(raytraced_map: _RaytracedMap, frame_id: int, object_id: int) -> 
     return min(mesh_visibility_fraction(dimensions, raytraced_mask(raytraced_map.raytraced, frame_id, object_id).numpy(), depth, raytraced_map.camera.hfov), 1.0)
 
 
-def _covered_elements(raytraced_map: _RaytracedMap, frame_id: int, object_id: int, num_yaw_bins: int) -> np.ndarray:
-    """Element ids, point index * num_yaw_bins + yaw bin, of the object's resolved points its raytraced mask hits in the frame."""
+def _covered_elements(raytraced_map: _RaytracedMap, frame_id: int, object_id: int) -> Tuple[np.ndarray, np.ndarray]:
+    """(point index, viewing angle) of the object's resolved points its raytraced mask hits in the frame."""
     frame, fused = raytraced_map.memory.get_frame(frame_id), raytraced_map.fused
     indices = fused.raytraced_point_indices(frame.depth, frame.pose, raytraced_mask(raytraced_map.raytraced, frame_id, object_id), raytraced_map.camera, object_id)
-    return indices * num_yaw_bins + yaw_bins(fused.resolved_points[indices], frame.pose[:3, 3], num_yaw_bins)
+    return indices, viewing_angles(fused.resolved_points[indices], frame.pose[:3, 3])
 
 
 def _retrieval_tile(frame: Frame, frame_id: int, object_id: int, frame_raytraced: tuple, style: SegmentationStyle) -> Tuple[str, np.ndarray]:

@@ -402,7 +402,7 @@ class ObjectDetectorGTSensorConfig(LabSensorConfig):
     type: str = "ObjectDetectorGTSensor"
     env_name: str = "HSSD-HAB"
     vocab_name: str = "NYU40"
-    min_area_fraction: float = 1e-3
+    min_area_fraction: float = 2e-4
     filter_low_visibility: bool = True
     min_mesh_visibility_fraction: float = 0.2
     # Allow-list of classes to keep; None/empty keeps every class (except "unknown", always dropped).

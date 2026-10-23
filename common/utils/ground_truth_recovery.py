@@ -11,7 +11,7 @@ from pycocotools import mask as mask_util
 
 from common.utils.eval_utils import GroundTruthObjects
 from common.utils.image_memory import ImageMemory
-from common.utils.projection_utils import yaw_bins
+from common.utils.projection_utils import viewing_angles
 from common.utils.retrieval import RetrievedView, ViewSelection, greedy_coverage
 
 
@@ -75,12 +75,15 @@ def recovered_objects(pseudo: List[RetrievedView], views: List[RetrievedView]) -
 
 
 def _selected_views(annotation: GroundTruthAnnotation, index: int, memory: ImageMemory, selection: ViewSelection) -> List[GroundTruthView]:
-    """The ground truth's views greedy_coverage picks, each covering the yaw bin of its camera around the box center."""
+    """The ground truth's views greedy_coverage picks, each covering the viewing angle of its camera around the box center."""
     object_id, center = annotation.objects.object_ids[index], annotation.objects.boxes[index].mean(axis=0)
     candidates = [view for view in annotation.views if view.object_id == object_id]
-    bins = [yaw_bins(center[None], memory.get_frame(view.frame_id).pose[:3, 3], selection.num_yaw_bins) for view in candidates]
+    elements = [
+        (np.zeros(1, dtype=int), viewing_angles(center[None], memory.get_frame(view.frame_id).pose[:3, 3]))
+        for view in candidates
+    ]
     weights = np.array([view.visibility for view in candidates]) ** selection.alpha
-    return [candidates[chosen] for chosen in greedy_coverage(bins, weights, selection)]
+    return [candidates[chosen] for chosen in greedy_coverage(elements, weights, selection)]
 
 
 def _retrieved_view(memory: ImageMemory, view: GroundTruthView, object_id: int, class_id: int) -> RetrievedView:

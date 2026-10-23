@@ -12,7 +12,7 @@ filter_empty: False
 object_params:
   env_name: "ProcTHOR-hab"
   vocab_name: "ProcTHOR-native"
-  min_area_fraction: 0.001
+  min_area_fraction: 0.0002
   filter_low_visibility: True
   min_mesh_visibility_fraction: 0.2
   # classes.py::PROCTHOR_SHORT_CLASSES -- the 49-class shortlist reproduced from

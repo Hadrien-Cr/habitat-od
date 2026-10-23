@@ -1,0 +1,23 @@
+# Smoke-test collection config for habitat_embodied_sl/main.py: one collection scene and a small test set,
+# written to datasets/smoke_sl/. Same keys as habitat_embodied_sl/config/collection_procthor.yaml.
+run_name: smoke_sl
+seed: 0
+
+object_params:
+  env_name: "ProcTHOR-hab"
+  vocab_name: "ProcTHOR-native"
+  min_area_fraction: 0.0002
+  filter_low_visibility: True
+  min_mesh_visibility_fraction: 0.2
+  filter_classes: []
+
+collection:
+  steps_per_scene: 500
+  k_retrieval: 3
+  scenes: ["ProcTHOR-Train-0"]
+
+evaluation:
+  frames_per_scene: 4
+  downsampling: 2
+  max_steps_per_scene: 60
+  scenes: ["ProcTHOR-Val-0"]

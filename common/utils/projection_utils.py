@@ -26,7 +26,7 @@ _PLANE_DISTANCE_M = 0.02
 _PLANE_RANSAC_ITERATIONS = 1000
 _MAX_VERTICAL_NORMAL_UP = 0.1
 _MAX_WALLS = 3
-_MIN_RAYTRACED_FRACTION = 1e-3
+_MIN_RAYTRACED_FRACTION = 2e-4
 _FOOTPRINT_CLOSING_ITERATIONS = 2
 TOPDOWN_MAP_SCALE = 8
 
@@ -105,11 +105,10 @@ def object_points(depth, pose, mask: torch.Tensor, camera: DepthCamera) -> np.nd
     return np.ascontiguousarray(points.numpy())
 
 
-def yaw_bins(points: np.ndarray, viewpoint: np.ndarray, num_bins: int) -> np.ndarray:
-    """Which of num_bins equal yaw sectors the horizontal direction from each point to viewpoint falls in."""
+def viewing_angles(points: np.ndarray, viewpoint: np.ndarray) -> np.ndarray:
+    """Horizontal angle, in radians, from each point to viewpoint: which side of the point the camera stands on."""
     offsets = viewpoint - points
-    yaws = np.arctan2(offsets[:, 0], offsets[:, 2])
-    return np.floor((yaws + np.pi) / (2 * np.pi) * num_bins).astype(int) % num_bins
+    return np.arctan2(offsets[:, 0], offsets[:, 2])
 
 
 def floor_mask(points: np.ndarray, floor_height: float) -> np.ndarray:

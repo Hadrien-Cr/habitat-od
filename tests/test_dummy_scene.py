@@ -10,8 +10,9 @@ Runs common/hybrid_exploration's HybridFrontierAgent in exhaustive mode in the f
 each visible object's points come from its semantic mask and depth.
 Into tests/testdump/test_dummy_scene/ (emptied when the test starts) go the last step's decision (current view in
 yellow, candidates labelled with u*t above and t below, chosen goal ringed) as decision.png, the last step's believed object
-occupancy (object points in white, explored area green, the rest gray) to object.png, and every step's
-class-agnostic predictions drawn on its rgb as one tile of predictions_mosaic.png, and every fused object's center and size
+occupancy (object points in white, explored area green, the rest gray) to object.png, every step's
+class-agnostic predictions drawn on its rgb as one tile of predictions_mosaic.png and individually as
+prediction_frames/step_<step>.png, and every fused object's center and size
 at every step, then every classified object's, to object_tracks.csv. Walls, floor and ceiling are flat-shaded.
 
 Alongside, as in habitat_embodied_sl/main.py, a Detector (Detic Swin-B's proposals scored by objectness alone) detects

@@ -354,7 +354,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--env-name", default="ProcTHOR-hab")
     parser.add_argument("--vocab-name", default="ProcTHOR-native")
-    parser.add_argument("--min-area-fraction", type=float, default=1e-3)
+    parser.add_argument("--min-area-fraction", type=float, default=2e-4)
     parser.add_argument("--filter-low-visibility", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--min-mesh-visibility-fraction", type=float, default=0.2)
     parser.add_argument("--filter-classes", nargs="*", default=PROCTHOR_SHORT_CLASSES, help="Allow-list of classes to keep; pass an empty list to keep every class.")

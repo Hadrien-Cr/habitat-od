@@ -32,6 +32,7 @@ from typing import Dict, List, Tuple
 import cv2
 import numpy as np
 import trimesh
+from detectron2.structures import Instances
 from omegaconf import DictConfig, OmegaConf
 from tqdm import tqdm
 
@@ -49,7 +50,9 @@ from common.utils.plot_utils import save_decision_map
 from common.utils.pose_utils import sensor_pose_matrix
 from common.utils.projection_utils import DepthCamera, nearest_resized, semantic_topdown
 from common.utils.dataset_writers import CocoFramesWriter, ObjectViewsWriter
-from common.utils.retrieval import RetrievedView, SegmentationStyle, ViewSelection, objects_views_mosaic, retrieve_views, retrieved_views
+from common.utils.retrieval import (
+    RetrievedView, SegmentationStyle, ViewSelection, objects_views_mosaic, retrieve_views, retrieved_views, save_prediction_frame,
+)
 from common.vision.detic import Vocabulary
 from habitat_embodied_al import constants
 from habitat_embodied_al.reproduce.main import build_agent, build_env, kept_classes_from_args
@@ -108,31 +111,40 @@ class SceneMapper:
     fused: ConceptGraphMemory = field(default_factory=ConceptGraphMemory)
     ground_truth_views: List[GroundTruthView] = field(default_factory=list)
 
-    def observe(self, obs: dict, env: ExplorationEnv) -> None:
+    def observe(self, obs: dict, env: ExplorationEnv) -> Tuple[Frame, Instances]:
         frame = observe_frame(obs, env, self.lift_image_size)
         frame_id = self.fused.image_memory.add_frame(frame)
         instances = self.detector.predict(frame.rgb)
         floor_height = env.get_agent_state().position[1] - self.floor_offset
         self.fused = self.fused + predicted_objects(frame_id, frame, instances, self.camera, floor_height)
         self.ground_truth_views += encoded_views(frame_id, ground_truth_instances(obs, self.vocabulary, self.detector.classes))
+        return frame, instances
 
 
-def explore(env: ExplorationEnv, mapper: SceneMapper, obs: dict, steps: int) -> None:
-    """Has mapper observe every frame from obs on until its agent stops (also after too many successive collisions) or steps run out."""
+def explore(
+    env: ExplorationEnv, mapper: SceneMapper, obs: dict, steps: int, style: SegmentationStyle, decision_frames_dir: Path, prediction_frames_dir: Path,
+) -> None:
+    """Has mapper observe every frame from obs on until its agent stops (also after too many successive collisions) or
+    steps run out, saving each step's decision map to decision_frames_dir/step_<step>.png and its detector predictions
+    to prediction_frames_dir/step_<step>.png."""
     collided = False
-    for _ in tqdm(range(steps), desc="mapping", ncols=80):
-        mapper.observe(obs, env)
+    for step in tqdm(range(steps), desc="mapping", ncols=80):
+        frame, instances = mapper.observe(obs, env)
         mapper.agent.update_objects(object_beliefs(mapper.fused))
         action = mapper.agent.act(env.get_agent_state(), collided)
+        save_decision_map(mapper.agent, decision_frames_dir / f"step_{step:04d}.png")
+        save_prediction_frame(frame.rgb, instances, style, f"step{step:04d}", prediction_frames_dir / f"step_{step:04d}.png")
         if action == "stop":
             break
         obs, _, _, _ = env.step(action)
         collided = bool(np.any(obs["agent_collision_sensor"]))
 
 
-def map_scene(scene: str, cfg: DictConfig, detector: Detector, args: argparse.Namespace) -> Tuple[SceneMapper, GroundTruthObjects]:
+def map_scene(scene: str, cfg: DictConfig, detector: Detector, style: SegmentationStyle, args: argparse.Namespace) -> Tuple[SceneMapper, GroundTruthObjects]:
     """(SceneMapper of the scene's exploration, the scene's annotated objects of detector's classes), saving the agent's
-    final decision map as datasets/<run_name>/<variant>/decision_frames/<scene>.png in every variant's folder."""
+    final decision map as datasets/<run_name>/<variant>/decision_frames/<scene>.png in every variant's folder, and every
+    step's decision map and detector predictions as datadump/<run_name>/<scene>/decision_frames/step_<step>.png and
+    .../prediction_frames/step_<step>.png during exploration."""
     env, habitat_cfg = build_env(scene, cfg.seed, cfg.collection.steps_per_scene, cfg.object_params, args.input_image_size)
     agent = build_agent("hybrid", np.random.default_rng(cfg.seed), env, habitat_cfg)
     obs = env.reset(env.episodes[0], rng=agent.rng)
@@ -140,7 +152,8 @@ def map_scene(scene: str, cfg: DictConfig, detector: Detector, args: argparse.Na
     camera = DepthCamera(depth_cfg.hfov, depth_cfg.min_depth, depth_cfg.max_depth)
     vocabulary = resolve_classes(cfg.object_params.env_name, cfg.object_params.vocab_name)
     mapper = SceneMapper(agent, detector, camera, vocabulary, env.navmesh_floor_offset(), args.lift_image_size)
-    explore(env, mapper, obs, cfg.collection.steps_per_scene)
+    scene_dump_dir = constants.DATADUMP_ROOT / cfg.run_name / scene
+    explore(env, mapper, obs, cfg.collection.steps_per_scene, style, scene_dump_dir / "decision_frames", scene_dump_dir / "prediction_frames")
     for variant in _VARIANTS:
         save_decision_map(agent, constants.DATASET_ROOT / cfg.run_name / variant / "decision_frames" / f"{scene}.png")
     ground_truth = GroundTruthObjects.from_meshes(ground_truth_meshes(env, detector.classes))
@@ -209,7 +222,7 @@ def main(args: argparse.Namespace) -> None:
     train_writers, test_writer = dataset_writers(cfg, detector.classes)
     style = SegmentationStyle(detector.classes, make_colors(len(detector.classes), seed=0, ctype=0))
     for scene in cfg.collection.scenes:
-        mapper, ground_truth = map_scene(scene, cfg, detector, args)
+        mapper, ground_truth = map_scene(scene, cfg, detector, style, args)
         resolve_and_classify(mapper, cfg.object_params.min_mesh_visibility_fraction)
         scene_views = scene_variants(mapper, ground_truth, cfg)
         save_retrieval_mosaics(scene, scene_views, style, constants.DATASET_ROOT / cfg.run_name)

@@ -33,7 +33,7 @@ come from, out of it; they belong with the code that builds them (`common/env_ut
   - (1.2.5) `without_parts` (drops masks lying ≥ 80% inside a larger one) exists but is currently disabled.
 - (1.3) **Lift** (`predicted_objects`, `project_detections_to_objects`):
   - (1.3.1) Resize each mask to the frame's depth by nearest neighbour, the same pixels the depth was resized with.
-  - (1.3.2) Drop detections whose mask covers less than `_MIN_LIFT_FRACTION` (1e-3) of the frame's pixels with valid depth.
+  - (1.3.2) Drop detections whose mask covers less than `_MIN_LIFT_FRACTION` (2e-4) of the frame's pixels with valid depth.
   - (1.3.3) Back-project each mask's in-range depth pixels to world points.
   - (1.3.4) **Floor:** drop points at most 2 cm above the floor (agent height minus the navmesh floor offset).
   - (1.3.5) **Background walls:** peel up to 3 RANSAC planes (2 cm inlier distance). A plane is removed only if it is vertical
@@ -55,9 +55,11 @@ come from, out of it; they belong with the code that builds them (`common/env_ut
   - (1.4.6) **Merge overlapping objects:** a pair merges when overlap ratio > 0.5, embedding similarity > 0.5 and their
     sum > 1.2. Pairs merge greedily, highest sum first.
 - (1.5) **Steer.** Every fused object is passed to `agent.update_objects` as an `ObjectBelief` of its points, with
-  confidence min(detections, 5) / 5. Then `agent.act` picks the action.
+  confidence min(detections, 5) / 5. Then `agent.act` picks the action, and the step's decision map (trajectory, revealed
+  area, objects and every candidate's score) is saved to `datadump/<run_name>/<scene>/decision_frames/step_<step>.png`,
+  and the step's detector predictions drawn on its rgb to `datadump/<run_name>/<scene>/prediction_frames/step_<step>.png`.
 - (1.6) **Ground truth:** the step's ground-truth instances come from the `bbsgt` sensor, filtered by
-  `object_params.min_area_fraction` (min(2 × mask area, box area) ≥ 1e-3 of the frame's pixels) and `filter_low_visibility`/`min_mesh_visibility_fraction`
+  `object_params.min_area_fraction` (min(2 × mask area, box area) ≥ 2e-4 of the frame's pixels) and `filter_low_visibility`/`min_mesh_visibility_fraction`
   (`mesh_visibility_fraction`: the 3×3-opened mask area over the object's largest box face projected at the mask's mean depth),
   and remapped to the kept classes. They don't affect the map; they are kept RLE-encoded, with their object id and
   visibility fraction, for recovery (5.3).
@@ -83,7 +85,7 @@ come from, out of it; they belong with the code that builds them (`common/env_ut
 ### 3. Foreground filter (`ConceptGraphMemory.keep_foreground`)
 
 - (3.1) **Raytrace:** project every resolved object into every stored frame. Each depth pixel is back-projected and takes
-  the object of the nearest resolved point within 2.5 cm. An object counts as visible in a frame if it gets ≥ 1e-3
+  the object of the nearest resolved point within 2.5 cm. An object counts as visible in a frame if it gets ≥ 2e-4
   (`_MIN_RAYTRACED_FRACTION`) of the frame's pixels and its `mesh_visibility_fraction` is ≥ `object_params.min_mesh_visibility_fraction` (0.2).
 - (3.2) **Detection rate:** the share of the frames showing the object in which it was actually detected.
   Objects under 0.3 are dropped, which removes spurious one-off detections.
@@ -105,9 +107,12 @@ come from, out of it; they belong with the code that builds them (`common/env_ut
 ### 5. Retrieval and train sets
 
 - (5.1) **Retrieval** (`common/utils/retrieval.py::retrieve_views`): for each object, pick up to `collection.k_retrieval` (10)
-  views greedily so they cover its (resolved point, yaw bin out of 8) elements. A view's gain is
-  visibility^α × Σ (1 − γ) γ^(times already covered), with γ = 0.5 and α = 1. Each view's raytraced mask is resized to the
-  rgb by nearest neighbour and labelled with the object's class.
+  views greedily so they cover its (resolved point, viewing angle) elements, the angle from the point to the camera
+  (not the agent's heading). A view's gain is visibility^α × Σ (1 − γ) γ^(effective times already covered), with
+  γ = 0.5 and α = 1; a point already covered by a chosen view lends credit to a new candidate's angle for it in
+  proportion to a Gaussian kernel of std σ = π/4 over their angular distance, so nearby angles share credit instead of
+  only exact repeats. Each view's raytraced mask is resized to the rgb by nearest neighbour and labelled with the
+  object's class.
 - (5.2) **Ground truth:** every placed scene object annotated with a kept class, boxed by its world mesh bounds. Resolved
   objects are matched to it class-agnostically, greedily by score, at 3D box IoU ≥ 0.25.
 - (5.3) **Recovery** (`common/utils/ground_truth_recovery.py`) of the retrieved views. It needs only the ground truth's 3D
@@ -115,8 +120,8 @@ come from, out of it; they belong with the code that builds them (`common/env_ut
   - (5.3.1) `recover_drop_fp`: views of objects matching no ground truth are dropped.
   - (5.3.2) `recover_gt_classes`: views of matching objects take their ground truth's class.
   - (5.3.3) `recover_add_fn`: every unmatched ground truth gets up to `collection.k_retrieval` of its masks as views, under
-    a new, negative object id. They are picked greedily as in 5.1, with one element per view, the yaw bin (out of 8) of its camera
-    around the box center, weighted by its visibility fraction^α. Other objects' views are left as they are, so an
+    a new, negative object id. They are picked greedily as in 5.1, with one element per view, the viewing angle of its
+    camera around the box center, weighted by its visibility fraction^α. Other objects' views are left as they are, so an
     absorbed false negative's pixels stay in its absorber's masks too.
 - (5.4) **Train sets:** the scene's views are added to three object-view train sets:
   - (5.4.1) `pseudo`: as classified (5.1);

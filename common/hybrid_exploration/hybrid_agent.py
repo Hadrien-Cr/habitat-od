@@ -36,11 +36,12 @@ class HybridConfig:
     n_sectors: int = 8
     confidence_thresh: float = 0.5
     viewpoint_gain: float = 1.0
+    standoffs_m: Tuple[float, ...] = (3.0, 2.0, 1.0, 0.5)
     min_standoff_m: float = 0.5
-    max_standoff_m: float = 2.0
+    max_standoff_m: float = 3.0
     standoff_per_size: float = 1.0
     frontier_gain: float = 0.5
-    reach_m: float = 0.5
+    reach_m: float = 0.25
     viewpoint_mode: ViewpointMode = ViewpointMode.EXHAUSTIVE
     coverage_angle_deg: float = 60.0
     max_successive_collisions: int = 3
@@ -72,7 +73,7 @@ class HybridFrontierAgent(Agent):
         self.config = config
         self.rng = rng
         self.map: Optional[ExplorationMap] = None
-        self.trajectory: list = []
+        self.trajectory: List[Tuple[np.ndarray, float]] = []
         self.objects: Dict[int, ObjectBelief] = {}
         self.seen_sectors: Dict[int, np.ndarray] = {}
         self.decision: Optional[Decision] = None
@@ -97,7 +98,7 @@ class HybridFrontierAgent(Agent):
             return "stop"
         position = np.array(agent_state.position)
         heading = float(TopDownMap.get_polar_angle(agent_state))
-        self.trajectory.append(position)
+        self.trajectory.append((position, heading))
         if self.map is None:
             self.map = ExplorationMap(self.pathfinder, self.config.map, position)
         self.map.reveal(position, heading)
@@ -112,9 +113,14 @@ class HybridFrontierAgent(Agent):
         return self._action_towards(position, heading, self.goal)
 
     def _mark_inspected(self, position: np.ndarray, heading: float) -> None:
-        """Marks seen the sectors of every viewpoint the agent stands at facing its object."""
+        """Marks seen the sectors of every viewpoint the agent stood at, at any past or current pose, facing its object:
+        a sector only becomes a candidate once its object is confident/footprint-grown enough, by which point an earlier
+        pose may already have covered it."""
         for viewpoint in self._object_viewpoints(position[1]):
-            if self._reached(position, viewpoint) and self._turn_towards(position, heading, viewpoint.look_at) is None:
+            if any(
+                self._within_reach(past_position, viewpoint) and self._turn_towards(past_position, past_heading, viewpoint.look_at) is None
+                for past_position, past_heading in self.trajectory
+            ):
                 self.seen(viewpoint.object_id)[self._covered_sectors(viewpoint.sector)] = True
 
     def _kept_goal(self, position: np.ndarray, heading: float) -> Optional[Candidate]:
@@ -149,18 +155,33 @@ class HybridFrontierAgent(Agent):
     def _unseen_viewpoints(self, object_id: int, belief: ObjectBelief, height: float) -> List[Candidate]:
         center, radius = footprint(belief.points)
         volume = float(np.prod(belief.points.max(axis=0) - belief.points.min(axis=0)))
-        standoff = np.clip(self.config.standoff_per_size * volume ** (1 / 3), self.config.min_standoff_m, self.config.max_standoff_m)
-        positions = sector_positions(center, radius + float(standoff), self.config.n_sectors, height)
+        target_standoff = np.clip(self.config.standoff_per_size * volume ** (1 / 3), self.config.min_standoff_m, self.config.max_standoff_m)
+        rings = [sector_positions(center, radius + standoff, self.config.n_sectors, height) for standoff in self.config.standoffs_m]
         seen = self.seen(object_id)
-        return [
-            Candidate(position, self.config.viewpoint_gain, object_id, sector, center)
-            for sector, position in enumerate(positions) if not seen[sector] and self.map.is_revealed_navigable(self.map.to_pixel(position))
+        candidates = []
+        for sector in range(self.config.n_sectors):
+            if seen[sector]:
+                continue
+            position = self._best_standoff_position(rings, sector, target_standoff)
+            if position is not None:
+                candidates.append(Candidate(position, self.config.viewpoint_gain, object_id, sector, center))
+        return candidates
+
+    def _best_standoff_position(self, rings: List[np.ndarray], sector: int, target_standoff: float) -> Optional[np.ndarray]:
+        """This sector's position, among rings' standoffs, navigable and closest to target_standoff; None if none are navigable."""
+        navigable = [
+            (abs(standoff - target_standoff), ring[sector]) for standoff, ring in zip(self.config.standoffs_m, rings)
+            if self.map.is_revealed_navigable(self.map.to_pixel(ring[sector]))
         ]
+        return min(navigable, key=lambda entry: entry[0])[1] if navigable else None
 
     def _reached(self, position: np.ndarray, viewpoint: Candidate) -> bool:
         """In reach, or the viewpoint the agent last arrived at: it drifts as the object's points grow, which would
         otherwise flip the agent between facing the object and walking back to it."""
-        return viewpoint.key() == self._arrived_at or float(np.hypot(*(viewpoint.position - position)[[0, 2]])) <= self.config.reach_m
+        return viewpoint.key() == self._arrived_at or self._within_reach(position, viewpoint)
+
+    def _within_reach(self, position: np.ndarray, viewpoint: Candidate) -> bool:
+        return float(np.hypot(*(viewpoint.position - position)[[0, 2]])) <= self.config.reach_m
 
     def _candidate_time(self, position: np.ndarray, heading: float, candidate: Candidate) -> float:
         speeds = self.config.speeds
@@ -233,7 +254,8 @@ class HybridFrontierAgent(Agent):
     def map_image(self) -> np.ndarray:
         """BGR top-down map of the revealed area, current field of view and trajectory, each object's points and confidence,
         and every candidate colored by its score."""
-        image = plot_exploration_map(self.map.navigable, self.map.revealed, list(self.map.to_pixels(np.array(self.trajectory))))
+        positions = np.array([position for position, _ in self.trajectory])
+        image = plot_exploration_map(self.map.navigable, self.map.revealed, list(self.map.to_pixels(positions)))
         draw_in_view(image, self.map.in_view)
         objects = {object_id: (self.map.to_pixels(belief.points), belief.confidence) for object_id, belief in self.objects.items()}
         draw_objects(image, objects, self.config.confidence_thresh)

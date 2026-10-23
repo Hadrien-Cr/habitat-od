@@ -388,8 +388,13 @@ def save_decision_map(agent: Union["HybridFrontierAgent", "FrontierAgent"], out_
 
 
 def save_exploration_visuals(agent: "HybridFrontierAgent", prediction_tiles: list, out_dir: Path) -> None:
-    """predictions_mosaic.png of every step, and decision.png and object.png of the last step."""
+    """predictions_mosaic.png and prediction_frames/step_<step>.png of every step, and decision.png and object.png of
+    the last step."""
     save_decision_map(agent, out_dir / "decision.png")
     make_mosaic(prediction_tiles, N_cols=5).save(out_dir / "predictions_mosaic.png")
+    frames_dir = out_dir / "prediction_frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    for step, tile in enumerate(prediction_tiles):
+        make_mosaic([tile], N_cols=1).save(frames_dir / f"step_{step:04d}.png")
     occupancy = plot_occupancy(agent.map.revealed, [agent.map.to_pixels(belief.points) for belief in agent.objects.values()])
     make_mosaic([("objects", occupancy[:, :, ::-1].copy())], N_cols=1).save(out_dir / "object.png")

@@ -18,7 +18,7 @@ filter_empty: False
 object_params:
   env_name: "ProcTHOR-hab"
   vocab_name: "ProcTHOR-native"
-  min_area_fraction: 0.001
+  min_area_fraction: 0.0002
   filter_low_visibility: True
   min_mesh_visibility_fraction: 0.2
   # kept identical to ds_procthor_reproduce.yaml's filter_classes so both
