@@ -329,3 +329,15 @@ def is_valid_info(info: dict) -> bool:
 def keep_valid_instances(instances: Instances) -> Instances:
     keep_idx = [i for i, info in enumerate(instances.infos) if is_valid_info(info)]
     return instances[keep_idx]
+
+
+def ground_truth_instances(obs: dict, vocabulary: list, classes: list) -> Instances:
+    """obs' valid ground-truth instances of classes, their class ids remapped from the vocabulary's to classes'."""
+    instances = bbs_instances_as_gt(keep_valid_instances(obs["bbsgt"]["instances"]))
+    class_ids = {name: idx for idx, name in enumerate(classes)}
+    names = [vocabulary[class_id] for class_id in instances.gt_classes.tolist()]
+    kept = [idx for idx, name in enumerate(names) if name in class_ids]
+    instances = instances[kept]
+    instances.gt_classes = torch.tensor([class_ids[names[idx]] for idx in kept], dtype=torch.long)
+    instances.gt_masks = instances.gt_masks.reshape(len(instances), *instances.image_size)
+    return instances

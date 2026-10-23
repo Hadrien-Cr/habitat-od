@@ -3,7 +3,6 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 
 import numpy as np
-from skimage.draw import line
 
 
 @dataclass(frozen=True)
@@ -40,10 +39,3 @@ def sector_positions(center: np.ndarray, radius: float, n_sectors: int, height: 
 def sector_of(center: np.ndarray, position: np.ndarray, n_sectors: int) -> int:
     bearing = np.arctan2(position[2] - center[2], position[0] - center[0]) % (2 * np.pi)
     return int(bearing // (2 * np.pi / n_sectors))
-
-
-def clear_line(free_map: np.ndarray, start_px: np.ndarray, end_px: np.ndarray, stop_short_px: float) -> bool:
-    """Whether every free_map pixel from start_px towards end_px is free, ignoring the last stop_short_px (the object's own footprint)."""
-    rows, cols = line(int(start_px[0]), int(start_px[1]), int(end_px[0]), int(end_px[1]))
-    before_target = np.hypot(rows - end_px[0], cols - end_px[1]) > stop_short_px
-    return bool(free_map[rows[before_target], cols[before_target]].all())

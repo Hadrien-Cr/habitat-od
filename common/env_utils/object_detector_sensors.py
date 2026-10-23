@@ -23,9 +23,9 @@ class ObjectDetectorGTSensor(habitat.Sensor): # type: ignore
     env_name: str
     vocab_name: str
     camera_hfov: float
-    area_thr: float
+    min_area_fraction: float
     filter_low_visibility: bool
-    min_visibility_fraction: float
+    min_mesh_visibility_fraction: float
     filter_classes: Optional[set[str]]
     annotation: ObjectAnnotation
 
@@ -37,9 +37,9 @@ class ObjectDetectorGTSensor(habitat.Sensor): # type: ignore
 
         self.env_name = config.env_name
         self.vocab_name = config.vocab_name
-        self.area_thr = config.area_thr
+        self.min_area_fraction = config.min_area_fraction
         self.filter_low_visibility = config.filter_low_visibility
-        self.min_visibility_fraction = config.min_visibility_fraction
+        self.min_mesh_visibility_fraction = config.min_mesh_visibility_fraction
         # None means keep every class (except "unknown", always dropped) - see decompose_frame.
         self.filter_classes = set(config.filter_classes) if config.filter_classes else None
         self.camera_hfov = next(
@@ -98,7 +98,7 @@ class ObjectDetectorGTSensor(habitat.Sensor): # type: ignore
             filtered_low_visibility = False
             visibility_fraction = 1.0
 
-            if min(mask_area*2, bbx_area) < self.area_thr:
+            if min(mask_area*2, bbx_area) < self.min_area_fraction * mask.size:
                 filtered_low_area = True
 
             elif self.filter_low_visibility:
@@ -107,7 +107,7 @@ class ObjectDetectorGTSensor(habitat.Sensor): # type: ignore
                     mask.astype(bool),
                     depth_obs,
                 )
-                if visibility_fraction < self.min_visibility_fraction:
+                if visibility_fraction < self.min_mesh_visibility_fraction:
                     filtered_low_visibility = True
 
             detections.append({

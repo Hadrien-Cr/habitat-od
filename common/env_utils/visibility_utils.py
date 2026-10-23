@@ -1,4 +1,3 @@
-import cv2
 import numpy as np
 import quaternion
 
@@ -26,12 +25,31 @@ def compute_obj_dimensions(obj) -> np.ndarray:
     return compute_dimensions_from_aabb(obj.collision_shape_aabb) # type: ignore
 
 
+def compute_obj_render_dimensions(obj) -> np.ndarray:
+    """Tight render-mesh extents; collision_shape_aabb is inflated by Bullet's 0.04 m collision margin per side."""
+    return compute_dimensions_from_aabb(obj.root_scene_node.cumulative_bb)
+
+
 def compute_dimensions_from_obb(obb) -> np.ndarray:
     """SemanticObject.aabb is unreliable for MP3D/Gibson-Semantic (confirmed against real
     data: a couch's aabb can be off by ~7x on one axis vs. its true size) - .obb.sizes is the
     tight, correctly oriented fit test_gibson.py/test_mp3d.py already trust for their own
     wireframes, so use that instead for these two envs."""
     return np.array([obb.sizes.x, obb.sizes.y, obb.sizes.z])
+
+
+SIZE_MEASURES = ("volume", "shortest_edge", "largest_edge")
+
+
+def box_size_measures(dimensions: np.ndarray) -> dict[str, float]:
+    """SIZE_MEASURES of a box of dimensions."""
+    return dict(zip(SIZE_MEASURES, (float(np.prod(dimensions)), float(np.min(dimensions)), float(np.max(dimensions)))))
+
+
+def within_size_ranges(dimensions: np.ndarray, size_ranges: dict[str, tuple[float, float]]) -> bool:
+    """Whether each box_size_measures of a box of dimensions lies in its (low, high) size_ranges entry, if it has one."""
+    measures = box_size_measures(dimensions)
+    return all(low <= measures[name] <= high for name, (low, high) in size_ranges.items())
 
 
 def mesh_visibility_fraction(
@@ -55,12 +73,7 @@ def mesh_visibility_fraction(
     face_pixels = face_area * (focal / obj_depth) ** 2
 
     # Compute the fraction of pixels that are visible
-    opened_mask = object_mask.copy()
-    opened_mask = cv2.morphologyEx(opened_mask.astype(np.uint8), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8)).astype(bool)
-    x,y,w,h = cv2.boundingRect(opened_mask.astype(np.uint8))
-    visible_pixels = w * h
-
-
+    visible_pixels = np.count_nonzero(object_mask)
     visibility_fraction = visible_pixels / (face_pixels + 1e-8)
 
     return visibility_fraction

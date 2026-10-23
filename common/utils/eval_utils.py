@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import trimesh
@@ -12,12 +13,16 @@ from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 from tabulate import tabulate
 
-from common.utils.projection_utils import ResolvedObjects
+from common.hybrid_exploration.hybrid_agent import HybridFrontierAgent
+from common.utils.projection_utils import ResolvedObjects, ground_truth_topdown, save_resolved_ply, semantic_topdown
+from common.utils.retrieval import SegmentationStyle
 
 _IOU_THRESHOLDS = np.round(np.arange(0.25, 0.951, 0.05), 2)
 _SMALL_MAX_VOLUME_M3 = 0.01
 _MEDIUM_MAX_VOLUME_M3 = 0.25
 _WIREFRAME_RADIUS_M = 0.005
+_PREDICTED_BOX_GRID_M = 0.02
+_MIN_MATCHED_EXTENT_M = 0.05
 _VOLUME_RANGES = [[0.0, np.inf], [0.0, _SMALL_MAX_VOLUME_M3], [_SMALL_MAX_VOLUME_M3, _MEDIUM_MAX_VOLUME_M3], [_MEDIUM_MAX_VOLUME_M3, np.inf]]
 
 
@@ -31,6 +36,11 @@ def _box_volumes(boxes: np.ndarray) -> np.ndarray:
     return np.prod(boxes[:, 1] - boxes[:, 0], axis=-1)
 
 
+def _snap_boxes_outward(boxes: np.ndarray, grid: float) -> np.ndarray:
+    """(N, 2, D) (min, max) boxes with min corners floored and max corners ceiled to multiples of grid."""
+    return np.stack([np.floor(boxes[:, 0] / grid), np.ceil(boxes[:, 1] / grid)], axis=1) * grid
+
+
 def _box_iou(boxes_a: np.ndarray, boxes_b: np.ndarray) -> np.ndarray:
     """(len(boxes_a), len(boxes_b)) IoU of (N, 2, D) axis-aligned (min, max) boxes."""
     lower = np.maximum(boxes_a[:, None, 0], boxes_b[None, :, 0])
@@ -40,19 +50,36 @@ def _box_iou(boxes_a: np.ndarray, boxes_b: np.ndarray) -> np.ndarray:
     return np.divide(inter, union, out=np.zeros_like(inter), where=union > 0)
 
 
-def _add_matches(matrix: np.ndarray, gt_classes: np.ndarray, pred_classes: np.ndarray, ious: np.ndarray, iou_threshold: float) -> None:
-    """Adds to matrix a greedy class-agnostic matching of score-sorted predictions (rows of ious) to ground truths (columns)."""
-    background = len(matrix) - 1
-    matched = np.zeros(len(gt_classes), dtype=bool)
-    for pred_class, pred_ious in zip(pred_classes, ious):
+def _with_min_extent(boxes: np.ndarray, min_extent: float) -> np.ndarray:
+    """(N, 2, D) (min, max) boxes grown about their centers to at least min_extent along every axis."""
+    padding = np.clip(min_extent - (boxes[:, 1] - boxes[:, 0]), 0.0, None) / 2
+    return np.stack([boxes[:, 0] - padding, boxes[:, 1] + padding], axis=1)
+
+
+def _box_iou_3d(boxes_a: np.ndarray, boxes_b: np.ndarray) -> np.ndarray:
+    """_box_iou of 3D boxes grown to _MIN_MATCHED_EXTENT_M, so thin objects (a pencil, a painting) can still overlap."""
+    return _box_iou(_with_min_extent(boxes_a, _MIN_MATCHED_EXTENT_M), _with_min_extent(boxes_b, _MIN_MATCHED_EXTENT_M))
+
+
+def _greedy_matches(ious: np.ndarray, iou_threshold: float) -> np.ndarray:
+    """Ground truth (column of ious) each score-sorted prediction (row) greedily, class-agnostically matches, -1 for none."""
+    matches = np.full(len(ious), -1)
+    matched = np.zeros(ious.shape[1], dtype=bool)
+    for pred_index, pred_ious in enumerate(ious):
         unmatched_ious = np.where(matched, 0.0, pred_ious)
         best = int(unmatched_ious.argmax()) if len(unmatched_ious) else -1
         if best >= 0 and unmatched_ious[best] >= iou_threshold:
             matched[best] = True
-            matrix[gt_classes[best], pred_class] += 1
-        else:
-            matrix[background, pred_class] += 1
-    np.add.at(matrix[:, background], gt_classes[~matched], 1)
+            matches[pred_index] = best
+    return matches
+
+
+def _add_matches(matrix: np.ndarray, gt_classes: np.ndarray, pred_classes: np.ndarray, matches: np.ndarray) -> None:
+    """Adds to matrix each prediction under its _greedy_matches ground truth's class, or background, and each unmatched ground truth."""
+    background = len(matrix) - 1
+    for pred_class, match in zip(pred_classes, matches):
+        matrix[background if match < 0 else gt_classes[match], pred_class] += 1
+    np.add.at(matrix[:, background], np.delete(gt_classes, matches[matches >= 0]), 1)
 
 
 def _save_confusion_heatmap(matrix: np.ndarray, labels: list, out_path: Path) -> None:
@@ -140,7 +167,7 @@ def compute_confusion_matrix(
         gts = gt_by_image.get(image_id, [])
         preds = sorted(preds_by_image.get(image_id, []), key=lambda p: -p[2])
         ious = _box_iou(np.reshape([box for _, box, _ in preds], (-1, 2, 2)), np.reshape([box for _, box in gts], (-1, 2, 2)))
-        _add_matches(matrix, np.array([c for c, _ in gts], dtype=int), [c for c, _, _ in preds], ious, iou_threshold)
+        _add_matches(matrix, np.array([c for c, _ in gts], dtype=int), [c for c, _, _ in preds], _greedy_matches(ious, iou_threshold))
 
     _save_confusion_heatmap(matrix, class_names + ["background"], out_path)
     return matrix
@@ -163,12 +190,18 @@ class SceneObjects:
 
 @dataclass(frozen=True)
 class GroundTruthObjects(SceneObjects):
-    """Annotated objects of the ground-truth scene."""
+    """Annotated objects of the ground-truth scene, with their simulator object ids."""
+
+    object_ids: np.ndarray
 
     @classmethod
-    def from_meshes(cls, meshes: List[Tuple[int, trimesh.Trimesh]]) -> "GroundTruthObjects":
-        """Objects of (class, world mesh) pairs, each boxed by its mesh bounds."""
-        return cls(np.array([class_id for class_id, _ in meshes], dtype=int), np.reshape([mesh.bounds for _, mesh in meshes], (-1, 2, 3)))
+    def from_meshes(cls, meshes: List[Tuple[int, int, trimesh.Trimesh]]) -> "GroundTruthObjects":
+        """Objects of (object id, class, world mesh) triples, each boxed by its mesh bounds."""
+        return cls(
+            class_ids=np.array([class_id for _, class_id, _ in meshes], dtype=int),
+            boxes=np.reshape([mesh.bounds for _, _, mesh in meshes], (-1, 2, 3)),
+            object_ids=np.array([object_id for object_id, _, _ in meshes], dtype=int),
+        )
 
 
 @dataclass(frozen=True)
@@ -176,16 +209,19 @@ class ResolvedDetections(SceneObjects):
     """Resolved objects scored by their highest class probability."""
 
     scores: np.ndarray
+    object_ids: np.ndarray
 
     @classmethod
     def from_resolved(cls, resolved: ResolvedObjects) -> "ResolvedDetections":
-        """Every resolved object, boxed by the extent of its points."""
-        object_classes = dict(zip(resolved.resolved_infos[:, 1], resolved.resolved_infos[:, 0]))
-        points = [resolved.resolved_object_points(object_id) for object_id in object_classes]
+        """Every resolved object, boxed by the extent of its points snapped outward to _PREDICTED_BOX_GRID_M."""
+        object_classes = resolved.object_classes()
+        points =[resolved.resolved_object_points(object_id) for object_id in object_classes]
+        extents = np.reshape([[object_points.min(axis=0), object_points.max(axis=0)] for object_points in points], (-1, 2, 3))
         return cls(
             class_ids=np.array(list(object_classes.values()), dtype=int),
-            boxes=np.reshape([[object_points.min(axis=0), object_points.max(axis=0)] for object_points in points], (-1, 2, 3)),
+            boxes=_snap_boxes_outward(extents, _PREDICTED_BOX_GRID_M),
             scores=np.array([float(resolved.object_logits(int(object_id)).max()) for object_id in object_classes]),
+            object_ids=np.array(list(object_classes), dtype=int),
         )
 
     def coco_annotations(self) -> List[dict]:
@@ -193,7 +229,7 @@ class ResolvedDetections(SceneObjects):
 
     def by_score(self) -> "ResolvedDetections":
         order = np.argsort(-self.scores, kind="stable")
-        return ResolvedDetections(self.class_ids[order], self.boxes[order], self.scores[order])
+        return ResolvedDetections(self.class_ids[order], self.boxes[order], self.scores[order], self.object_ids[order])
 
 
 class _SceneCOCOeval(COCOeval):
@@ -204,7 +240,7 @@ class _SceneCOCOeval(COCOeval):
         dts = sorted(dts, key=lambda d: -d["score"])[: self.params.maxDets[-1]]
         if not gts or not dts:
             return []
-        return _box_iou(np.array([d["box3d"] for d in dts]), np.array([g["box3d"] for g in gts]))
+        return _box_iou_3d(np.array([d["box3d"] for d in dts]), np.array([g["box3d"] for g in gts]))
 
 
 def _box_wireframe(box: np.ndarray, color: list) -> trimesh.Trimesh:
@@ -289,12 +325,53 @@ def evaluate_scene(resolved: ResolvedObjects, ground_truth: GroundTruthObjects, 
     return summary
 
 
-def scene_confusion_matrix(resolved: ResolvedObjects, ground_truth: GroundTruthObjects, classes: list, out_path: Path, iou_threshold: float = 0.25) -> np.ndarray:
-    """compute_confusion_matrix for resolved's objects against ground_truth by 3D box IoU, printed and saved as a heatmap,
-    both only showing the classes present in either."""
+def _scene_matches(resolved: ResolvedObjects, ground_truth: GroundTruthObjects, iou_threshold: float) -> Tuple[ResolvedDetections, np.ndarray, np.ndarray]:
+    """resolved's score-sorted detections, their 3D box IoU with ground_truth and their _greedy_matches."""
     detections = ResolvedDetections.from_resolved(resolved).by_score()
+    ious = _box_iou_3d(detections.boxes, ground_truth.boxes)
+    return detections, ious, _greedy_matches(ious, iou_threshold)
+
+
+def matched_ground_truth(resolved: ResolvedObjects, ground_truth: GroundTruthObjects, iou_threshold: float = 0.25) -> Dict[int, int]:
+    """{object id: index in ground_truth of the object it class-agnostically matches (3D box IoU >= iou_threshold)} of every matching resolved object."""
+    detections, _, matches = _scene_matches(resolved, ground_truth, iou_threshold)
+    return {int(object_id): int(match) for object_id, match in zip(detections.object_ids, matches) if match >= 0}
+
+
+def matched_ground_truth_classes(resolved: ResolvedObjects, ground_truth: GroundTruthObjects, iou_threshold: float = 0.25) -> Dict[int, int]:
+    """{object id: class of the ground truth it class-agnostically matches (3D box IoU >= iou_threshold)} of every matching resolved object."""
+    return {object_id: int(ground_truth.class_ids[match]) for object_id, match in matched_ground_truth(resolved, ground_truth, iou_threshold).items()}
+
+
+def _matched_percent(matched: np.ndarray) -> float:
+    return float(100 * matched.mean()) if len(matched) else float("nan")
+
+
+def scene_matching(resolved: ResolvedObjects, ground_truth: GroundTruthObjects, classes: list, iou_threshold: float = 0.25) -> Dict[str, float]:
+    """Percent of ground truth class-agnostically matched by a resolved object (3D box IoU >= iou_threshold), overall and by
+    volume, and percent of resolved objects matching one; printed with the unmatched ground truth."""
+    detections, _, matches = _scene_matches(resolved, ground_truth, iou_threshold)
+    matched = np.isin(np.arange(len(ground_truth.boxes)), matches)
+    volumes = _box_volumes(ground_truth.boxes)
+    summary = {
+        name: _matched_percent(matched[(volumes >= low) & (volumes < high)])
+        for name, (low, high) in zip(("GT matched", "GT matched s", "GT matched m", "GT matched l"), _VOLUME_RANGES)
+    }
+    summary["resolved matching"] = _matched_percent(matches >= 0)
+    print(f"Class-agnostic matching (3D box IoU >= {iou_threshold}): {matched.sum()}/{len(matched)} ground truth matched, "
+          f"{(matches >= 0).sum()}/{len(matches)} resolved objects matching\n{create_small_table(summary)}")
+    unmatched = [(classes[ground_truth.class_ids[idx]], _box_center_size(ground_truth.boxes[idx])) for idx in np.flatnonzero(~matched)]
+    print(f"Unmatched ground truth:\n{tabulate(unmatched, headers=['class', '(xc, yc, zc) (w, h, d)'], tablefmt='pipe')}")
+    return summary
+
+
+def scene_confusion_matrix(resolved: ResolvedObjects, ground_truth: GroundTruthObjects, classes: list, out_path: Path, iou_threshold: float = 0.25) -> np.ndarray:
+    """compute_confusion_matrix for resolved's objects against ground_truth by 3D box IoU, saved as a heatmap only showing the
+    classes present in either; prints each object's match (_object_matches_table)."""
+    detections, ious, matches = _scene_matches(resolved, ground_truth, iou_threshold)
+    print(f"Resolved objects matched to ground truth (3D box IoU >= {iou_threshold}):\n{_object_matches_table(detections, ground_truth, classes, matches, ious)}")
     matrix = np.zeros((len(classes) + 1, len(classes) + 1), dtype=np.int64)
-    _add_matches(matrix, ground_truth.class_ids, detections.class_ids, _box_iou(detections.boxes, ground_truth.boxes), iou_threshold)
+    _add_matches(matrix, ground_truth.class_ids, detections.class_ids, matches)
     present = (matrix.sum(axis=0) + matrix.sum(axis=1)) > 0
     present[-1] = True
     present_matrix = matrix[np.ix_(present, present)]
@@ -304,5 +381,48 @@ def scene_confusion_matrix(resolved: ResolvedObjects, ground_truth: GroundTruthO
     return matrix
 
 
+def _box_center_size(box: np.ndarray) -> str:
+    """(xc, yc, zc) (w, h, d) of a (2, 3) (min, max) box, in meters."""
+    center, size = box.mean(axis=0), box[1] - box[0]
+    return "({:.2f}, {:.2f}, {:.2f}) ({:.2f}, {:.2f}, {:.2f})".format(*center, *size)
+
+
+def _matched_label(ground_truth: GroundTruthObjects, classes: list, match: int, object_ious: np.ndarray) -> str:
+    return "background" if match < 0 else f"{classes[ground_truth.class_ids[match]]} ({object_ious[match]:.2f})"
+
+
+def _object_matches_table(detections: ResolvedDetections, ground_truth: GroundTruthObjects, classes: list, matches: np.ndarray, ious: np.ndarray) -> str:
+    """One row per resolved object, by id: its predicted class with its score, its box's center and size, and its matched
+    ground truth's class with their IoU and its box's center and size, or background."""
+    rows = sorted(
+        (
+            int(object_id), f"{classes[class_id]} ({score:.2f})", _box_center_size(box), _matched_label(ground_truth, classes, match, object_ious),
+            "" if match < 0 else _box_center_size(ground_truth.boxes[match]),
+        )
+        for object_id, class_id, score, box, match, object_ious in zip(
+            detections.object_ids, detections.class_ids, detections.scores, detections.boxes, matches, ious,
+        )
+    )
+    headers = ["obj_id", "predicted class", "(xc, yc, zc) (w, h, d)", "matched class (IoU)", "matched (xc, yc, zc) (w, h, d)"]
+    return tabulate(rows, headers=headers, tablefmt="pipe")
+
+
 def _confusion_table(matrix: np.ndarray, labels: list) -> str:
     return tabulate([[label, *row] for label, row in zip(labels, matrix.tolist())], headers=["gt \\ pred", *labels], tablefmt="pipe")
+
+
+def save_maps(resolved: ResolvedObjects, meshes: List[Tuple[int, int, trimesh.Trimesh]], agent: HybridFrontierAgent, style: SegmentationStyle, out_dir: Path) -> None:
+    """semantic_point_cloud.ply, semantic_wireframes.glb and semantic_topdown.png of resolved's objects, and
+    ground_truth_topdown.png of the (object id, class, world mesh) meshes."""
+    save_resolved_ply(resolved, style.colors, out_dir / "semantic_point_cloud.ply")
+    save_resolved_wireframes(resolved, style.classes, style.colors, out_dir / "semantic_wireframes.glb")
+    cv2.imwrite(str(out_dir / "semantic_topdown.png"), semantic_topdown(resolved, agent, style.classes, style.colors)[:, :, ::-1])
+    cv2.imwrite(str(out_dir / "ground_truth_topdown.png"), ground_truth_topdown(meshes, agent, style.classes, style.colors)[:, :, ::-1])
+
+
+def evaluate_resolved(resolved: ResolvedObjects, meshes: List[Tuple[int, int, trimesh.Trimesh]], classes: list, out_dir: Path) -> None:
+    """3D box AP, confusion_matrix.png and class-agnostic matching of resolved's objects against the (object id, class, world mesh) meshes."""
+    ground_truth = GroundTruthObjects.from_meshes(meshes)
+    evaluate_scene(resolved, ground_truth, classes)
+    scene_confusion_matrix(resolved, ground_truth, classes, out_dir / "confusion_matrix.png")
+    scene_matching(resolved, ground_truth, classes)

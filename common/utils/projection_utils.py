@@ -3,22 +3,32 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
+import cv2
 import numpy as np
 import open3d as o3d
 import torch
+import torch.nn.functional as F
+import trimesh
 from detectron2.structures import Instances
+from scipy import ndimage
 from scipy.spatial.kdtree import KDTree
 
 from common.env_utils.visibility_utils import mesh_visibility_fraction
+from common.hybrid_exploration.hybrid_agent import HybridFrontierAgent
+from common.utils.plot_utils import plot_semantic_2d_map
 
 log = logging.getLogger(__name__)
 
 _FOREGROUND_DEPTH_PERCENTILE = 95
+_MIN_WALL_GAP_M = 0.1
 _FLOOR_MARGIN_M = 0.02
 _PLANE_DISTANCE_M = 0.02
 _PLANE_RANSAC_ITERATIONS = 1000
 _MAX_VERTICAL_NORMAL_UP = 0.1
 _MAX_WALLS = 3
+_MIN_RAYTRACED_FRACTION = 1e-3
+_FOOTPRINT_CLOSING_ITERATIONS = 2
+TOPDOWN_MAP_SCALE = 8
 
 
 @dataclass(frozen=True)
@@ -35,14 +45,11 @@ def camera_intrinsics(width: int, height: int, hfov: float) -> Tuple[float, floa
     return fx, fy, (width - 1.0) / 2.0, (height - 1.0) / 2.0
 
 
-def world_to_pixels(points: np.ndarray, pose, image_shape, hfov: float) -> Tuple[np.ndarray, np.ndarray]:
-    """(N, 2) (column, row) pixels and camera depths of world points seen from pose, project_batch_masks' inverse."""
-    fx, fy, xc, yc = camera_intrinsics(image_shape[1], image_shape[0], hfov)
-    camera_points = (np.linalg.inv(np.asarray(pose, dtype=float)) @ np.c_[points, np.ones(len(points))].T).T
-    depths = -camera_points[:, 2]
-    safe_depths = np.where(depths > 0, depths, np.inf)
-    pixels = np.stack([camera_points[:, 0] / safe_depths * fx + xc, -camera_points[:, 1] / safe_depths * fy + yc], axis=1)
-    return np.rint(pixels).astype(int), depths
+def nearest_resized(images, shape: Tuple[int, int]) -> torch.Tensor:
+    """(..., H, W) images resized to shape by nearest neighbour, so depth and masks resized alike keep their pixels aligned."""
+    images = torch.as_tensor(images)
+    flat = images.reshape(-1, 1, *images.shape[-2:]).float()
+    return F.interpolate(flat, size=tuple(shape), mode="nearest").to(images.dtype).reshape(*images.shape[:-2], *shape)
 
 
 def project_batch_masks(
@@ -123,8 +130,9 @@ def background_wall_mask(points: np.ndarray, camera_center: np.ndarray) -> np.nd
 
 
 def _wall_behind(points: np.ndarray, camera_center: np.ndarray) -> np.ndarray:
-    """Inliers of points' largest plane if it is vertical and its median camera distance is beyond the
-    _FOREGROUND_DEPTH_PERCENTILE-th percentile of the other points', else none."""
+    """Inliers of points' largest plane if it is vertical and its median camera distance is at least _MIN_WALL_GAP_M beyond
+    the _FOREGROUND_DEPTH_PERCENTILE-th percentile of the other points', else none (a flat object, like a painting, hangs
+    only a few centimetres off its wall)."""
     plane, inliers = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(points)).segment_plane(_PLANE_DISTANCE_M, 3, _PLANE_RANSAC_ITERATIONS)
     is_plane = np.zeros(len(points), dtype=bool)
     is_plane[inliers] = True
@@ -132,7 +140,7 @@ def _wall_behind(points: np.ndarray, camera_center: np.ndarray) -> np.ndarray:
         return np.zeros(len(points), dtype=bool)
     distances = np.linalg.norm(points - camera_center, axis=1)
     depth_gate = np.percentile(distances[~is_plane], _FOREGROUND_DEPTH_PERCENTILE)
-    return is_plane if np.median(distances[is_plane]) > depth_gate else np.zeros(len(points), dtype=bool)
+    return is_plane if np.median(distances[is_plane]) > depth_gate + _MIN_WALL_GAP_M else np.zeros(len(points), dtype=bool)
 
 
 def foreground_points(points: np.ndarray, floor_height: float, camera_center: np.ndarray) -> np.ndarray:
@@ -169,10 +177,25 @@ def dbscan_labels(points: np.ndarray, eps: float, min_points: int) -> np.ndarray
 
 def largest_cluster_mask(points: np.ndarray, eps: float, min_points: int) -> np.ndarray:
     """Points of the largest DBSCAN cluster, or all of them if it has fewer than 5 points."""
+    return _largest_label_mask(dbscan_labels(points, eps, min_points))
+
+
+def main_cluster_mask(points: np.ndarray, eps: float, min_points: int, attach_radius: float, max_attached_fraction: float) -> np.ndarray:
+    """largest_cluster_mask plus the DBSCAN clusters under max_attached_fraction of its size within attach_radius of it."""
     labels = dbscan_labels(points, eps, min_points)
+    main = _largest_label_mask(labels)
+    if main.all():
+        return main
+    sizes = np.bincount(labels[labels >= 0])
+    near_main = KDTree(points[main]).query(points, k=1, distance_upper_bound=attach_radius)[0] < attach_radius
+    attached = [label for label in np.flatnonzero(sizes < max_attached_fraction * sizes.max()) if near_main[labels == label].any()]
+    return main | np.isin(labels, attached)
+
+
+def _largest_label_mask(labels: np.ndarray) -> np.ndarray:
     cluster_sizes = Counter(labels[labels >= 0])
     if not cluster_sizes or cluster_sizes.most_common(1)[0][1] < 5:
-        return np.ones(len(points), dtype=bool)
+        return np.ones(len(labels), dtype=bool)
     return labels == cluster_sizes.most_common(1)[0][0]
 
 
@@ -184,13 +207,58 @@ def denoise(points: np.ndarray, voxel_size: float, eps: float, min_points: int) 
 
 def save_resolved_ply(resolved: "ResolvedObjects", colors: list, out_path: str) -> None:
     """Writes resolved_points as a .ply, each point colored by its resolved class (colors in 0-255)."""
-    _save_class_colored_ply(resolved.resolved_points, resolved.resolved_infos[:, 0], colors, out_path)
+    save_labeled_ply(resolved.resolved_points, resolved.resolved_infos[:, 0], colors, out_path)
 
 
-def _save_class_colored_ply(points: np.ndarray, class_ids: np.ndarray, colors: list, out_path: str) -> None:
+def save_labeled_ply(points: np.ndarray, labels: np.ndarray, colors: list, out_path: str) -> None:
+    """Writes points as a .ply, each point colored by colors[its label] (colors in 0-255)."""
     pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(points))
-    pcd.colors = o3d.utility.Vector3dVector(np.asarray(colors)[class_ids] / 255.0)
+    pcd.colors = o3d.utility.Vector3dVector(np.asarray(colors)[labels] / 255.0)
     o3d.io.write_point_cloud(str(out_path), pcd)
+
+
+def filled_footprint(pixels: np.ndarray, shape: tuple) -> np.ndarray:
+    """Top-down mask of (N, 2) map pixels, with gaps between them closed and holes filled."""
+    mask = np.zeros(shape, dtype=bool)
+    mask[pixels[:, 0], pixels[:, 1]] = True
+    return ndimage.binary_fill_holes(ndimage.binary_closing(mask, iterations=_FOOTPRINT_CLOSING_ITERATIONS) | mask)
+
+
+def semantic_topdown(resolved: "ResolvedObjects", agent: HybridFrontierAgent, classes: list, colors: list) -> np.ndarray:
+    """RGB top-down map of resolved's objects, by class, over the agent's navigable map."""
+    pixels = agent.to_pixels(resolved.resolved_points)
+    inside = ((pixels >= 0) & (pixels < np.array(agent.top_down_map.shape))).all(axis=1)
+    pixels, infos = pixels[inside], resolved.resolved_infos[inside]
+    object_classes = dict(zip(infos[:, 1], infos[:, 0]))
+    object_footprints = [
+        (object_classes[object_id], filled_footprint(pixels[infos[:, 1] == object_id], agent.top_down_map.shape))
+        for object_id in object_classes
+    ]
+    image = plot_semantic_2d_map(
+        agent.top_down_map, object_footprints, dict(enumerate(colors)), dict(enumerate(classes)),
+        meters_per_grid_pixel=agent.meters_per_pixel(), scale=TOPDOWN_MAP_SCALE,
+    )
+    return np.array(image)
+
+
+def mesh_footprint(mesh: trimesh.Trimesh, agent: HybridFrontierAgent) -> np.ndarray:
+    """Top-down silhouette of mesh on the agent's map: the union of its triangles' floor projections."""
+    triangles = np.unique(agent.to_pixels(mesh.vertices)[mesh.faces][:, :, ::-1].astype(np.int32), axis=0)
+    mask = np.zeros(agent.top_down_map.shape, dtype=np.uint8)
+    # one call per triangle: a multi-polygon fillPoly fills by parity, leaving overlaps empty
+    for triangle in triangles:
+        cv2.fillConvexPoly(mask, triangle, 1)
+    return mask > 0
+
+
+def ground_truth_topdown(meshes: List[Tuple[int, int, trimesh.Trimesh]], agent: HybridFrontierAgent, classes: list, colors: list) -> np.ndarray:
+    """RGB top-down map of the silhouette of every (object id, class, world mesh) of meshes."""
+    footprints = [(class_id, mesh_footprint(mesh, agent)) for _, class_id, mesh in meshes]
+    image = plot_semantic_2d_map(
+        agent.top_down_map, footprints, dict(enumerate(colors)), dict(enumerate(classes)),
+        meters_per_grid_pixel=agent.meters_per_pixel(), scale=TOPDOWN_MAP_SCALE,
+    )
+    return np.array(image)
 
 
 def instance_masks_and_classes(instances: Instances) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -231,10 +299,17 @@ class ResolvedObjects:
 
     def classified(self, class_probs: Dict[int, torch.Tensor]) -> "ResolvedObjects":
         """self restricted to the objects of class_probs, each taking its most probable class."""
-        self.subset(np.isin(self.resolved_infos[:, 1], list(class_probs)))
-        object_classes = {object_id: int(probs.argmax()) for object_id, probs in class_probs.items()}
-        self.resolved_infos[:, 0] = [object_classes[object_id] for object_id in self.resolved_infos[:, 1]]
         self.resolved_logits = class_probs
+        return self.relabeled({object_id: int(probs.argmax()) for object_id, probs in class_probs.items()})
+
+    def object_classes(self) -> Dict[int, int]:
+        """{object id: class} of every resolved object."""
+        return dict(zip(self.resolved_infos[:, 1].tolist(), self.resolved_infos[:, 0].tolist()))
+
+    def relabeled(self, object_classes: Dict[int, int]) -> "ResolvedObjects":
+        """self restricted to the objects of object_classes, each taking its class there."""
+        self.subset(np.isin(self.resolved_infos[:, 1], list(object_classes)))
+        self.resolved_infos[:, 0] = [object_classes[object_id] for object_id in self.resolved_infos[:, 1].tolist()]
         return self
 
     def subset(self, kept: np.ndarray) -> "ResolvedObjects":
@@ -244,18 +319,18 @@ class ResolvedObjects:
         return self
 
     def depth_raytracing(
-        self, depth, pose, hfov, min_depth, max_depth, *, min_visibility_fraction: float = 0.2
+        self, depth, pose, hfov, min_depth, max_depth, *, min_mesh_visibility_fraction: float = 0.2
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Masks, ids, classes and logits of the resolved objects seen in depth from pose, dropping those below min_visibility_fraction."""
-        masks, ids, classes = self.visible_objects(depth, pose, hfov, min_depth, max_depth, min_visibility_fraction=min_visibility_fraction)
+        """Masks, ids, classes and logits of the resolved objects seen in depth from pose, dropping those below min_mesh_visibility_fraction."""
+        masks, ids, classes = self.visible_objects(depth, pose, hfov, min_depth, max_depth, min_mesh_visibility_fraction=min_mesh_visibility_fraction)
         if len(ids) == 0:
             return masks, ids, classes, torch.Tensor()
         return masks, ids, classes, torch.cat([self.object_logits(int(object_id)).cpu() for object_id in ids])
 
     def visible_objects(
-        self, depth, pose, hfov, min_depth, max_depth, *, min_visibility_fraction: float = 0.2
+        self, depth, pose, hfov, min_depth, max_depth, *, min_mesh_visibility_fraction: float = 0.2
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Masks, ids and classes of the resolved objects seen in depth from pose, dropping those below min_visibility_fraction."""
+        """Masks, ids and classes of the resolved objects seen in depth from pose, dropping those below min_mesh_visibility_fraction."""
         if len(self.resolved_points) == 0:
             log.warning("no resolved points to raytrace")
             return torch.Tensor(), torch.Tensor(), torch.Tensor()
@@ -264,7 +339,7 @@ class ResolvedObjects:
         resolved_masks, resolved_ids, resolved_classes = self._object_masks(nearest_points, depth.shape)
         kept = [
             idx for idx, (mask, object_id) in enumerate(zip(resolved_masks, resolved_ids))
-            if mesh_visibility_fraction(self.object_dimensions(object_id), mask.numpy(), np.asarray(depth), hfov) >= min_visibility_fraction
+            if mesh_visibility_fraction(self.object_dimensions(object_id), mask.numpy(), np.asarray(depth), hfov) >= min_mesh_visibility_fraction
         ]
         if not kept:
             return torch.Tensor(), torch.Tensor(), torch.Tensor()
@@ -281,17 +356,31 @@ class ResolvedObjects:
     def resolved_object_points(self, object_id: int) -> np.ndarray:
         return self.resolved_points[self.resolved_infos[:, 1] == object_id]
 
-    def _object_masks(self, nearest_points: np.ndarray, image_shape, min_pixels: int = 100) -> Tuple[list, list, list]:
-        """Pixel mask, id and class of every resolved object hit by at least min_pixels pixels."""
+    def _object_masks(self, nearest_points: np.ndarray, image_shape) -> Tuple[list, list, list]:
+        """Pixel mask, id and class of every resolved object hit by at least _MIN_RAYTRACED_FRACTION of the pixels."""
         hit = nearest_points != len(self.resolved_points)
         pixel_objects = np.full(len(nearest_points), -1)
         pixel_objects[hit] = self.resolved_infos[nearest_points[hit], 1]
         resolved_masks, resolved_ids, resolved_classes = [], [], []
         for object_id in np.unique(pixel_objects[hit]):
             mask = pixel_objects == object_id
-            if mask.sum() < min_pixels:
+            if mask.sum() < _MIN_RAYTRACED_FRACTION * mask.size:
                 continue
             resolved_masks.append(torch.tensor(mask.reshape(*image_shape), dtype=torch.bool))
             resolved_ids.append(int(object_id))
             resolved_classes.append(int(self.resolved_infos[nearest_points[mask][0], 0]))
         return resolved_masks, resolved_ids, resolved_classes
+
+
+def box_columns(points: np.ndarray) -> dict:
+    """Center and size of the points' axis-aligned box."""
+    low, high = points.min(axis=0), points.max(axis=0)
+    return dict(zip(("xc", "yc", "zc", "w", "h", "d"), np.round(np.r_[(low + high) / 2, high - low], 3)))
+
+
+def resolved_object_rows(stage: str, resolved: ResolvedObjects) -> List[dict]:
+    """One row per resolved object: its id, class, points and box."""
+    return [
+        {"stage": stage, "object": object_id, "class_id": class_id, "num_points": len(points), **box_columns(points)}
+        for object_id, class_id in resolved.object_classes().items() for points in [resolved.resolved_object_points(object_id)]
+    ]

@@ -111,7 +111,7 @@ def _raytraced_mask(points: np.ndarray, depth: np.ndarray, pose: np.ndarray) -> 
     """Mask of points raytraced in depth from pose as a single resolved object."""
     resolved = ConceptGraphResolvedObjects()
     resolved.resolved_points, resolved.resolved_infos, resolved.kdtree = points, np.zeros((len(points), 2), dtype=int), KDTree(points)
-    masks, _, _ = resolved.visible_objects(depth, pose, _DEPTH_CAMERA.hfov, _DEPTH_CAMERA.min_depth, _DEPTH_CAMERA.max_depth, min_visibility_fraction=0.0)
+    masks, _, _ = resolved.visible_objects(depth, pose, _DEPTH_CAMERA.hfov, _DEPTH_CAMERA.min_depth, _DEPTH_CAMERA.max_depth, min_mesh_visibility_fraction=0.0)
     return masks[0]
 
 

@@ -1,3 +1,4 @@
+import glob
 import itertools
 import json
 import os
@@ -12,20 +13,19 @@ import trimesh
 import habitat_sim # type: ignore
 import habitat.sims.habitat_simulator.sim_utilities as sutils # type: ignore
 
-from common.env_utils.vocab_constants import VOCABULARIES, CLASS_LABELS_HSSD400, HSSD400_TO_VOCAB
-from common.env_utils.visibility_utils import compute_obj_dimensions, compute_dimensions_from_obb
+from common.env_utils.vocab_constants import (
+    CLASS_LABELS_HSSD400, CLASS_LABELS_PROCTHOR, HSSD400_TO_VOCAB, PROCTHOR_NATIVE_CLASSES, PROCTHOR_NATIVE_VOCAB, PROCTHOR_VARIANT_SUFFIXES, VOCABULARIES,
+)
+from common.env_utils.visibility_utils import compute_obj_dimensions, compute_obj_render_dimensions, compute_dimensions_from_obb, box_size_measures, SIZE_MEASURES
 from common.utils.grid_utils import HabitatObjOccupancyGrid
 
 HABITAT_DATA = os.environ.get("HABITAT_DATA")
 BASE_DIR = os.environ.get("BASE_DIR")
 assert BASE_DIR is not None, "BASE_DIR environment variable must be set to the repo root"
 
-# ProcTHOR-hab's classes are read straight from the scene dataset's own
-# object_semantic_id_mapping.json (see _load_procthor_classes) rather than one of
-# VOCABULARIES's static lists, so there's no real vocab to name it after -- this is a fixed
-# sentinel callers must pass as vocab_name for ProcTHOR-hab, checked in _setup_procthor/
-# resolve_classes below so a wrong vocab_name is caught instead of silently ignored.
-PROCTHOR_NATIVE_VOCAB = "ProcTHOR-native"
+PROCTHOR_ROOT = os.path.join(str(HABITAT_DATA), "scene_datasets", "ai2thor-hab", "ai2thor-hab")
+HSSD80_SIZES_PATH = os.path.join(str(BASE_DIR), "common", "env_utils", "hssd80_sizes.csv")
+PROCTHOR_NATIVE_SIZES_PATH = os.path.join(str(BASE_DIR), "common", "env_utils", "procthor_native_sizes.csv")
 
 
 def get_obj_from_id(sim: habitat_sim.Simulator, obj_id: int):
@@ -44,6 +44,14 @@ def object_world_mesh(obj) -> Optional[trimesh.Trimesh]:
     mesh.apply_scale(np.array(obj.scale))
     mesh.apply_transform(np.array(obj.visual_scene_nodes[0].absolute_transformation()))
     return mesh
+
+
+def colored_box_asset(path: str, color: tuple) -> str:
+    """Exports a unit cube of the flat (r, g, b) color as a .glb at path, returned; a mesh asset, since primitives ignore force_flat_shading."""
+    mesh = trimesh.creation.box(extents=(1.0, 1.0, 1.0))
+    mesh.visual = trimesh.visual.TextureVisuals(material=trimesh.visual.material.PBRMaterial(baseColorFactor=[*color, 255]))
+    mesh.export(path)
+    return path
 
 
 def objects_world_mesh(objects) -> trimesh.Trimesh:
@@ -123,7 +131,7 @@ class ObjectAnnotation:
     semantic_id_to_classid_obj_id() are what ObjectDetectorGTSensor.decompose_frame needs to
     turn a rendered semantic buffer into per-object detections, for any of the 4 envs.
     object_info_list/object_occupancy_grid (the top-down occupancy-map debug view exposed via
-    ExplorationEnv.get_object_occupancy/get_tdmap) are HSSD-HAB-only - None for the other 3
+    ExplorationEnv.get_tdmap) are HSSD-HAB-only - None for the other 3
     envs, which have no equivalent handle-based object classification to build them from."""
     env_name: str
     classes: list[str]
@@ -201,19 +209,19 @@ def _resolve_native_vocab(env_name: str, vocab_name: str) -> list[str]:
         raise NotImplementedError(f"Environment {env_name} not supported for object annotations")
 
 
-@lru_cache(maxsize=None)
-def _load_procthor_classes(mapping_path: str) -> list[str]:
-    """Native per-category semantic ids habitat_sim applies to ProcTHOR-hab objects at load
-    time (configs/object_semantic_id_mapping.json - see test_procthor.py). Cached per mapping
-    path for the same reason as _load_hssd_vocab. Returns a dense class list indexed by that
-    native id, so it doubles directly as class_id with no separate remapping; "Undefined" is
-    renamed to "unknown" to match ObjectAnnotation's decode/filtering sentinel."""
-    name_to_id: dict[str, int] = json.load(open(mapping_path))
+def _procthor_base_class(name: str) -> str:
+    """name without a PROCTHOR_VARIANT_SUFFIXES suffix (AppleSliced -> Apple) when what remains is a class of its own."""
+    return next((name[:-len(suffix)] for suffix in PROCTHOR_VARIANT_SUFFIXES if name.endswith(suffix) and name[:-len(suffix)] in PROCTHOR_NATIVE_CLASSES), name)
 
-    classes = ["unknown"] * (max(name_to_id.values()) + 1)
-    for name, idx in name_to_id.items():
-        classes[idx] = "unknown" if name == "Undefined" else name
-    return classes
+
+@lru_cache(maxsize=None)
+def _procthor_class_ids(mapping_path: str) -> dict[int, int]:
+    """{native semantic id habitat_sim applies to ProcTHOR-hab objects at load time: its PROCTHOR_NATIVE_CLASSES (and CLASS_LABELS_PROCTHOR) index}, from
+    configs/object_semantic_id_mapping.json, variants folded into their base class and "Undefined" left out."""
+    name_to_id: dict[str, int] = json.load(open(mapping_path))
+    unlisted = [name for name in name_to_id if name != "Undefined" and _procthor_base_class(name) not in PROCTHOR_NATIVE_CLASSES]
+    assert not unlisted, f"ProcTHOR-hab classes missing from PROCTHOR_NATIVE_CLASSES: {unlisted}"
+    return {native_id: PROCTHOR_NATIVE_CLASSES.index(_procthor_base_class(name)) for name, native_id in name_to_id.items() if name != "Undefined"}
 
 
 def _setup_hssd(sim, vocab_name: str) -> ObjectAnnotation:
@@ -255,19 +263,18 @@ def _setup_procthor(sim, vocab_name: str) -> ObjectAnnotation:
     # writable visual_scene_nodes - unlike its native per-category semantic id (which merges
     # same-class instances), we can bake a per-instance id here too.
     assert vocab_name == PROCTHOR_NATIVE_VOCAB, (
-        f"ProcTHOR-hab's vocabulary is data-driven, got vocab_name={vocab_name!r}, expected {PROCTHOR_NATIVE_VOCAB!r}"
+        f"ProcTHOR-hab's vocabulary is CLASS_LABELS_PROCTHOR, got vocab_name={vocab_name!r}, expected {PROCTHOR_NATIVE_VOCAB!r}"
     )
     ai2_root = os.path.dirname(sim.config.sim_cfg.scene_dataset_config_file)
-    mapping_path = os.path.join(ai2_root, "configs", "object_semantic_id_mapping.json")
-    classes = _load_procthor_classes(mapping_path)
+    class_ids = _procthor_class_ids(os.path.join(ai2_root, "configs", "object_semantic_id_mapping.json"))
 
     obj_id_to_class_id: dict[int, int] = {}
     dimensions_by_obj_id: dict[int, np.ndarray] = {}
 
     for obj in get_all_objects(sim):
-        class_id = obj.semantic_id  # native id, applied by habitat_sim at load time - read before we overwrite it below
+        class_id = class_ids.get(obj.semantic_id)  # native id, applied by habitat_sim at load time - read before we overwrite it below
 
-        if class_id >= len(classes) or classes[class_id] == "unknown":
+        if class_id is None:
             for node in obj.visual_scene_nodes:
                 node.semantic_id = 0
             continue
@@ -280,7 +287,7 @@ def _setup_procthor(sim, vocab_name: str) -> ObjectAnnotation:
         obj_id_to_class_id[obj.object_id] = class_id
         dimensions_by_obj_id[obj.object_id] = compute_obj_dimensions(obj)
 
-    return ObjectAnnotation(env_name="ProcTHOR-hab", classes=classes, obj_id_to_class_id=obj_id_to_class_id, dimensions_by_obj_id=dimensions_by_obj_id)
+    return ObjectAnnotation(env_name="ProcTHOR-hab", classes=CLASS_LABELS_PROCTHOR, obj_id_to_class_id=obj_id_to_class_id, dimensions_by_obj_id=dimensions_by_obj_id)
 
 
 def _setup_native_semantic_scene(sim, env_name: str, vocab_name: str) -> ObjectAnnotation:
@@ -329,15 +336,12 @@ def resolve_classes(env_name: str, vocab_name: str) -> list[str]:
     """Class list for (env_name, vocab_name) without needing a live sim, unlike
     setup_semantic_labels above -- for callers (coco_writer.py, collection.py's
     visualize_mosaic, agents.py's do_visualize) that only run once collection's simulator
-    has closed. ProcTHOR-hab's vocab_name is data-driven (see PROCTHOR_NATIVE_VOCAB)."""
+    has closed. ProcTHOR-hab's only vocab_name is PROCTHOR_NATIVE_VOCAB."""
     if env_name == "ProcTHOR-hab":
         assert vocab_name == PROCTHOR_NATIVE_VOCAB, (
-            f"ProcTHOR-hab's vocabulary is data-driven, got vocab_name={vocab_name!r}, expected {PROCTHOR_NATIVE_VOCAB!r}"
+            f"ProcTHOR-hab's vocabulary is CLASS_LABELS_PROCTHOR, got vocab_name={vocab_name!r}, expected {PROCTHOR_NATIVE_VOCAB!r}"
         )
-        mapping_path = os.path.join(
-            str(HABITAT_DATA), "scene_datasets", "ai2thor-hab", "ai2thor-hab", "configs", "object_semantic_id_mapping.json"
-        )
-        return _load_procthor_classes(mapping_path)
+        return CLASS_LABELS_PROCTHOR
     elif env_name in ("MP3D", "Gibson-Semantic"):
         return _resolve_native_vocab(env_name, vocab_name)
     elif env_name == "HSSD-HAB":
@@ -345,3 +349,91 @@ def resolve_classes(env_name: str, vocab_name: str) -> list[str]:
         return classes
     else:
         raise NotImplementedError(f"Environment {env_name} not supported for object annotations")
+
+
+def _scene_placements(scene_glob: str) -> list[tuple[str, np.ndarray]]:
+    """(template name, scale) of every object instance placed in the scene_glob scenes."""
+    instances = [inst for path in glob.glob(scene_glob) for inst in json.load(open(path))["object_instances"]]
+    return [(os.path.basename(inst["template_name"]), np.abs(inst["non_uniform_scale"])) for inst in instances]
+
+
+def _template_placements(object_config_glob: str) -> list[tuple[str, np.ndarray]]:
+    """(template name, unit scale) of every object_config_glob template, placed or not."""
+    return [(os.path.basename(path).removesuffix(".object_config.json"), np.ones(3)) for path in glob.glob(object_config_glob)]
+
+
+def _template_dims_and_semantic_ids(dataset_config: str, template_names: set[str]) -> dict[str, tuple[np.ndarray, int]]:
+    """Render-mesh dimensions and native semantic_id of each template with an exact config, read by instancing it once in a stage-less sim."""
+    backend_cfg = habitat_sim.SimulatorConfiguration()
+    backend_cfg.scene_dataset_config_file = dataset_config
+    backend_cfg.scene_id = "NONE"
+    backend_cfg.enable_physics = True  # without physics the rigid object manager returns no objects
+    sim = habitat_sim.Simulator(habitat_sim.Configuration(backend_cfg, [habitat_sim.agent.AgentConfiguration()]))
+    rom = sim.get_rigid_object_manager()
+    handles = {
+        os.path.basename(handle).removesuffix(".object_config.json"): handle
+        for handle in sim.get_object_template_manager().get_template_handles()
+    }
+
+    template_info: dict[str, tuple[np.ndarray, int]] = {}
+    for name in template_names & handles.keys():
+        obj = rom.add_object_by_template_handle(handles[name])
+        template_info[name] = (compute_obj_render_dimensions(obj), obj.semantic_id)
+        rom.remove_object_by_id(obj.object_id)
+    sim.close()
+    return template_info
+
+
+def _class_size_table(placements: list[tuple[str, np.ndarray]], template_info: dict[str, tuple[np.ndarray, int]], class_of_template) -> pd.DataFrame:
+    """Per-class placement count and min/max of each box_size_measures of the scaled render-mesh AABB, over every (template name, scale) placement."""
+    rows = []
+    for name, scale in placements:
+        if name not in template_info:
+            continue
+        dims, semantic_id = template_info[name]
+        class_name = class_of_template(name, semantic_id)
+        if class_name is not None:
+            rows.append({"class": class_name, **box_size_measures(dims * scale)})
+    per_class = pd.DataFrame(rows).groupby("class")
+    ranges = {f"{bound}_{name}": per_class[name].agg(bound) for name in SIZE_MEASURES for bound in ("min", "max")}
+    return pd.DataFrame({"num_instances": per_class.size(), **ranges})
+
+
+def _write_class_size_table(dataset_config: str, placements: list[tuple[str, np.ndarray]], class_of_template, output_path: str) -> None:
+    template_info = _template_dims_and_semantic_ids(dataset_config, {name for name, _ in placements})
+    _class_size_table(placements, template_info, class_of_template).round(6).to_csv(output_path)
+
+
+def class_size_ranges(sizes_path: str) -> dict[str, dict[str, tuple[float, float]]]:
+    """{class: {size measure: (min, max)}} of a hssd_hab_sizes/procthor_hab_sizes table."""
+    table = pd.read_csv(sizes_path, index_col="class")
+    return {
+        class_name: {name: (row[f"min_{name}"], row[f"max_{name}"]) for name in SIZE_MEASURES}
+        for class_name, row in table.iterrows()
+    }
+
+
+def hssd_hab_sizes(output_path: str = HSSD80_SIZES_PATH) -> None:
+    _, target_vocab_object_annotations, _ = _load_hssd_vocab("HSSD80")
+    hssd_root = os.path.join(str(HABITAT_DATA), "scene_datasets", "hssd-hab")
+    _write_class_size_table(
+        os.path.join(hssd_root, "hssd-hab.scene_dataset_config.json"),
+        _scene_placements(os.path.join(hssd_root, "scenes", "*.scene_instance.json")),
+        lambda name, _: target_vocab_object_annotations.get(name),
+        output_path,
+    )
+
+
+def procthor_hab_sizes(output_path: str = PROCTHOR_NATIVE_SIZES_PATH) -> None:
+    class_ids = _procthor_class_ids(os.path.join(PROCTHOR_ROOT, "configs", "object_semantic_id_mapping.json"))
+    _write_class_size_table(
+        os.path.join(PROCTHOR_ROOT, "ai2thor-hab.scene_dataset_config.json"),
+        _template_placements(os.path.join(PROCTHOR_ROOT, "configs", "objects", "*.object_config.json")),
+        lambda _, native_id: CLASS_LABELS_PROCTHOR[class_ids[native_id]] if native_id in class_ids else None,
+        output_path,
+    )
+
+
+if __name__ == "__main__":
+    hssd_hab_sizes()
+    procthor_hab_sizes()

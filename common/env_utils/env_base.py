@@ -1,5 +1,6 @@
 import itertools
 import os
+from dataclasses import dataclass
 from typing import Any, Optional, cast
 
 from omegaconf import read_write
@@ -13,12 +14,43 @@ from habitat_baselines.common.baseline_registry import baseline_registry # type:
 from habitat.utils.visualizations import fog_of_war, maps # type: ignore
 from gym import spaces
 from hydra.core.config_store import ConfigStore
+from habitat.config.default_structured_configs import ActionConfig # type: ignore
+from habitat.core.embodied_task import SimulatorTaskAction # type: ignore
 from habitat.tasks.nav.nav import NavigationGoal, NavigationTask, NavigationEpisode # type: ignore
+from habitat_sim.utils.common import quat_rotate_vector
 
 from common.env_utils.lighting import AI2THOR_BRIGHT_LIGHTS
-from common.env_utils.object_annotations import get_all_objects
+from common.env_utils.object_annotations import ObjectAnnotation, get_all_objects
 from common.planning.skeleton import grid_path
 from common.utils.pose_utils import quaternion_from_rpy
+
+
+_FLOOR_RAY_START_M = 0.3  # above the navmesh, below anything the agent can stand under
+
+
+@dataclass
+class SideStepActionConfig(ActionConfig):
+    type: str = "SideStepAction"
+    move_amount: float = 0.25
+    angle_deg: float = 90.0
+
+
+@habitat.registry.register_task_action
+class SideStepAction(SimulatorTaskAction):
+    """Moves the agent move_amount metres at angle_deg from its heading (90: to its left), sliding along the navmesh, without turning."""
+
+    def step(self, *args: Any, **kwargs: Any) -> None:
+        state = self._sim.get_agent_state()
+        angle = np.deg2rad(self._config.angle_deg)
+        offset = quat_rotate_vector(state.rotation, np.array([-np.sin(angle), 0.0, -np.cos(angle)])) * self._config.move_amount
+        position = self._sim.pathfinder.try_step(state.position, state.position + offset)
+        self._sim.set_agent_state(position, state.rotation, reset_sensors=False)
+
+
+for _name, _angle_deg in (("move_left", 90.0), ("move_right", -90.0), ("move_backward", 180.0)):
+    ConfigStore.instance().store(
+        package=f"habitat.task.actions.{_name}", group="habitat/task/actions", name=_name, node=SideStepActionConfig(angle_deg=_angle_deg),
+    )
 
 
 @baseline_registry.register_task(name="ExplorationTask-v0")
@@ -120,6 +152,12 @@ class ExplorationEnv(RLEnv):
     def get_sim(self) -> habitat_sim.Simulator:
         return self._env.sim
 
+    def navmesh_floor_offset(self) -> float:
+        """Height of the agent's navmesh position above the first collidable surface straight below it, the floor."""
+        position = np.array(self.get_agent_state().position)
+        ray = habitat_sim.geo.Ray(mn.Vector3(*(position + [0.0, _FLOOR_RAY_START_M, 0.0])), mn.Vector3(0.0, -1.0, 0.0))
+        return float(position[1] - self._env.sim.cast_ray(ray).hits[0].point[1])
+
     def get_map_bounds(self) -> tuple[tuple[float, float], tuple[float, float]]:
         l, u = self._env.sim.pathfinder.get_bounds()
         return l, u
@@ -128,10 +166,10 @@ class ExplorationEnv(RLEnv):
         return self.last_reward
 
     def get_tdmap(self) -> np.ndarray:
-        return self._env.task.sensor_suite.get("bbsgt").annotation.object_occupancy_grid.topdown_view
+        return self.get_object_annotation().object_occupancy_grid.topdown_view
 
-    def get_object_occupancy(self) -> np.ndarray:
-        return self._env.task.sensor_suite.get("bbsgt").annotation.object_occupancy_grid
+    def get_object_annotation(self) -> ObjectAnnotation:
+        return self._env.task.sensor_suite.get("bbsgt").annotation
 
     _GROUND_FLOOR_MPP = 0.125  # meters/cell, matches HabitatObjOccupancyGrid's own resolution
     _STEP_WALK_METERS = 0.25  # waypoint spacing along find_shortest_path_waypoints's route (embodied-active-learning-od's own grid spacing)

@@ -6,9 +6,9 @@ filter_empty: False
 object_params:
   env_name: "Gibson-Semantic"
   vocab_name: "COCO80"
-  area_thr: 400
+  min_area_fraction: 0.001
   filter_low_visibility: True
-  min_visibility_fraction: 0.2
+  min_mesh_visibility_fraction: 0.2
   filter_classes: [ "couch", "potted plant", "bed", "dining table", "toilet", "tv" ]
 
 train_scenes: [

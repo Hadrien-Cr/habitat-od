@@ -7,6 +7,9 @@ defaults:
   - /habitat/task/actions:
       - look_up
       - look_down
+      - move_left
+      - move_right
+      - move_backward
   - /habitat/simulator/sensor_setups@habitat.simulator.agents.main_agent: rgbds_agent
   - _self_
 
@@ -82,7 +85,7 @@ habitat:
 object_params:
   env_name: "HSSD-HAB"
   vocab_name: "COCO80"
-  area_thr: 400
+  min_area_fraction: 0.001
   filter_occluded: true
 
 baseline_params:

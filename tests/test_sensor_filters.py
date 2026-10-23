@@ -1,8 +1,8 @@
 """
-Integration test for ObjectDetectorGTSensor.decompose_frame's min_visibility_fraction filter.
+Integration test for ObjectDetectorGTSensor.decompose_frame's min_mesh_visibility_fraction filter.
 
 Instantiates a real HSSD scene, captures k frames, and runs decompose_frame on each under
-increasingly strict min_visibility_fraction settings, reusing the same (semantic, depth) pair
+increasingly strict min_mesh_visibility_fraction settings, reusing the same (semantic, depth) pair
 across settings so the comparison is apples-to-apples.
 
 Requires HABITAT_DATA pointing at a real hssd-hab dataset (see INSTALL.MD) - skipped otherwise.
@@ -37,9 +37,9 @@ _TESTDUMP_DIR = os.path.join(os.path.dirname(__file__), "testdump", "test_sensor
 os.system(f"rm -rf {_TESTDUMP_DIR}")
 
 SETTINGS = {
-    "no_filter": dict(filter_low_visibility=False, min_visibility_fraction=0.0),
-    "lenient": dict(filter_low_visibility=True, min_visibility_fraction=0.1),
-    "strict": dict(filter_low_visibility=True, min_visibility_fraction=0.5),
+    "no_filter": dict(filter_low_visibility=False, min_mesh_visibility_fraction=0.0),
+    "lenient": dict(filter_low_visibility=True, min_mesh_visibility_fraction=0.1),
+    "strict": dict(filter_low_visibility=True, min_mesh_visibility_fraction=0.5),
 }
 
 
@@ -50,7 +50,7 @@ def env():
         habitat_config.habitat.dataset.content_scenes = [_SCENE]
         habitat_config.habitat.task.lab_sensors = {
             "object_detector_gt": ObjectDetectorGTSensorConfig(
-                area_thr=0.0,
+                min_area_fraction=0.0,
                 env_name="HSSD-HAB",
                 vocab_name=_VOCAB,
             ),

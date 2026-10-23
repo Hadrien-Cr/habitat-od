@@ -83,8 +83,8 @@ def sensor():
     sim = habitat_sim.Simulator(habitat_sim.Configuration(backend_cfg, [agent_cfg]))
 
     config = ObjectDetectorGTSensorConfig(
-        env_name="HSSD-HAB", vocab_name="HSSD80", area_thr=0.0, filter_low_visibility=False,
-        min_visibility_fraction=0.0, filter_classes=[],
+        env_name="HSSD-HAB", vocab_name="HSSD80", min_area_fraction=0.0, filter_low_visibility=False,
+        min_mesh_visibility_fraction=0.0, filter_classes=[],
     )
     s = ObjectDetectorGTSensor(sim, config)
     s.setup_semantic_labels()

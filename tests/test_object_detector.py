@@ -14,7 +14,7 @@ visualize_mosaic, and tiled with make_mosaic into
 tests/testdump/test_object_detector/<env_name>_mosaic.png (one file per env).
 
 Classes/colors come from sensor.get_classes() + vocab_constants.make_colors() rather than
-MetadataCatalog, since ProcTHOR-hab's data-driven vocabulary is never registered there.
+MetadataCatalog, the same way for all 4 envs.
 
 Requires HABITAT_DATA pointing at real data for at least one of the 4 envs (see INSTALL.MD) -
 skipped entirely otherwise.
@@ -63,7 +63,7 @@ _ENV_SPECS = {
         scene_id="Collierville",
     ),
     "ProcTHOR-hab": dict(
-        vocab_name="ProcTHOR-native",  # ProcTHOR-hab's vocabulary is fully data-driven - see object_annotations.py
+        vocab_name="ProcTHOR-native",  # CLASS_LABELS_PROCTHOR - see vocab_constants.py
         dataset_config=f"{HABITAT_DATA}/scene_datasets/ai2thor-hab/ai2thor-hab/ai2thor-hab.scene_dataset_config.json" if HABITAT_DATA else None,
         scene_id="ProcTHOR-Train-9632",
     ),
@@ -154,7 +154,7 @@ def test_generates_cross_env_detection_mosaics():
 
             config = ObjectDetectorGTSensorConfig(
                 env_name=env_name, vocab_name=spec["vocab_name"],
-                area_thr=250, filter_low_visibility=True, min_visibility_fraction=0.2,
+                min_area_fraction=1e-3, filter_low_visibility=True, min_mesh_visibility_fraction=0.2,
                 filter_classes=[],
             )
             sensor = ObjectDetectorGTSensor(sim, config)

@@ -1,0 +1,26 @@
+# Collection config for habitat_embodied_sl/main.py (see ../README.md): writes datasets/<run_name>/<variant>/.
+run_name: procthor_sl
+seed: 0
+
+object_params:
+  env_name: "ProcTHOR-hab"
+  vocab_name: "ProcTHOR-native"
+  min_area_fraction: 0.001
+  filter_low_visibility: True
+  min_mesh_visibility_fraction: 0.2
+  filter_classes: []
+
+collection:
+  steps_per_scene: 500
+  k_retrieval: 10
+  scenes: [
+    "ProcTHOR-Train-0", "ProcTHOR-Train-1", "ProcTHOR-Train-2", "ProcTHOR-Train-3", "ProcTHOR-Train-4",
+  ]
+
+evaluation:
+  frames_per_scene: 50
+  downsampling: 4
+  max_steps_per_scene: 1000
+  scenes: [
+    "ProcTHOR-Val-0", "ProcTHOR-Val-1",
+  ]

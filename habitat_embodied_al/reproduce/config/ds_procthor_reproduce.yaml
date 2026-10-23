@@ -12,19 +12,19 @@ filter_empty: False
 object_params:
   env_name: "ProcTHOR-hab"
   vocab_name: "ProcTHOR-native"
-  area_thr: 400
+  min_area_fraction: 0.001
   filter_low_visibility: True
-  min_visibility_fraction: 0.2
+  min_mesh_visibility_fraction: 0.2
   # classes.py::PROCTHOR_SHORT_CLASSES -- the 49-class shortlist reproduced from
   # the original repo's OBJECTS_PROCTHOR_SHORT.
   filter_classes: [
-    "Apple", "Tomato", "Bread", "Pot", "Knife", "Fork", "Spoon", "Bowl", "Egg", "Lettuce",
-    "Potato", "Mug", "Plate", "Cup", "ButterKnife", "Statue", "TissueBox", "Laptop",
-    "RemoteControl", "Box", "Newspaper", "KeyChain", "CellPhone", "CreditCard", "Candle",
-    "Plunger", "ToiletPaper", "SoapBottle", "SprayBottle", "Book", "AlarmClock", "Pen",
-    "Pencil", "Watch", "BaseballBat", "BasketBall", "Bottle", "DishSponge", "PaperTowelRoll",
-    "PepperShaker", "SaltShaker", "Spatula", "TeddyBear", "TennisRacket", "Vase", "Pillow",
-    "DeskLamp", "CD", "WineBottle" ]
+    "apple", "tomato", "bread", "pot", "knife", "fork", "spoon", "bowl", "egg", "lettuce",
+    "potato", "mug", "plate", "cup", "butter knife", "statue", "tissue box", "laptop",
+    "remote control", "box", "newspaper", "key chain", "cell phone", "credit card", "candle",
+    "plunger", "toilet paper", "soap bottle", "spray bottle", "book", "alarm clock", "pen",
+    "pencil", "watch", "baseball bat", "basket ball", "bottle", "dish sponge", "paper towel roll",
+    "pepper shaker", "salt shaker", "spatula", "teddy bear", "tennis racket", "vase", "pillow",
+    "desk lamp", "cd", "wine bottle" ]
 
 train_scenes: [
   "ProcTHOR-Train-0", "ProcTHOR-Train-1", "ProcTHOR-Train-2", "ProcTHOR-Train-3", "ProcTHOR-Train-4",

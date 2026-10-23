@@ -83,7 +83,7 @@ python habitat_embodied_al/reproduce/main.py \
 
 Every flag has a `--help`; `--run-name` defaults to a name derived from
 `--scene-name`/`--agent`/`--sampler`/`--scoring`/`--rounds`/`--samples`/`--timesteps`/`--seed`.
-`--env-name`/`--vocab-name`/`--area-thr`/`--filter-classes`/etc. default to the `ProcTHOR-hab`/
+`--env-name`/`--vocab-name`/`--min-area-fraction`/`--filter-classes`/etc. default to the `ProcTHOR-hab`/
 `ProcTHOR-native` setup steps 1-4 already collected against (`--filter-classes` defaults to
 `habitat_embodied_al/reproduce/classes.py`'s `PROCTHOR_SHORT_CLASSES`) — override them together
 if targeting a different env/vocab. Trailing `KEY VALUE` pairs (detectron2's own `opts`

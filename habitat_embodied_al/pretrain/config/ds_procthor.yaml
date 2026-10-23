@@ -5,13 +5,13 @@ filter_empty: False
 object_params:
   env_name: "ProcTHOR-hab"
   vocab_name: "ProcTHOR-native"
-  area_thr: 400
+  min_area_fraction: 0.001
   filter_low_visibility: True
-  min_visibility_fraction: 0.2
-  filter_classes: [ "Toaster", "Microwave", "Fridge", "Cabinet", "Chair", "DiningTable",
-    "CounterTop", "Television", "Toilet", "Bathtub", "Bed", "Mirror", "ArmChair", "Ottoman",
-    "Sofa", "Shelf", "Dresser", "Desk", "SideTable", "TVStand", "CoffeeTable", "ShelvingUnit",
-    "Stool", "WashingMachine" ]
+  min_mesh_visibility_fraction: 0.2
+  filter_classes: [ "toaster", "microwave", "fridge", "cabinet", "chair", "dining table",
+    "counter top", "television", "toilet", "bathtub", "bed", "mirror", "arm chair", "ottoman",
+    "sofa", "shelf", "dresser", "desk", "side table", "tv stand", "coffee table", "shelving unit",
+    "stool", "washing machine" ]
 
 train_scenes: [
   "ProcTHOR-Train-0", "ProcTHOR-Train-1", "ProcTHOR-Train-2", "ProcTHOR-Train-3",

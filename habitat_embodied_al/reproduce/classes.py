@@ -1,9 +1,9 @@
 PROCTHOR_SHORT_CLASSES = [
-    "AlarmClock", "Apple", "BaseballBat", "BasketBall", "Book", "Bottle", "Bowl", "Box",
-    "Bread", "ButterKnife", "CD", "Candle", "CellPhone", "CreditCard", "Cup", "DeskLamp",
-    "DishSponge", "Egg", "Fork", "KeyChain", "Knife", "Laptop", "Lettuce", "Mug", "Newspaper",
-    "PaperTowelRoll", "Pen", "Pencil", "PepperShaker", "Pillow", "Plate", "Plunger", "Pot",
-    "Potato", "RemoteControl", "SaltShaker", "SoapBottle", "Spatula", "Spoon", "SprayBottle",
-    "Statue", "TeddyBear", "TennisRacket", "TissueBox", "ToiletPaper", "Tomato", "Vase",
-    "Watch", "WineBottle",
+    "alarm clock", "apple", "baseball bat", "basket ball", "book", "bottle", "bowl", "box",
+    "bread", "butter knife", "cd", "candle", "cell phone", "credit card", "cup", "desk lamp",
+    "dish sponge", "egg", "fork", "key chain", "knife", "laptop", "lettuce", "mug", "newspaper",
+    "paper towel roll", "pen", "pencil", "pepper shaker", "pillow", "plate", "plunger", "pot",
+    "potato", "remote control", "salt shaker", "soap bottle", "spatula", "spoon", "spray bottle",
+    "statue", "teddy bear", "tennis racket", "tissue box", "toilet paper", "tomato", "vase",
+    "watch", "wine bottle",
 ]

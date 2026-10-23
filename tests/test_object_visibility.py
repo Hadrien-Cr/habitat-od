@@ -6,12 +6,17 @@ compares the visible mask pixel count against how many pixels the object's large
 cover if fully visible and facing the camera at the mask's mean depth, so occlusion, cropping and
 foreshortening all lower the ratio without projecting the real mesh.
 
+Stripe occlusions are covered too: a bar in front of a tall box (a fridge stand-in) hides a horizontal or vertical
+stripe of it while both ends stay visible, so the mask's bounding rectangle stays full-size and only the hidden
+pixels should lower the fraction.
+
 Everything is placed high above apartment_1's own geometry, so only the objects placed here reach
 the semantic/depth buffers under test.
 """
 
 import os
 
+import cv2
 import magnum as mn
 import numpy as np
 import pytest
@@ -20,6 +25,7 @@ from PIL import Image, ImageDraw
 import habitat_sim
 from habitat_sim.utils.common import colorize_ids
 
+from common.env_utils.object_annotations import colored_box_asset
 from common.env_utils.visibility_utils import compute_obj_dimensions, mesh_visibility_fraction
 
 _Y = 50.0
@@ -32,6 +38,15 @@ _PANEL_POS = mn.Vector3(0.0, _Y, -1.5)
 _PANEL_HALF_EXTENT = 0.3      # x/y half-size
 _PANEL_HALF_THICKNESS = 0.02  # z half-size
 _PANEL_TILT_DEG = 85.0  # about Y - near edge-on without fully vanishing (empirical)
+_TALL_BOX_POS = mn.Vector3(0.0, _Y, -2.0)
+_TALL_BOX_HALF_EXTENTS = np.array([0.25, 0.6, 0.2])
+_TALL_BOX_PARKED_POS = mn.Vector3(20.0, _Y, -20.0)
+_TALL_BOX_COLOR = (235, 235, 235)
+_BAR_POS = mn.Vector3(0.0, _Y, -1.3)
+_BAR_HALF_EXTENTS = np.array([0.5, 0.12, 0.02])  # wider than the tall box, a stripe of its height
+_BAR_PARKED_POS = mn.Vector3(-20.0, _Y, -20.0)
+_BAR_COLOR = (200, 40, 40)
+_STRIPE_TOLERANCE = 0.1
 _SENSOR_UUID = "semantic"
 _RGB_UUID = "rgb"
 _DEPTH_UUID = "depth"
@@ -123,12 +138,41 @@ def thin_panel(sim):
     return obj
 
 
+def _box_object(sim, asset, half_extents, position, semantic_id):
+    """A kinematic, flat-shaded box of the unit-cube asset (colored_box_asset) sized to half_extents, at position."""
+    obj_templates_mgr = sim.get_object_template_manager()
+    template = habitat_sim.attributes.ObjectAttributes()
+    template.render_asset_handle = template.collision_asset_handle = asset
+    template.scale = 2 * half_extents
+    template.force_flat_shading = True
+    obj = sim.get_rigid_object_manager().add_object_by_template_id(obj_templates_mgr.register_template(template, os.path.basename(asset)))
+    obj.motion_type = habitat_sim.physics.MotionType.KINEMATIC
+    obj.translation = position
+    obj.semantic_id = semantic_id
+    return obj
+
+
+@pytest.fixture(scope="module")
+def tall_box(sim, tmp_path_factory):
+    asset = colored_box_asset(str(tmp_path_factory.mktemp("assets") / "stripe_test_tall_box.glb"), _TALL_BOX_COLOR)
+    return _box_object(sim, asset, _TALL_BOX_HALF_EXTENTS, _TALL_BOX_PARKED_POS, 4)
+
+
+@pytest.fixture(scope="module")
+def bar(sim, tmp_path_factory):
+    asset = colored_box_asset(str(tmp_path_factory.mktemp("assets") / "stripe_test_bar.glb"), _BAR_COLOR)
+    return _box_object(sim, asset, _BAR_HALF_EXTENTS, _BAR_PARKED_POS, 5)
+
+
 @pytest.fixture(autouse=True)
-def _reset_scene(sim, donut, cube, thin_panel):
+def _reset_scene(sim, donut, cube, thin_panel, tall_box, bar):
     donut.translation = _DONUT_POS
     cube.translation = _CUBE_PARKED_POS
     thin_panel.translation = _PANEL_PARKED_POS
     thin_panel.rotation = mn.Quaternion()
+    tall_box.translation = _TALL_BOX_PARKED_POS
+    bar.translation = _BAR_PARKED_POS
+    bar.rotation = mn.Quaternion()
     yield
 
 
@@ -216,6 +260,32 @@ def test_thin_panel_tilted_edge_on_is_foreshortened(sim, thin_panel, request):
     assert tilted_fraction < flat_fraction, (
         f"tilted panel ({tilted_fraction:.3f}) should score lower than the same panel facing "
         f"the camera head-on ({flat_fraction:.3f})"
+    )
+
+
+@pytest.mark.parametrize("orientation", ["horizontal", "vertical"])
+def test_tall_box_stripe_occlusion(sim, tall_box, bar, orientation, request):
+    """A bar in front of the tall box hides a stripe across it, both ends staying visible: the fraction should drop by
+    the hidden share of the box's pixels, as the mask's bounding rectangle doesn't shrink."""
+    dims = compute_obj_dimensions(tall_box)
+    tall_box.translation = _TALL_BOX_POS
+    semantic_obs, depth_obs = _frame(sim)
+    full_mask = semantic_obs == tall_box.semantic_id
+    full_fraction = mesh_visibility_fraction(dims, full_mask, depth_obs)
+    _save_scene_snapshot(sim, f"{request.node.name}_unoccluded", full_fraction)
+
+    bar.translation = _BAR_POS
+    bar.rotation = mn.Quaternion() if orientation == "horizontal" else mn.Quaternion.rotation(mn.Deg(90.0), mn.Vector3.z_axis())
+    semantic_obs, depth_obs = _frame(sim)
+    striped_mask = semantic_obs == tall_box.semantic_id
+    striped_fraction = mesh_visibility_fraction(dims, striped_mask, depth_obs)
+    _save_scene_snapshot(sim, f"{request.node.name}_striped", striped_fraction)
+
+    assert cv2.boundingRect(striped_mask.astype(np.uint8)) == cv2.boundingRect(full_mask.astype(np.uint8)), "the stripe should leave both ends visible"
+    visible_share = striped_mask.sum() / full_mask.sum()
+    assert visible_share < 0.9, f"expected the bar to hide a stripe of the box, {visible_share:.2f} of it stays visible"
+    assert abs(striped_fraction / full_fraction - visible_share) <= _STRIPE_TOLERANCE, (
+        f"striped fraction {striped_fraction:.3f} should be about {visible_share:.2f} of the unoccluded {full_fraction:.3f}"
     )
 
 

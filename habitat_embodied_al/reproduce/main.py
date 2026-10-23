@@ -204,20 +204,10 @@ def eval_checkpoint(
     return eval_results
 
 
-def add_object_args(parser: argparse.ArgumentParser) -> None:
-    """ObjectDetectorGTSensor/vocabulary flags shared with habitat_embodied_sl/main.py."""
-    parser.add_argument("--env-name", default="ProcTHOR-hab")
-    parser.add_argument("--vocab-name", default="ProcTHOR-native")
-    parser.add_argument("--area-thr", type=float, default=400.0)
-    parser.add_argument("--filter-low-visibility", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--min-visibility-fraction", type=float, default=0.2)
-    parser.add_argument("--filter-classes", nargs="*", default=PROCTHOR_SHORT_CLASSES, help="Allow-list of classes to keep; pass an empty list to keep every class.")
-
-
 def object_params_from_args(args: argparse.Namespace) -> dict:
     return {
-        "env_name": args.env_name, "vocab_name": args.vocab_name, "area_thr": args.area_thr,
-        "filter_low_visibility": args.filter_low_visibility, "min_visibility_fraction": args.min_visibility_fraction,
+        "env_name": args.env_name, "vocab_name": args.vocab_name, "min_area_fraction": args.min_area_fraction,
+        "filter_low_visibility": args.filter_low_visibility, "min_mesh_visibility_fraction": args.min_mesh_visibility_fraction,
         "filter_classes": args.filter_classes,
     }
 
@@ -228,9 +218,18 @@ def kept_classes_from_args(args: argparse.Namespace) -> list:
     return [c for c in full_classes if c != "unknown" and (not args.filter_classes or c in args.filter_classes)]
 
 
-def build_env(scene_name: str, seed: int, max_steps: int, object_params: dict):
-    """(ExplorationEnv on scene_name, its habitat config), not yet reset."""
+def set_sensor_resolution(habitat_cfg, image_size: int) -> None:
+    """Renders every agent sensor at image_size x image_size, in place."""
+    with read_write(habitat_cfg):
+        for sensor in habitat_cfg.habitat.simulator.agents.main_agent.sim_sensors.values():
+            sensor.width = sensor.height = image_size
+
+
+def build_env(scene_name: str, seed: int, max_steps: int, object_params: dict, image_size: Optional[int] = None):
+    """(ExplorationEnv on scene_name, its habitat config), not yet reset; its sensors render at image_size if given."""
     habitat_cfg = habitat.get_config(config_path="common/config/hssd-hab/default.yaml")
+    if image_size is not None:
+        set_sensor_resolution(habitat_cfg, image_size)
     with read_write(habitat_cfg):
         habitat_cfg.habitat.seed = seed
     configure_scene(habitat_cfg, [scene_name], max_steps, object_params)
@@ -353,7 +352,12 @@ if __name__ == "__main__":
     parser.add_argument("--init-checkpoint", required=True)
     parser.add_argument("--agnostic-nms-thresh", type=float, default=0.5, help="Collapses same-box detections across classes -- detectron2's own NMS is per-class only. Pass 0.0 to disable.")
 
-    add_object_args(parser)
+    parser.add_argument("--env-name", default="ProcTHOR-hab")
+    parser.add_argument("--vocab-name", default="ProcTHOR-native")
+    parser.add_argument("--min-area-fraction", type=float, default=1e-3)
+    parser.add_argument("--filter-low-visibility", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--min-mesh-visibility-fraction", type=float, default=0.2)
+    parser.add_argument("--filter-classes", nargs="*", default=PROCTHOR_SHORT_CLASSES, help="Allow-list of classes to keep; pass an empty list to keep every class.")
 
     parser.add_argument(
         "opts", default=None, nargs=argparse.REMAINDER,

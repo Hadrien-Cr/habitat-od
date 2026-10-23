@@ -13,7 +13,7 @@ from common.planning.frontiers import detect_frontier_waypoints, reveal_fog_of_w
 class MapConfig:
     fov_deg: float
     resolution: int = 256
-    visibility_dist_m: float = 10.0
+    visibility_dist_m: float = 3.0
     area_thresh_m: float = 3.0
 
 

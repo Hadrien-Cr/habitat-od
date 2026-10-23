@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional, Union
 
 from matplotlib.pyplot import text
 import numpy as np
@@ -10,6 +10,12 @@ import cv2
 from detectron2.utils.visualizer import Visualizer as DetVisualizer
 from detectron2.utils.visualizer import ColorMode
 from detectron2.data import Metadata
+
+from common.hybrid_exploration.plotting import plot_occupancy
+
+if TYPE_CHECKING:
+    from common.agents.frontier_agent import FrontierAgent
+    from common.hybrid_exploration.hybrid_agent import HybridFrontierAgent
 
 # Fixed-order categorical hues (validated for CVD/contrast) -- reused as-is,
 # never cycled per-key, so the same slot always means the same series.
@@ -180,7 +186,7 @@ def plot_segmentation_pred(rgb: np.ndarray, pred_instances, classes: list[str], 
         rgb,
         scale=scale,
         instance_mode=ColorMode.SEGMENTATION,
-        font_size_scale=1.0
+        font_size_scale=scale
     )
 
     for i, (box, class_id, score) in enumerate(zip(
@@ -212,12 +218,12 @@ def plot_segmentation_pred(rgb: np.ndarray, pred_instances, classes: list[str], 
     return im
 
 
-def plot_segmentation_gt(rgb: np.ndarray, gt_instances, classes: list[str], colors: list[tuple[float, float, float]]) -> Image.Image:
+def plot_segmentation_gt(rgb: np.ndarray, gt_instances, classes: list[str], colors: list[tuple[float, float, float]], scale: float = 1.0) -> Image.Image:
     det_visualizer = DetVisualizer(
         rgb,
-        scale=1.0,
+        scale=scale,
         instance_mode=ColorMode.SEGMENTATION,
-        font_size_scale=1.0
+        font_size_scale=scale
     )
 
     for i, (box, class_id, info) in enumerate(zip(
@@ -369,7 +375,21 @@ def make_mosaic(
     return Image.fromarray(final_mosaic)
 
 
-def save_gif(list_fnames_images: list[tuple[str, np.ndarray]], out_path: str, frame_ms: int) -> None:
-    """Looping gif of the labelled, yellow-bordered tiles at their own resolution, one frame each."""
-    frames = [Image.fromarray(_framed_tile(img, label)) for label, img in list_fnames_images]
-    frames[0].save(out_path, save_all=True, append_images=frames[1:], duration=frame_ms, loop=0)
+def rows_mosaic(rows: list[list[tuple[str, np.ndarray]]]) -> Optional[Image.Image]:
+    """make_mosaic of one row per list of labelled tiles, or None without any tile."""
+    tiles = [tile for row in rows for tile in row]
+    return make_mosaic(tiles, row_sizes=[len(row) for row in rows]) if tiles else None
+
+
+def save_decision_map(agent: Union["HybridFrontierAgent", "FrontierAgent"], out_path: Path) -> None:
+    """The agent's map with its trajectory and last step's decision, as a single labelled tile."""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    make_mosaic([agent.map_tile()], N_cols=1).save(out_path)
+
+
+def save_exploration_visuals(agent: "HybridFrontierAgent", prediction_tiles: list, out_dir: Path) -> None:
+    """predictions_mosaic.png of every step, and decision.png and object.png of the last step."""
+    save_decision_map(agent, out_dir / "decision.png")
+    make_mosaic(prediction_tiles, N_cols=5).save(out_dir / "predictions_mosaic.png")
+    occupancy = plot_occupancy(agent.map.revealed, [agent.map.to_pixels(belief.points) for belief in agent.objects.values()])
+    make_mosaic([("objects", occupancy[:, :, ::-1].copy())], N_cols=1).save(out_dir / "object.png")

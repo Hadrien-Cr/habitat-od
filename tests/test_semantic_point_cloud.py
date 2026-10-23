@@ -15,7 +15,7 @@ source asset and transformed by its runtime scale/pose - habitat-sim can't expor
 scene) and an input_mosaic.png of every fused frame's GT segmentation.
 
 Read: queries each held-out frame (the ones in between, never fused) through .depth_raytracing, with the
-GT sensor's own min_visibility_fraction, tiled into a backprojected_mosaic.png, showing how well the map
+GT sensor's own min_mesh_visibility_fraction, tiled into a backprojected_mosaic.png, showing how well the map
 generalizes to unseen views.
 Retrieve: every exploration frame (fused and held-out) is kept in an ImageMemory; for each of the
 --retrieval-objects largest resolved objects, common/utils/retrieval.py's retrieve_views selects diverse frames it
@@ -63,7 +63,7 @@ _AGENT_HEIGHT = 0.88  # matches common/config/hssd-hab/default.yaml's agent heig
 _FORWARD_STEP_M = 0.25
 _TURN_ANGLE_DEG = 30.0  # matches common/config/hssd-hab/default.yaml's turn_angle
 _ENV_NAME = "ProcTHOR-hab"
-_VOCAB_NAME = "ProcTHOR-native"  # fully data-driven - see object_annotations.py
+_VOCAB_NAME = "ProcTHOR-native"  # CLASS_LABELS_PROCTHOR - see vocab_constants.py
 _DATASET_CONFIG = f"{HABITAT_DATA}/scene_datasets/ai2thor-hab/ai2thor-hab/ai2thor-hab.scene_dataset_config.json" if HABITAT_DATA else None
 _DEFAULT_SCENE_ID = "ProcTHOR-Train-9632"  # same one test_object_detector.py uses
 
@@ -183,7 +183,7 @@ def viewer_arg_parser(description: str, map_name: str) -> argparse.ArgumentParse
 
 
 def run_viewer(args: argparse.Namespace, out_name: str, fused, frame_map: Callable, resolve: Callable) -> Tuple[_Viewer, object, ImageMemory]:
-    """Fuses frame_map(rgb, depth, pose, gt_instances) pieces of an exploration run into `fused`, resolves it with resolve(fused, memory),
+    """Fuses frame_map(frame_id, frame, gt_instances) pieces of an exploration run into `fused`, resolves it with resolve(fused, memory),
     saves it, backprojects it and returns it with every explored frame."""
     
     if not _DATASET_CONFIG or not os.path.exists(_DATASET_CONFIG):
@@ -207,7 +207,7 @@ def run_viewer(args: argparse.Namespace, out_name: str, fused, frame_map: Callab
             input_tiles.append(_segmentation_tile(viewer, frame.rgb, gt_instances, f"frame{frame_id:03d}"))
             if len(gt_instances):
                 st = time.time()
-                fused = fused + frame_map(frame.rgb, frame.depth, frame.pose, gt_instances)
+                fused = fused + frame_map(frame_id, frame, gt_instances)
                 print(f"frame {frame_id:03d}: inserted {len(gt_instances)} instances in {time.time() - st:.3f}s")
 
         make_mosaic(input_tiles, N_cols=4).save(os.path.join(viewer.out_dir, f"{viewer.out_stem}_input_mosaic.png"))
@@ -233,7 +233,7 @@ def run_viewer(args: argparse.Namespace, out_name: str, fused, frame_map: Callab
             frame = memory.get_frame(frame_id)
             st = time.time()
             resolved_masks, _, resolved_classes, _ = fused.depth_raytracing(
-                frame.depth, frame.pose, hfov=HFOV_DEG, min_depth=MIN_DEPTH, max_depth=MAX_DEPTH, min_visibility_fraction=viewer.sensor.min_visibility_fraction,
+                frame.depth, frame.pose, hfov=HFOV_DEG, min_depth=MIN_DEPTH, max_depth=MAX_DEPTH, min_mesh_visibility_fraction=viewer.sensor.min_mesh_visibility_fraction,
             )
             if len(resolved_masks) == 0:
                 print(f"backprojected frame {i:02d}: no resolved points in range, skipped ({time.time() - st:.3f}s)")
@@ -263,7 +263,7 @@ def _start_viewer(args: argparse.Namespace, out_name: str) -> _Viewer:
     sim = _build_sim(_DATASET_CONFIG, args.scene_id)
     sensor = ObjectDetectorGTSensor(sim, ObjectDetectorGTSensorConfig(
         env_name=_ENV_NAME, vocab_name=_VOCAB_NAME,
-        area_thr=250, filter_low_visibility=True, min_visibility_fraction=0.2,
+        min_area_fraction=1e-3, filter_low_visibility=True, min_mesh_visibility_fraction=0.2,
         filter_classes=[],
     ))
     sensor.setup_semantic_labels()
@@ -303,7 +303,7 @@ def _style(viewer: _Viewer) -> SegmentationStyle:
 def save_retrieval_mosaic(viewer: _Viewer, fused: ResolvedObjects, memory: ImageMemory, num_objects: int) -> None:
     """One mosaic row per largest resolved object, of the frames retrieve_views selects."""
     camera = DepthCamera(HFOV_DEG, MIN_DEPTH, MAX_DEPTH)
-    raytraced = memory.raytrace_frames(fused, camera, viewer.sensor.min_visibility_fraction)
+    raytraced = memory.raytrace_frames(fused, camera, viewer.sensor.min_mesh_visibility_fraction)
     object_frames = retrieve_views(fused, memory, raytraced, camera, ViewSelection())
     mosaic = views_mosaic(memory, raytraced, _style(viewer), {object_id: object_frames[object_id] for object_id in largest_objects(fused, num_objects)})
     if mosaic is not None:
@@ -315,9 +315,9 @@ def resolve_point_cloud(fused: SemanticPointCloud, memory: ImageMemory) -> Seman
     return fused
 
 
-def frame_point_cloud(rgb: np.ndarray, depth: np.ndarray, pose: np.ndarray, gt_instances: Instances) -> SemanticPointCloud:
+def frame_point_cloud(frame_id: int, frame: Frame, gt_instances: Instances) -> SemanticPointCloud:
     infos = [{"id_object": int(info["object_id"])} for info in gt_instances.infos]
-    return project_semantic_masks_to_3d(depth, pose, gt_instances, infos, hfov=HFOV_DEG, min_depth=MIN_DEPTH, max_depth=MAX_DEPTH)
+    return project_semantic_masks_to_3d(frame.depth, frame.pose, gt_instances, infos, hfov=HFOV_DEG, min_depth=MIN_DEPTH, max_depth=MAX_DEPTH)
 
 
 if __name__ == "__main__":

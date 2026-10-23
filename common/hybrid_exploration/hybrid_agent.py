@@ -1,5 +1,6 @@
 """Frontier exploration that also inspects confident objects (confidence_thresh and above) from per-object sector
-viewpoints, picking whichever candidate (frontier or viewpoint) has the highest gain per point-turn completion time."""
+viewpoints, picking whichever candidate (frontier or viewpoint) has the highest gain per point-turn completion time and
+keeping it as its goal until a frontier is reached or a viewpoint inspected."""
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional, Tuple
@@ -10,13 +11,15 @@ from habitat.tasks.nav.nav import TopDownMap  # type: ignore
 
 from common.agents.abstract_agent import Agent
 from common.hybrid_exploration.exploration_map import ExplorationMap, MapConfig
-from common.hybrid_exploration.object_viewpoints import Candidate, ObjectBelief, clear_line, footprint, sector_positions
-from common.hybrid_exploration.plotting import draw_candidates, draw_in_view, draw_objects, plot_occupancy
+from common.hybrid_exploration.object_viewpoints import Candidate, ObjectBelief, footprint, sector_positions
+from common.hybrid_exploration.plotting import draw_candidates, draw_in_view, draw_objects
 from common.planning.frontier_paths import PointTurnSpeeds, facing_path_time_cost, find_path, heading_error, path_time_cost
 from common.utils.plot_utils import plot_exploration_map
+from common.utils.pose_utils import normalize_radians
 
-_NAVMESH_CLEARANCE_M = 0.2
 _MIN_TIME_S = 1e-3
+# a frontier is only revealed by facing it, so side steps are kept for object viewpoints
+_STEP_BEARINGS = {"move_forward": 0.0, "move_right": np.pi / 2, "move_left": -np.pi / 2, "move_backward": np.pi}
 
 
 class ViewpointMode(str, Enum):
@@ -31,13 +34,16 @@ class HybridConfig:
     turn_angle_deg: float
     speeds: PointTurnSpeeds = field(default_factory=lambda: PointTurnSpeeds(0.25, np.deg2rad(40.0)))
     n_sectors: int = 8
-    confidence_thresh: float = 0.8
+    confidence_thresh: float = 0.5
     viewpoint_gain: float = 1.0
-    standoff_m: float = 0.75
+    min_standoff_m: float = 0.5
+    max_standoff_m: float = 2.0
+    standoff_per_size: float = 1.0
     frontier_gain: float = 0.5
     reach_m: float = 0.5
     viewpoint_mode: ViewpointMode = ViewpointMode.EXHAUSTIVE
     coverage_angle_deg: float = 60.0
+    max_successive_collisions: int = 3
 
 
 @dataclass
@@ -53,10 +59,6 @@ class Decision:
     @property
     def goal(self) -> Candidate:
         return self.candidates[int(np.argmax(self.scores))]
-
-    def candidate_labels(self) -> List[Tuple[str, str]]:
-        """(u*t, t) of every candidate, t being the time to reach it."""
-        return [(f"{score * time:.3f}", f"{time:.0f}") for score, time in zip(self.scores, self.times)]
 
     def label(self) -> str:
         goal = self.goal
@@ -74,9 +76,12 @@ class HybridFrontierAgent(Agent):
         self.objects: Dict[int, ObjectBelief] = {}
         self.seen_sectors: Dict[int, np.ndarray] = {}
         self.decision: Optional[Decision] = None
+        self.goal: Optional[Candidate] = None
         self._had_goal = False
         self._spin_action: Optional[str] = None
         self._arrived_at: Optional[Tuple] = None
+        self._step: Optional[Tuple[Tuple, str]] = None
+        self._successive_collisions = 0
 
     def update_objects(self, objects: Dict[int, ObjectBelief]) -> None:
         self.objects = objects
@@ -84,28 +89,47 @@ class HybridFrontierAgent(Agent):
     def seen(self, object_id: int) -> np.ndarray:
         return self.seen_sectors.setdefault(object_id, np.zeros(self.config.n_sectors, dtype=bool))
 
-    def act(self, agent_state: habitat_sim.AgentState) -> str:
+    def act(self, agent_state: habitat_sim.AgentState, collided: bool = False) -> str:
+        """The next action towards the current goal, picking one only when there is none; "stop" once the last
+        max_successive_collisions steps all collided."""
+        self._successive_collisions = self._successive_collisions + 1 if collided else 0
+        if self._successive_collisions >= self.config.max_successive_collisions:
+            return "stop"
         position = np.array(agent_state.position)
         heading = float(TopDownMap.get_polar_angle(agent_state))
         self.trajectory.append(position)
         if self.map is None:
             self.map = ExplorationMap(self.pathfinder, self.config.map, position)
         self.map.reveal(position, heading)
-        self.decision = self._decide(position, heading)
-        if self.decision is None:
-            return "stop" if self._had_goal else self._spin()
-        self._had_goal = True
-        goal = self.decision.goal
-        self._arrived_at = goal.key() if goal.look_at is not None and self._reached(position, goal) else None
-        return self._action_towards(position, heading, goal)
+        self._mark_inspected(position, heading)
+        self.goal = self._kept_goal(position, heading)
+        if self.goal is None:
+            self.decision = self._decide(position, heading)
+            if self.decision is None:
+                return "stop" if self._had_goal else self._spin()
+            self._had_goal, self.goal = True, self.decision.goal
+        self._arrived_at = self.goal.key() if self.goal.look_at is not None and self._reached(position, self.goal) else None
+        return self._action_towards(position, heading, self.goal)
+
+    def _mark_inspected(self, position: np.ndarray, heading: float) -> None:
+        """Marks seen the sectors of every viewpoint the agent stands at facing its object."""
+        for viewpoint in self._object_viewpoints(position[1]):
+            if self._reached(position, viewpoint) and self._turn_towards(position, heading, viewpoint.look_at) is None:
+                self.seen(viewpoint.object_id)[self._covered_sectors(viewpoint.sector)] = True
+
+    def _kept_goal(self, position: np.ndarray, heading: float) -> Optional[Candidate]:
+        """The current goal, a viewpoint refreshed from its object's points, or None once a frontier is reached, a viewpoint
+        is inspected or no longer a candidate, or no path leads to it."""
+        if self.goal is None or (self.goal.look_at is None and self._reached(position, self.goal)):
+            return None
+        goal = self.goal if self.goal.look_at is None else next(
+            (viewpoint for viewpoint in self._object_viewpoints(position[1]) if viewpoint.key() == self.goal.key()), None,
+        )
+        return goal if goal is not None and np.isfinite(self._candidate_time(position, heading, goal)) else None
 
     def _decide(self, position: np.ndarray, heading: float) -> Optional[Decision]:
-        viewpoints = self._object_viewpoints(position[1])
-        for viewpoint in viewpoints:
-            if self._is_inspecting(position, heading, viewpoint):
-                self.seen(viewpoint.object_id)[self._covered_sectors(viewpoint.sector)] = True
         frontiers = [Candidate(frontier, self.config.frontier_gain) for frontier in self.map.frontiers(position[1])]
-        candidates = frontiers + [viewpoint for viewpoint in viewpoints if not self.seen(viewpoint.object_id)[viewpoint.sector]]
+        candidates = frontiers + self._object_viewpoints(position[1])
         times = np.array([self._candidate_time(position, heading, candidate) for candidate in candidates])
         return Decision(candidates, times) if np.isfinite(times).any() else None
 
@@ -124,30 +148,19 @@ class HybridFrontierAgent(Agent):
 
     def _unseen_viewpoints(self, object_id: int, belief: ObjectBelief, height: float) -> List[Candidate]:
         center, radius = footprint(belief.points)
-        positions = sector_positions(center, radius + self.config.standoff_m, self.config.n_sectors, height)
+        volume = float(np.prod(belief.points.max(axis=0) - belief.points.min(axis=0)))
+        standoff = np.clip(self.config.standoff_per_size * volume ** (1 / 3), self.config.min_standoff_m, self.config.max_standoff_m)
+        positions = sector_positions(center, radius + float(standoff), self.config.n_sectors, height)
         seen = self.seen(object_id)
         return [
             Candidate(position, self.config.viewpoint_gain, object_id, sector, center)
-            for sector, position in enumerate(positions) if not seen[sector] and self._viewable(position, center, radius)
+            for sector, position in enumerate(positions) if not seen[sector] and self.map.is_revealed_navigable(self.map.to_pixel(position))
         ]
-
-    def _viewable(self, position: np.ndarray, center: np.ndarray, radius: float) -> bool:
-        """Revealed, navigable, and with nothing on the top-down map between it and the object's footprint."""
-        pixel = self.map.to_pixel(position)
-        if not self.map.is_revealed_navigable(pixel):
-            return False
-        return clear_line(self.map.navigable, pixel, self.map.to_pixel(center), self.map.pixels(radius + _NAVMESH_CLEARANCE_M))
-
-    def _in_reach(self, position: np.ndarray, target: np.ndarray) -> bool:
-        return float(np.hypot(*(target - position)[[0, 2]])) <= self.config.reach_m
 
     def _reached(self, position: np.ndarray, viewpoint: Candidate) -> bool:
         """In reach, or the viewpoint the agent last arrived at: it drifts as the object's points grow, which would
         otherwise flip the agent between facing the object and walking back to it."""
-        return viewpoint.key() == self._arrived_at or self._in_reach(position, viewpoint.position)
-
-    def _is_inspecting(self, position: np.ndarray, heading: float, viewpoint: Candidate) -> bool:
-        return self._reached(position, viewpoint) and self._turn_towards(position, heading, viewpoint.look_at) is None
+        return viewpoint.key() == self._arrived_at or float(np.hypot(*(viewpoint.position - position)[[0, 2]])) <= self.config.reach_m
 
     def _candidate_time(self, position: np.ndarray, heading: float, candidate: Candidate) -> float:
         speeds = self.config.speeds
@@ -158,21 +171,48 @@ class HybridFrontierAgent(Agent):
         return facing_path_time_cost(self.pathfinder, position, heading, candidate.position, candidate.look_at, speeds)
 
     def _action_towards(self, position: np.ndarray, heading: float, goal: Candidate) -> str:
-        """Turns to face the object once at its viewpoint, otherwise point-turns along the path to the goal."""
+        """Turns to face the object once at its viewpoint, otherwise heads for the path's next waypoint: forward to a
+        frontier, or by a step from the yaw closest to facing the object from its viewpoint."""
         if goal.look_at is not None and self._reached(position, goal):
             return self._turn_towards(position, heading, goal.look_at)
-        next_waypoint = np.array(find_path(self.pathfinder, position, goal.position).points[1])
-        return self._turn_towards(position, heading, next_waypoint) or "move_forward"
+        waypoint_error = heading_error(position, np.array(find_path(self.pathfinder, position, goal.position).points[1]), heading)
+        if goal.look_at is None:
+            return self._turn(waypoint_error) or "move_forward"
+        if self._keeps_step(goal, waypoint_error):
+            return self._step[1]
+        target_error = heading_error(goal.position, goal.look_at, heading)
+        yaw_turns = {
+            action: int(np.round(normalize_radians(waypoint_error - bearing) / self._turn_angle)) for action, bearing in _STEP_BEARINGS.items()
+        }
+        step = min(yaw_turns, key=lambda action: (
+            max(int(np.ceil(abs(normalize_radians(target_error - yaw_turns[action] * self._turn_angle)) / self._turn_angle)) - 1, 0),
+            abs(yaw_turns[action]),
+        ))
+        turns = yaw_turns[step]
+        self._step = None if turns else (goal.key(), step)
+        return step if not turns else "turn_right" if turns > 0 else "turn_left"
+
+    def _keeps_step(self, goal: Candidate, waypoint_error: float) -> bool:
+        """Whether the step last taken towards goal still heads within one turn step of the waypoint: re-picking at half a
+        turn step would zigzag between two yaws as the waypoint's bearing drifts across their boundary."""
+        if self._step is None or self._step[0] != goal.key():
+            return False
+        return self._turn(normalize_radians(waypoint_error - _STEP_BEARINGS[self._step[1]])) is None
 
     def _turn_towards(self, position: np.ndarray, heading: float, point: np.ndarray) -> Optional[str]:
         """The turn bringing point within one turn step of the heading, None once it already is."""
-        error = heading_error(position, point, heading)
-        turn_angle = np.deg2rad(self.config.turn_angle_deg)
-        if error > turn_angle:
+        return self._turn(heading_error(position, point, heading))
+
+    def _turn(self, error: float) -> Optional[str]:
+        if error > self._turn_angle:
             return "turn_right"
-        if error < -turn_angle:
+        if error < -self._turn_angle:
             return "turn_left"
         return None
+
+    @property
+    def _turn_angle(self) -> float:
+        return np.deg2rad(self.config.turn_angle_deg)
 
     def _spin(self) -> str:
         if self._spin_action is None:
@@ -181,7 +221,7 @@ class HybridFrontierAgent(Agent):
 
     @property
     def top_down_map(self) -> np.ndarray:
-        """FrontierAgent's map interface, so habitat_embodied_sl/main.py's top-down maps draw on this agent's map too."""
+        """FrontierAgent's map interface, so common/utils/projection_utils.py's top-down maps draw on this agent's map too."""
         return self.map.navigable
 
     def meters_per_pixel(self) -> float:
@@ -200,20 +240,11 @@ class HybridFrontierAgent(Agent):
         if self.decision is not None:
             candidates = self.decision.candidates
             pixels = self.map.to_pixels(np.array([c.position for c in candidates]))
-            draw_candidates(image, pixels, [c.object_id is not None for c in candidates], self.decision.scores, self.decision.candidate_labels())
+            labels = [(f"{score * time:.3f}", f"{time:.0f}") for score, time in zip(self.decision.scores, self.decision.times)]
+            draw_candidates(image, pixels, [c.object_id is not None for c in candidates], self.decision.scores, labels)
         return image
-
-    def object_map_image(self) -> np.ndarray:
-        """BGR top-down map of the believed object occupancy over the explored area."""
-        return plot_occupancy(self.map.revealed, [self.map.to_pixels(belief.points) for belief in self.objects.values()])
 
     def map_tile(self) -> Tuple[str, np.ndarray]:
         """(label, RGB map_image) mosaic tile of the current step and decision."""
-        return self._step_label(), self.map_image()[:, :, ::-1].copy()
-
-    def object_map_tile(self) -> Tuple[str, np.ndarray]:
-        """(label, RGB object_map_image) mosaic tile of the current step."""
-        return self._step_label(), self.object_map_image()[:, :, ::-1].copy()
-
-    def _step_label(self) -> str:
-        return f"step{len(self.trajectory) - 1:03d}" + ("" if self.decision is None else f" {self.decision.label()}")
+        label = f"step{len(self.trajectory) - 1:03d}" + ("" if self.decision is None else f" {self.decision.label()}")
+        return label, self.map_image()[:, :, ::-1].copy()

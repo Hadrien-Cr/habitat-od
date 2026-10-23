@@ -1,5 +1,6 @@
 import csv
 import os
+import re
 from typing import Optional
 import numpy as np
 import pandas as pd
@@ -229,6 +230,40 @@ CLASS_LABELS_COCO80 = [
     "toothbrush"
 ]
 
+PROCTHOR_NATIVE_VOCAB = "ProcTHOR-native"
+# ProcTHOR-hab's native categories (configs/object_semantic_id_mapping.json, in its id order), its state and size
+# variants (AppleSliced, SoapBottleFilled, PaintingSmall, ...) folded into their base class
+PROCTHOR_VARIANT_SUFFIXES = ("Sliced", "Cracked", "Filled", "Full", "Dirty", "Empty", "Small", "Medium", "Large")
+PROCTHOR_NATIVE_CLASSES = [
+    "unknown", "Apple", "Tomato", "Bread", "Sink", "Pot", "Pan", "Knife", "Fork", "Spoon", "Bowl", "Toaster",
+    "CoffeeMachine", "Microwave", "StoveBurner", "Fridge", "Cabinet", "Egg", "Chair", "Lettuce", "Potato", "Mug",
+    "Plate", "DiningTable", "CounterTop", "GarbageCan", "Omelette", "EggShell", "StoveKnob", "Container", "Cup",
+    "ButterKnife", "Statue", "Sandwich", "Television", "HousePlant", "TissueBox", "VacuumCleaner", "Painting",
+    "WateringCan", "Laptop", "RemoteControl", "Box", "Newspaper", "PaintingHanger", "KeyChain", "Dirt", "CellPhone",
+    "CreditCard", "Cloth", "Candle", "Toilet", "Plunger", "Bathtub", "ToiletPaper", "ToiletPaperHanger", "SoapBottle",
+    "SoapBar", "ShowerDoor", "SprayBottle", "ScrubBrush", "ToiletPaperRoll", "Lamp", "LightSwitch", "Bed", "Book",
+    "AlarmClock", "SportsEquipment", "Pen", "Pencil", "Blinds", "Mirror", "TowelHolder", "Towel", "Watch",
+    "MiscTableObject", "ArmChair", "BaseballBat", "BasketBall", "Faucet", "Boots", "Bottle", "DishSponge", "Drawer",
+    "FloorLamp", "Kettle", "LaundryHamper", "LaundryHamperLid", "Lighter", "Ottoman", "PanLid", "PaperTowelRoll",
+    "PepperShaker", "PotLid", "SaltShaker", "Safe", "SmallMirror", "Sofa", "SoapContainer", "Spatula", "TeddyBear",
+    "TennisRacket", "Tissue", "Vase", "WallMirror", "MassObjectSpawner", "MassScale", "Footstool", "Shelf", "Dresser",
+    "Desk", "SideTable", "Pillow", "Bench", "Cart", "ShowerGlass", "DeskLamp", "Window", "BathtubBasin", "SinkBasin",
+    "CD", "Curtains", "Poster", "HandTowel", "HandTowelHolder", "Ladle", "WineBottle", "ShowerCurtain", "ShowerHead",
+    "TVStand", "CoffeeTable", "ShelvingUnit", "AluminumFoil", "DogBed", "Dumbbell", "TableTopDecor", "RoomDecor",
+    "Stool", "GarbageBag", "Desktop", "TargetCircle", "Floor", "ScreenFrame", "ScreenSheet", "Wall", "Doorway",
+    "WashingMachine", "ClothesDryer", "Doorframe",
+]
+_CAMEL_CASE_BOUNDARY = re.compile(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+
+
+def spaced_class_name(native_name: str) -> str:
+    """A ProcTHOR-hab CamelCase category as lowercase words (GarbageCan -> garbage can, TVStand -> tv stand)."""
+    return _CAMEL_CASE_BOUNDARY.sub(" ", native_name).lower()
+
+
+# CLIP tokenizes a run-together CamelCase name into meaningless subwords, so the vocabulary is the spaced one
+CLASS_LABELS_PROCTHOR = [spaced_class_name(name) for name in PROCTHOR_NATIVE_CLASSES]
+
 def generate_mappings(source_vocab: list[str], target_vocab: list[str]):
     import sys
     import torch
@@ -353,6 +388,7 @@ VOCABULARIES: dict[str, tuple[list[str], Optional[dict[str, str]], list[tuple[in
 }
 for vocab_name, labels in HSSD400_VOCAB_REGISTRY:
     VOCABULARIES[vocab_name] = (labels, HSSD400_TO_VOCAB[vocab_name], make_colors(len(labels), seed=0, ctype=0))
+VOCABULARIES[PROCTHOR_NATIVE_VOCAB] = (CLASS_LABELS_PROCTHOR, None, make_colors(len(CLASS_LABELS_PROCTHOR), seed=0, ctype=0))
 
 for vocab_name, (class_labels, _, colors) in VOCABULARIES.items():
     meta = MetadataCatalog.get(vocab_name)
