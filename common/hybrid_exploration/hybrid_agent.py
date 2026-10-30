@@ -1,25 +1,75 @@
-"""Frontier exploration that also inspects confident objects (confidence_thresh and above) from per-object sector
-viewpoints, picking whichever candidate (frontier or viewpoint) has the highest gain per point-turn completion time and
-keeping it as its goal until a frontier is reached or a viewpoint inspected."""
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
+import cv2
 import habitat_sim
 import numpy as np
-from habitat.tasks.nav.nav import TopDownMap  # type: ignore
 
-from common.agents.abstract_agent import Agent
-from common.hybrid_exploration.exploration_map import ExplorationMap, MapConfig
+from common.agents.base_exploration_agent import BaseExplorationAgent
+from common.hybrid_exploration.discrete_planner import DiscretePlanner
+from common.hybrid_exploration.exploration_map import EstimatedMap, MapConfig
 from common.hybrid_exploration.object_viewpoints import Candidate, ObjectBelief, footprint, sector_positions
 from common.hybrid_exploration.plotting import draw_candidates, draw_in_view, draw_objects
-from common.planning.frontier_paths import PointTurnSpeeds, facing_path_time_cost, find_path, heading_error, path_time_cost
-from common.utils.plot_utils import plot_exploration_map
 from common.utils.pose_utils import normalize_radians
+from common.utils.projection_utils import DepthCamera
+from common.vision.detector import Detector
 
 _MIN_TIME_S = 1e-3
 # a frontier is only revealed by facing it, so side steps are kept for object viewpoints
 _STEP_BEARINGS = {"move_forward": 0.0, "move_right": np.pi / 2, "move_left": -np.pi / 2, "move_backward": np.pi}
+_VISITED_COLOR = (0, 0, 255)  # BGR -- red, matching BaseExplorationAgent's trajectory color
+_TRAJECTORY_COLOR = (255, 255, 0)  # BGR -- yellow, the direction arrows between visited points
+
+
+@dataclass(frozen=True)
+class PointTurnSpeeds:
+    linear_m_per_s: float
+    angular_rad_per_s: float
+
+def _bearings(position: np.ndarray, targets: np.ndarray) -> np.ndarray:
+    return np.arctan2(targets[..., 2] - position[2], targets[..., 0] - position[0])
+
+def heading_error(position: np.ndarray, target: np.ndarray, polar_heading: float) -> float:
+    return normalize_radians(_bearings(position, target) - normalize_radians(np.pi / 2 - polar_heading))
+
+def completion_time_lower_bounds(targets: np.ndarray, position: np.ndarray, polar_heading: float, speeds: PointTurnSpeeds) -> np.ndarray:
+    """Obstacle-free turn-then-drive time to each target - an admissible heuristic for path_time_cost."""
+    distances = np.hypot(targets[:, 2] - position[2], targets[:, 0] - position[0])
+    turns = np.abs(heading_error(position, targets, polar_heading))
+    return turns / speeds.angular_rad_per_s + distances / speeds.linear_m_per_s
+
+def find_path(pathfinder: habitat_sim.PathFinder, start: np.ndarray, end: np.ndarray) -> Optional[habitat_sim.ShortestPath]:
+    path = habitat_sim.ShortestPath()
+    path.requested_start = start
+    path.requested_end = end
+    return path if pathfinder.find_path(path) else None
+
+def path_completion_time(points: np.ndarray, initial_turn: float, speeds: PointTurnSpeeds) -> float:
+    """Time to follow points with point turns, starting initial_turn radians off the first segment."""
+    segments = np.diff(points, axis=0)
+    turns = np.concatenate([[initial_turn], np.abs(normalize_radians(np.diff(np.arctan2(segments[:, 2], segments[:, 0]))))])
+    distances = np.hypot(segments[:, 2], segments[:, 0])
+    return float(np.sum(distances / speeds.linear_m_per_s + turns / speeds.angular_rad_per_s))
+
+def _path_points(pathfinder: habitat_sim.PathFinder, start: np.ndarray, end: np.ndarray) -> Optional[np.ndarray]:
+    path = find_path(pathfinder, start, end)
+    return None if path is None or len(path.points) < 2 else np.array(path.points)
+
+def path_time_cost(pathfinder: habitat_sim.PathFinder, start: np.ndarray, polar_heading: float, end: np.ndarray, speeds: PointTurnSpeeds) -> float:
+    points = _path_points(pathfinder, start, end)
+    if points is None:
+        return np.inf
+    return path_completion_time(points, abs(heading_error(start, points[1], polar_heading)), speeds)
+
+def facing_path_time_cost(pathfinder: habitat_sim.PathFinder, start: np.ndarray, polar_heading: float, end: np.ndarray, look_at: np.ndarray, speeds: PointTurnSpeeds) -> float:
+    """path_time_cost plus the final point turn from the last segment to face look_at."""
+    points = _path_points(pathfinder, start, end)
+    if points is None:
+        return np.inf
+    last_segment = points[-1] - points[-2]
+    final_turn = abs(normalize_radians(_bearings(points[-1], look_at) - np.arctan2(last_segment[2], last_segment[0])))
+    return path_completion_time(points, abs(heading_error(start, points[1], polar_heading)), speeds) + final_turn / speeds.angular_rad_per_s
 
 
 class ViewpointMode(str, Enum):
@@ -30,7 +80,7 @@ class ViewpointMode(str, Enum):
 
 @dataclass(frozen=True)
 class HybridConfig:
-    map: MapConfig
+    map_config: MapConfig
     turn_angle_deg: float
     speeds: PointTurnSpeeds = field(default_factory=lambda: PointTurnSpeeds(0.25, np.deg2rad(40.0)))
     n_sectors: int = 8
@@ -67,21 +117,54 @@ class Decision:
         return f"{name} u={self.scores.max():.3f}"
 
 
-class HybridFrontierAgent(Agent):
-    def __init__(self, pathfinder: habitat_sim.PathFinder, config: HybridConfig, rng: np.random.Generator):
-        self.pathfinder = pathfinder
+class HybridFrontierAgent(BaseExplorationAgent):
+    """Frontier exploration that also inspects confident objects (confidence_thresh and above) from per-object sector
+    viewpoints, picking whichever candidate (frontier or viewpoint) has the highest gain per point-turn completion time and
+    keeping it as its goal until a frontier is reached or a viewpoint inspected. Candidates (frontiers, viewpoints) come
+    from its own depth-built EstimatedMap, but path costs/waypoints between the agent and a candidate use pathfinder (the
+    sim's ground-truth navmesh, via path_time_cost/facing_path_time_cost in _candidate_time and _path_points in
+    _action_towards) -- EstimatedMap has no path-planning of its own. The intended fix is to replace pathfinder with
+    DiscretePlanner (already used, belief-grid-only, by FrontierExplorationAgent/SearchAgent): its FMM distance field
+    over EstimatedMap.obstacles would give both a cost (distance) and a next waypoint (short-term goal) without ground
+    truth, but that needs each candidate's cost computed from one shared multi-goal FMM pass rather than this file's
+    current per-candidate pathfinder.find_path calls, so it is not a drop-in replacement.
+    Uses ObjectBeliefs. see main.py for usage
+    """
+
+    map_config: MapConfig
+    rng: np.random.Generator
+    planner: Optional[DiscretePlanner]
+    estimated_map: Optional[EstimatedMap]
+    trajectory: List[Tuple[np.ndarray, float]]
+    _spin_action: Optional[str]
+
+    detector: Detector
+    camera: DepthCamera
+    pathfinder: habitat_sim.PathFinder
+
+    def __init__(self, config: HybridConfig, camera: DepthCamera, rng: np.random.Generator, pathfinder: habitat_sim.PathFinder):
+        super().__init__(config.map_config, rng)
         self.config = config
-        self.rng = rng
-        self.map: Optional[ExplorationMap] = None
-        self.trajectory: List[Tuple[np.ndarray, float]] = []
+        self.camera = camera
+        self.pathfinder = pathfinder
         self.objects: Dict[int, ObjectBelief] = {}
         self.seen_sectors: Dict[int, np.ndarray] = {}
         self.decision: Optional[Decision] = None
         self.goal: Optional[Candidate] = None
         self._had_goal = False
-        self._spin_action: Optional[str] = None
         self._arrived_at: Optional[Tuple] = None
         self._step: Optional[Tuple[Tuple, str]] = None
+        self._successive_collisions = 0
+
+    def reset(self, position: np.ndarray, floor_height: float) -> None:
+        super().reset(position, floor_height)
+        self.objects = {}
+        self.seen_sectors = {}
+        self.decision = None
+        self.goal = None
+        self._had_goal = False
+        self._arrived_at = None
+        self._step = None
         self._successive_collisions = 0
 
     def update_objects(self, objects: Dict[int, ObjectBelief]) -> None:
@@ -90,24 +173,19 @@ class HybridFrontierAgent(Agent):
     def seen(self, object_id: int) -> np.ndarray:
         return self.seen_sectors.setdefault(object_id, np.zeros(self.config.n_sectors, dtype=bool))
 
-    def act(self, agent_state: habitat_sim.AgentState, collided: bool = False) -> str:
+    def act(self, agent_state: habitat_sim.AgentState, depth: np.ndarray, collided: bool = False) -> str:
         """The next action towards the current goal, picking one only when there is none; "stop" once the last
         max_successive_collisions steps all collided."""
         self._successive_collisions = self._successive_collisions + 1 if collided else 0
         if self._successive_collisions >= self.config.max_successive_collisions:
             return "stop"
-        position = np.array(agent_state.position)
-        heading = float(TopDownMap.get_polar_angle(agent_state))
-        self.trajectory.append((position, heading))
-        if self.map is None:
-            self.map = ExplorationMap(self.pathfinder, self.config.map, position)
-        self.map.reveal(position, heading)
+        position, heading = self.observe(agent_state, depth, self.camera)
         self._mark_inspected(position, heading)
         self.goal = self._kept_goal(position, heading)
         if self.goal is None:
             self.decision = self._decide(position, heading)
             if self.decision is None:
-                return "stop" if self._had_goal else self._spin()
+                return "stop" if self._had_goal else self.spin()
             self._had_goal, self.goal = True, self.decision.goal
         self._arrived_at = self.goal.key() if self.goal.look_at is not None and self._reached(position, self.goal) else None
         return self._action_towards(position, heading, self.goal)
@@ -117,6 +195,7 @@ class HybridFrontierAgent(Agent):
         a sector only becomes a candidate once its object is confident/footprint-grown enough, by which point an earlier
         pose may already have covered it."""
         for viewpoint in self._object_viewpoints(position[1]):
+            assert viewpoint.sector is not None and viewpoint.object_id is not None and viewpoint.look_at is not None
             if any(
                 self._within_reach(past_position, viewpoint) and self._turn_towards(past_position, past_heading, viewpoint.look_at) is None
                 for past_position, past_heading in self.trajectory
@@ -134,7 +213,8 @@ class HybridFrontierAgent(Agent):
         return goal if goal is not None and np.isfinite(self._candidate_time(position, heading, goal)) else None
 
     def _decide(self, position: np.ndarray, heading: float) -> Optional[Decision]:
-        frontiers = [Candidate(frontier, self.config.frontier_gain) for frontier in self.map.frontiers(position[1])]
+        assert self.estimated_map is not None, "Call reset() first"
+        frontiers = [Candidate(frontier, self.config.frontier_gain) for frontier in self.estimated_map.frontiers(position[1])]
         candidates = frontiers + self._object_viewpoints(position[1])
         times = np.array([self._candidate_time(position, heading, candidate) for candidate in candidates])
         return Decision(candidates, times) if np.isfinite(times).any() else None
@@ -168,12 +248,12 @@ class HybridFrontierAgent(Agent):
         return candidates
 
     def _best_standoff_position(self, rings: List[np.ndarray], sector: int, target_standoff: float) -> Optional[np.ndarray]:
-        """This sector's position, among rings' standoffs, navigable and closest to target_standoff; None if none are navigable."""
-        navigable = [
+        """This sector's position, among rings' standoffs, free and closest to target_standoff; None if none are free."""
+        free = [
             (abs(standoff - target_standoff), ring[sector]) for standoff, ring in zip(self.config.standoffs_m, rings)
-            if self.map.is_revealed_navigable(self.map.to_pixel(ring[sector]))
+            if self.estimated_map.is_free(self.estimated_map.to_pixel(ring[sector]))
         ]
-        return min(navigable, key=lambda entry: entry[0])[1] if navigable else None
+        return min(free, key=lambda entry: entry[0])[1] if free else None
 
     def _reached(self, position: np.ndarray, viewpoint: Candidate) -> bool:
         """In reach, or the viewpoint the agent last arrived at: it drifts as the object's points grow, which would
@@ -194,9 +274,17 @@ class HybridFrontierAgent(Agent):
     def _action_towards(self, position: np.ndarray, heading: float, goal: Candidate) -> str:
         """Turns to face the object once at its viewpoint, otherwise heads for the path's next waypoint: forward to a
         frontier, or by a step from the yaw closest to facing the object from its viewpoint."""
+        assert self.estimated_map is not None, "Call reset() first"
+
         if goal.look_at is not None and self._reached(position, goal):
-            return self._turn_towards(position, heading, goal.look_at)
-        waypoint_error = heading_error(position, np.array(find_path(self.pathfinder, position, goal.position).points[1]), heading)
+            action = self._turn_towards(position, heading, goal.look_at)
+            assert action is not None
+            return action
+
+        points = _path_points(self.pathfinder, position, goal.position)
+        if points is None:
+            return "stop"
+        waypoint_error = heading_error(position, points[1], heading)
         if goal.look_at is None:
             return self._turn(waypoint_error) or "move_forward"
         if self._keeps_step(goal, waypoint_error):
@@ -235,35 +323,27 @@ class HybridFrontierAgent(Agent):
     def _turn_angle(self) -> float:
         return np.deg2rad(self.config.turn_angle_deg)
 
-    def _spin(self) -> str:
-        if self._spin_action is None:
-            self._spin_action = "turn_left" if self.rng.integers(2) else "turn_right"
-        return self._spin_action
-
-    @property
-    def top_down_map(self) -> np.ndarray:
-        """FrontierAgent's map interface, so common/utils/projection_utils.py's top-down maps draw on this agent's map too."""
-        return self.map.navigable
-
-    def meters_per_pixel(self) -> float:
-        return self.map.meters_per_pixel
-
-    def to_pixels(self, positions: np.ndarray) -> np.ndarray:
-        return self.map.to_pixels(positions)
 
     def map_image(self) -> np.ndarray:
-        """BGR top-down map of the revealed area, current field of view and trajectory, each object's points and confidence,
-        and every candidate colored by its score."""
-        positions = np.array([position for position, _ in self.trajectory])
-        image = plot_exploration_map(self.map.navigable, self.map.revealed, list(self.map.to_pixels(positions)))
-        draw_in_view(image, self.map.in_view)
-        objects = {object_id: (self.map.to_pixels(belief.points), belief.confidence) for object_id, belief in self.objects.items()}
+        """BGR top-down map: the belief map (EstimatedMap.belief_image), current field of view, trajectory, each
+        object's points and confidence, and every candidate colored by its score."""
+        assert self.estimated_map is not None, "Call reset() first"
+
+        positions = np.array([position for position, _ in self.trajectory]).reshape(-1, 3)
+        image = self.estimated_map.belief_image()
+        trajectory_px = [(int(col), int(row)) for row, col in self.estimated_map.to_pixels(positions)]
+        for point in trajectory_px:
+            cv2.circle(image, point, 1, _VISITED_COLOR, -1)
+        for start, end in zip(trajectory_px, trajectory_px[1:]):
+            cv2.arrowedLine(image, start, end, _TRAJECTORY_COLOR, 2, tipLength=0.2)
+        if trajectory_px:
+            cv2.circle(image, trajectory_px[-1], 5, _VISITED_COLOR, 2)
+        draw_in_view(image, self.estimated_map.in_view)
+        objects = {object_id: (self.estimated_map.to_pixels(belief.points), belief.confidence) for object_id, belief in self.objects.items()}
         draw_objects(image, objects, self.config.confidence_thresh)
         if self.decision is not None:
-            candidates = self.decision.candidates
-            pixels = self.map.to_pixels(np.array([c.position for c in candidates]))
-            labels = [(f"{score * time:.3f}", f"{time:.0f}") for score, time in zip(self.decision.scores, self.decision.times)]
-            draw_candidates(image, pixels, [c.object_id is not None for c in candidates], self.decision.scores, labels)
+            pixels = self.estimated_map.to_pixels(np.array([c.position for c in self.decision.candidates]))
+            draw_candidates(image, pixels, self.decision.scores)
         return image
 
     def map_tile(self) -> Tuple[str, np.ndarray]:

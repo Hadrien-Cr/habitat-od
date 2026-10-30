@@ -16,6 +16,8 @@ from habitat.utils.visualizations import maps # type: ignore[import]
 from PIL import Image
 from typing import Any
 
+from common.env_utils.object_detector_sensors import FILTER_KEYS
+
 
 def _get_info_from_string(path, info, split_symbol="_"):
     filename = os.path.split(os.path.splitext(path)[0])[1]
@@ -324,7 +326,13 @@ def bbs_instances_as_gt(instances: Instances) -> Instances:
 
 
 def is_valid_info(info: dict) -> bool:
-    return not (info["filtered_class"] or info["filtered_low_area"] or info["filtered_low_visibility"])
+    return not any(info[key] for key in FILTER_KEYS)
+
+
+def filter_reason(info: dict) -> str:
+    """Which of FILTER_KEYS dropped this detection, "ok" if none did."""
+    return next((key for key in FILTER_KEYS if info[key]), "ok")
+
 
 def keep_valid_instances(instances: Instances) -> Instances:
     keep_idx = [i for i, info in enumerate(instances.infos) if is_valid_info(info)]
@@ -339,5 +347,14 @@ def ground_truth_instances(obs: dict, vocabulary: list, classes: list) -> Instan
     kept = [idx for idx, name in enumerate(names) if name in class_ids]
     instances = instances[kept]
     instances.gt_classes = torch.tensor([class_ids[names[idx]] for idx in kept], dtype=torch.long)
+    instances.gt_masks = instances.gt_masks.reshape(len(instances), *instances.image_size)
+    return instances
+
+
+def raw_ground_truth_instances(obs: dict) -> Instances:
+    """obs' every bbsgt detection, including ones filtered_class/filtered_low_area/filtered_low_visibility would drop,
+    class ids in the sensor's own vocabulary (object_annotations.py's resolve_classes), for inspecting why a detection
+    was or wasn't kept."""
+    instances = bbs_instances_as_gt(obs["bbsgt"]["instances"])
     instances.gt_masks = instances.gt_masks.reshape(len(instances), *instances.image_size)
     return instances

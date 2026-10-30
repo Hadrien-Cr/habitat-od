@@ -9,23 +9,45 @@ import habitat # type: ignore
 import habitat_sim
 import magnum as mn
 import numpy as np
+import trimesh
 from habitat import RLEnv # type: ignore
+from habitat.config import read_write as habitat_read_write # type: ignore
 from habitat_baselines.common.baseline_registry import baseline_registry # type: ignore
 from habitat.utils.visualizations import fog_of_war, maps # type: ignore
 from gym import spaces
 from hydra.core.config_store import ConfigStore
-from habitat.config.default_structured_configs import ActionConfig # type: ignore
+from habitat.config.default_structured_configs import ActionConfig, ObjectDetectorGTSensorConfig # type: ignore
 from habitat.core.embodied_task import SimulatorTaskAction # type: ignore
 from habitat.tasks.nav.nav import NavigationGoal, NavigationTask, NavigationEpisode # type: ignore
+from habitat.utils.geometry_utils import quaternion_from_coeff # type: ignore
 from habitat_sim.utils.common import quat_rotate_vector
 
+from common.agents.abstract_agent import Agent
+from common.agents.random_agent import RandomAgent
+from common.env_utils.dataset import NO_FIXED_START_POSITION, NO_FIXED_START_ROTATION, ExplorationNavDataset  # noqa: F401 - registers "ExplorationSynthetic"
+from common.env_utils.env_registry import resolve_env
 from common.env_utils.lighting import AI2THOR_BRIGHT_LIGHTS
-from common.env_utils.object_annotations import ObjectAnnotation, get_all_objects
-from common.planning.skeleton import grid_path
+from common.env_utils.object_annotations import ObjectAnnotation, get_all_objects, get_obj_from_id, object_world_mesh
+from common.env_utils.object_detector_sensors import ObjectDetectorGTSensor  # noqa: F401 - registers "ObjectDetectorGTSensor"
+from common.env_utils.sensors import AgentCollisionSensor, AgentPositionSensor, ColoredTDMapSensor  # noqa: F401 - registers agent_collision_sensor/position_sensor/colored_tdmap_sensor
+from common.hybrid_exploration.exploration_map import MapConfig
+from common.hybrid_exploration.frontier_exp_agent import DiscretePlannerConfig, FrontierExplorationAgent, FrontierExplorationConfig
+from common.hybrid_exploration.hybrid_agent import HybridConfig, HybridFrontierAgent
+from common.utils.plot_utils import plot_semantic_2d_map
 from common.utils.pose_utils import quaternion_from_rpy
+from common.utils.projection_utils import DepthCamera, TOPDOWN_MAP_SCALE, mesh_footprint_on_grid
 
 
 _FLOOR_RAY_START_M = 0.3  # above the navmesh, below anything the agent can stand under
+
+
+def gt_navigable_mask(pathfinder: habitat_sim.PathFinder, position: np.ndarray, resolution: int) -> np.ndarray:
+    r"""Navigable-cell mask of the navmesh island reachable from position, at height position[1] -- ground
+    truth, for visualization/comparison only (never used for planning). Usable directly (e.g. by a raw
+    habitat_sim.Simulator with no ExplorationEnv) or via ExplorationEnv.get_gt_topdown_map."""
+    meters_per_pixel = maps.calculate_meters_per_pixel(resolution, pathfinder=pathfinder)
+    islands = pathfinder.get_topdown_island_view(meters_per_pixel, position[1])
+    return np.ascontiguousarray(islands == pathfinder.get_island(mn.Vector3(*position)), dtype=np.uint8)
 
 
 @dataclass
@@ -70,6 +92,7 @@ class ExplorationEnv(RLEnv):
         self.episode_over = False
         self._elapsed_steps = 0
         self._tdmap: Optional[np.ndarray] = None
+        self._gt_semantic_map_cache_key: Optional[tuple] = None
 
 
     def reset(self, episode: Optional[NavigationEpisode] = None, rng: Optional[np.random.Generator] = None):
@@ -77,12 +100,15 @@ class ExplorationEnv(RLEnv):
         never consults `self._env._episode_iterator` (see `self.episodes` to enumerate
         candidates), so the caller always controls episode/scene selection explicitly.
 
-        Places the agent at a random navigable point: an episode's own start_position/
-        start_rotation are meaningless synthetic placeholders (see common/env_utils/dataset.py::
-        ExplorationNavDataset), and agents (common/agents/) act from the agent's live pose."""
+        Places the agent at the episode's own start_position/start_rotation when it has one
+        (a real per-episode dataset, e.g. habitat_od_search's HSSD-rare episodes), or at a
+        random navigable point/rotation when it carries ExplorationNavDataset's
+        NO_FIXED_START_POSITION/NO_FIXED_START_ROTATION sentinel (its synthetic episodes --
+        see common/env_utils/dataset.py)."""
         self._elapsed_steps = 0
         self.episode_over = False
         self._tdmap = None
+        self._gt_semantic_map_cache_key = None
 
         self._env._reset_stats()
 
@@ -103,9 +129,17 @@ class ExplorationEnv(RLEnv):
         if self.get_env_name() == "ProcTHOR-hab":
             self.set_light_setup(AI2THOR_BRIGHT_LIGHTS)
 
+        episode = self._env._current_episode
         agent_state = habitat_sim.AgentState()
-        agent_state.position = self.get_random_point(rng)
-        agent_state.rotation = self.get_random_rotation(rng)
+        has_fixed_start = (
+            list(episode.start_position) != NO_FIXED_START_POSITION or list(episode.start_rotation) != NO_FIXED_START_ROTATION
+        )
+        if has_fixed_start:
+            agent_state.position = np.array(episode.start_position)
+            agent_state.rotation = quaternion_from_coeff(episode.start_rotation)
+        else:
+            agent_state.position = self.get_random_point(rng)
+            agent_state.rotation = self.get_random_rotation(rng)
         self._env.sim.agents[0].set_state(agent_state)
 
         sim_obs = self._env.sim.get_sensor_observations()
@@ -162,6 +196,60 @@ class ExplorationEnv(RLEnv):
         l, u = self._env.sim.pathfinder.get_bounds()
         return l, u
 
+    def get_gt_topdown_map(self, position: np.ndarray, resolution: int) -> np.ndarray:
+        r"""Navigable-cell mask of the navmesh island reachable from position, at height position[1] -- the
+        ground-truth counterpart to an agent's own depth-built EstimatedMap, for visualization/comparison only
+        (never used for planning)."""
+        return gt_navigable_mask(self._env.sim.pathfinder, position, resolution)
+
+    def gt_map_tracker(self, fov_deg: float, visibility_dist_m: float, resolution: int = 512) -> "GroundTruthMapTracker":
+        r"""GroundTruthMapTracker of this env's current scene/agent position -- the ground-truth counterpart
+        to an agent's own depth-built EstimatedMap, for a logged comparison panel only (never used for
+        planning). Local import: common.hybrid_exploration.ground_truth_map itself imports gt_navigable_mask
+        from this module, so importing it back at module scope here would cycle."""
+        from common.hybrid_exploration.ground_truth_map import GroundTruthMapTracker
+        position = np.array(self.get_agent_state().position)
+        return GroundTruthMapTracker(self._env.sim.pathfinder, position, fov_deg, visibility_dist_m, resolution)
+
+    def get_gt_meshes(self, classes: list) -> list[tuple[int, int, trimesh.Trimesh]]:
+        r"""(object_id, class_id, world mesh) of every scene object the GT sensor annotates with one of
+        classes -- env-owned, needs no agent."""
+        annotation = self.get_object_annotation()
+        class_ids = {name: idx for idx, name in enumerate(classes)}
+        names = {object_id: annotation.classes[class_id] for object_id, class_id in annotation.obj_id_to_class_id.items()}
+        objects = [
+            (object_id, class_ids[name], get_obj_from_id(self._env.sim, object_id)) for object_id, name in names.items() if name in class_ids
+        ]
+        meshes = [(object_id, class_id, object_world_mesh(obj)) for object_id, class_id, obj in objects if obj is not None]
+        return [(object_id, class_id, mesh) for object_id, class_id, mesh in meshes if mesh is not None]
+
+    def get_gt_semantic_map(self, classes: list, colors: list, resolution: int = 256) -> np.ndarray:
+        r"""RGB top-down silhouette map of every GT-annotated object of `classes`, on this env's own
+        navmesh-shaped canvas (get_gt_topdown_map around the agent's current position) -- independent of
+        any agent's belief map shape/resolution. Cached per (classes, colors, resolution), invalidated
+        alongside _tdmap on reset()/change_scene()."""
+        cache_key = (tuple(classes), tuple(map(tuple, colors)), resolution)
+        if self._gt_semantic_map_cache_key != cache_key:
+            origin = np.array(self.get_agent_state().position)
+            canvas = self.get_gt_topdown_map(origin, resolution)
+            lower_bound, upper_bound = self._env.sim.pathfinder.get_bounds()
+            meters_per_pixel = maps.calculate_meters_per_pixel(resolution, pathfinder=self._env.sim.pathfinder)
+            grid_size = (abs(upper_bound[2] - lower_bound[2]) / canvas.shape[0], abs(upper_bound[0] - lower_bound[0]) / canvas.shape[1])
+
+            def to_pixels(points: np.ndarray) -> np.ndarray:
+                rows = ((points[:, 2] - lower_bound[2]) / grid_size[0]).astype(int)
+                cols = ((points[:, 0] - lower_bound[0]) / grid_size[1]).astype(int)
+                return np.stack([rows, cols], axis=1)
+
+            footprints = [(class_id, mesh_footprint_on_grid(mesh, canvas.shape, to_pixels)) for _, class_id, mesh in self.get_gt_meshes(classes)]
+            image = plot_semantic_2d_map(
+                canvas, footprints, dict(enumerate(colors)), dict(enumerate(classes)),
+                meters_per_grid_pixel=meters_per_pixel, scale=TOPDOWN_MAP_SCALE,
+            )
+            self._gt_semantic_map_cache = np.array(image)
+            self._gt_semantic_map_cache_key = cache_key
+        return self._gt_semantic_map_cache
+
     def get_last_reward(self) -> float:
         return self.last_reward
 
@@ -172,14 +260,13 @@ class ExplorationEnv(RLEnv):
         return self._env.task.sensor_suite.get("bbsgt").annotation
 
     _GROUND_FLOOR_MPP = 0.125  # meters/cell, matches HabitatObjOccupancyGrid's own resolution
-    _STEP_WALK_METERS = 0.25  # waypoint spacing along find_shortest_path_waypoints's route (embodied-active-learning-od's own grid spacing)
 
     def get_navmesh_grid(self) -> np.ndarray:
         r"""Navigable-cell mask of the floor's main navmesh island at _GROUND_FLOOR_MPP resolution,
         lazily built and cached per scene (reset on reset()/change_scene()) -- shared by
-        get_random_point/find_shortest_path_waypoints below. Furniture tops baked into the navmesh
-        (navmesh_include_static_objects) form small islands within the floor's height slab; only the
-        largest island is kept so spawns and waypoints never land on them."""
+        get_random_point below. Furniture tops baked into the navmesh (navmesh_include_static_objects)
+        form small islands within the floor's height slab; only the largest island is kept so spawns
+        never land on them."""
         if self._tdmap is None:
             lower_bound, _ = self._env.sim.pathfinder.get_bounds()
             islands = self._env.sim.pathfinder.get_topdown_island_view(
@@ -267,25 +354,6 @@ class ExplorationEnv(RLEnv):
         ))
         return None if np.isnan(point).any() else point
 
-    def find_shortest_path_waypoints(self, start: np.ndarray, end: np.ndarray) -> Optional[list[np.ndarray]]:
-        pathfinder = self._env.sim.pathfinder
-        tdmap = self.get_navmesh_grid()
-
-        start_row, start_col = maps.to_grid(start[2], start[0], tdmap.shape, pathfinder=pathfinder)
-        end_row, end_col = maps.to_grid(end[2], end[0], tdmap.shape, pathfinder=pathfinder)
-
-        path_px = grid_path(
-            tdmap, (start_col, start_row), (end_col, end_row),
-            step_size=self._STEP_WALK_METERS / self._GROUND_FLOOR_MPP,
-        )
-        if len(path_px) < 2:
-            return None
-
-        points = []
-        for col, row in path_px:
-            z, x = maps.from_grid(row, col, self._tdmap.shape, pathfinder=pathfinder)
-            points.append(self._snap_to_floor(x, z))
-        return points
 
     def get_env_name(self) -> str:
         return self._env.task.sensor_suite.get("bbsgt").env_name
@@ -330,7 +398,61 @@ class ExplorationEnv(RLEnv):
         self._env._sim.reconfigure(self._env._config.simulator)
         self._env.task.sensor_suite.get("bbsgt").setup_semantic_labels()
         self._tdmap = None
+        self._gt_semantic_map_cache_key = None
         return
 
     def get_reward_range(self):
         return (-1.0, 1.0)
+
+
+def configure_scene(habitat_cfg: Any, scenes: list, steps_per_episode: int, object_params: dict) -> None:
+    """Points habitat_cfg at `scenes` (content_scenes -- see ExplorationNavDataset) and wires up
+    the ObjectDetectorGTSensor from object_params, in place, before an ExplorationEnv is built
+    from it."""
+    scene_dataset_config = resolve_env(object_params["env_name"])
+    with habitat_read_write(habitat_cfg):
+        habitat_cfg.habitat.dataset.content_scenes = scenes
+        habitat_cfg.habitat.dataset.scene_dataset_config = scene_dataset_config
+        habitat_cfg.habitat.simulator.scene_dataset = scene_dataset_config
+        habitat_cfg.habitat.task.lab_sensors = {
+            "object_detector_gt": ObjectDetectorGTSensorConfig(**object_params),
+            **habitat_cfg.habitat.task.lab_sensors,
+        }
+
+
+def set_sensor_resolution(habitat_cfg: Any, image_size: int) -> None:
+    """Renders every agent sensor at image_size x image_size, in place."""
+    with habitat_read_write(habitat_cfg):
+        for sensor in habitat_cfg.habitat.simulator.agents.main_agent.sim_sensors.values():
+            sensor.width = sensor.height = image_size
+
+
+def build_env(scene_name: str, seed: int, max_steps: int, object_params: dict, image_size: Optional[int] = None) -> tuple[ExplorationEnv, Any]:
+    """(ExplorationEnv on scene_name, its habitat config), not yet reset; its sensors render at image_size if given."""
+    habitat_cfg = habitat.get_config(config_path="common/config/hssd-hab/default.yaml")
+    if image_size is not None:
+        set_sensor_resolution(habitat_cfg, image_size)
+    with habitat_read_write(habitat_cfg):
+        habitat_cfg.habitat.seed = seed
+    configure_scene(habitat_cfg, [scene_name], max_steps, object_params)
+    return ExplorationEnv(config=habitat_cfg), habitat_cfg
+
+
+def build_agent(
+    agent_name: str, rng: np.random.Generator, env: ExplorationEnv, habitat_cfg: Any, visibility_dist_m: float = 3.0,
+    dump_location: str = "outputs/planner_dumps", exp_name: str = "exp",
+) -> Agent:
+    """Call reset(position, floor_height) on the returned FrontierExplorationAgent/HybridFrontierAgent
+    (BaseExplorationAgent) once an episode is active, before the first act()."""
+    if agent_name == "random":
+        return RandomAgent(rng, [action for action in env.get_legal_actions() if action != "stop"])
+    simulator_cfg = habitat_cfg.habitat.simulator
+    fov = simulator_cfg.agents.main_agent.sim_sensors.rgb_sensor.hfov
+    depth_cfg = simulator_cfg.agents.main_agent.sim_sensors.depth_sensor
+    camera = DepthCamera(depth_cfg.hfov, depth_cfg.min_depth, depth_cfg.max_depth)
+    if agent_name == "fbe":
+        config = FrontierExplorationConfig(MapConfig(fov, visibility_dist_m=visibility_dist_m), DiscretePlannerConfig(simulator_cfg.turn_angle))
+        return FrontierExplorationAgent(config, camera, rng, dump_location, exp_name)
+    if agent_name == "hybrid":
+        return HybridFrontierAgent(HybridConfig(MapConfig(fov), simulator_cfg.turn_angle), camera, rng, env.get_pathfinder())
+    raise ValueError(f"Unknown agent {agent_name!r}")

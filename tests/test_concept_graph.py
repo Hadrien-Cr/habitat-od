@@ -1,7 +1,7 @@
 """
 Standalone viewer for common/utils/concept_graph.py::ConceptGraphMemory.
 
-Reuses test_semantic_point_cloud.py's FrontierAgent-driven write/read harness. Each fused
+Reuses test_semantic_point_cloud.py's FrontierExplorationAgent-driven write/read harness. Each fused
 frame's gt_instances (GT masks and depth) get the Detic region embedding of their box, are projected with project_detections_to_objects, merged into the map via
 ConceptGraphMemory.__add__, and .resolve() runs concept-graphs' filter/denoise, then
 ConceptGraphMemory.keep_foreground keeps the objects detected in enough of the frames showing them and
@@ -21,7 +21,7 @@ from common.utils.concept_graph import ConceptGraphMemory, FrameDetections, proj
 from common.utils.image_memory import Frame, ImageMemory
 from common.utils.projection_utils import DepthCamera, ResolvedObjects
 from common.vision.detic import Vocabulary
-from detector import Detector
+from common.vision.detector import Detector
 from test_semantic_point_cloud import _AGENT_HEIGHT, _ENV_NAME, _VOCAB_NAME, HFOV_DEG, MAX_DEPTH, MIN_DEPTH, run_viewer, save_retrieval_mosaic, viewer_arg_parser
 
 _MIN_MESH_VISIBILITY_FRACTION = 0.2

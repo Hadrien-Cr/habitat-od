@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 import numpy as np
+from detectron2.data import DatasetMapper
 from detectron2.data.datasets import load_coco_json
 from detectron2.structures import Instances
 from PIL import Image
@@ -20,7 +21,7 @@ from pycocotools import mask as mask_util
 
 from common.env_utils.vocab_constants import make_colors
 from common.utils.ground_truth_recovery import encoded_masks
-from common.utils.object_views_dataset import IMAGES_DIR, ObjectViewsDataset, batches_mosaic, plain_mapper
+from common.utils.object_views_dataset import IMAGES_DIR, ObjectViewsDataset, batches_mosaic
 from common.utils.retrieval import RetrievedView, SegmentationStyle
 
 _MOSAIC_RECORDS = 32
@@ -47,8 +48,9 @@ def split_json_path(split_dir: Path) -> Path:
 
 
 def _save_mosaic(records: List[dict], categories: list, split_dir: Path, rng: np.random.Generator) -> None:
-    """split_dir/<split>_mosaic.png of _MOSAIC_RECORDS of records in random order, plain_mapper-mapped, _MOSAIC_COLUMNS a row."""
-    mapper, style = plain_mapper(), SegmentationStyle(categories, make_colors(len(categories), seed=0, ctype=0))
+    """split_dir/<split>_mosaic.png of _MOSAIC_RECORDS of records in random order, mapper-mapped, _MOSAIC_COLUMNS a row."""
+    mapper = DatasetMapper(is_train=True, augmentations=[], image_format="RGB", use_instance_mask=True, instance_mask_format="bitmask")
+    style = SegmentationStyle(categories, make_colors(len(categories), seed=0, ctype=0))
     mapped = [mapper(records[index]) for index in rng.permutation(len(records))[:_MOSAIC_RECORDS]]
     mosaic = batches_mosaic([mapped[start:start + _MOSAIC_COLUMNS] for start in range(0, len(mapped), _MOSAIC_COLUMNS)], style)
     if mosaic is not None:
@@ -103,9 +105,16 @@ class CocoFramesWriter:
             ]
 
     def write(self, rng: np.random.Generator) -> None:
+        """Categories are written alphabetically (COCOEvaluator's per-category AP table follows
+        category id order), with annotations' category_id remapped from self.categories' original
+        class-index order to match."""
         json_path = split_json_path(self.split_dir)
-        categories = [{"id": class_id + 1, "name": name} for class_id, name in enumerate(self.categories)]
+        old_ids_by_name = sorted(enumerate(self.categories, start=1), key=lambda pair: pair[1])
+        old_to_new_id = {old_id: new_id for new_id, (old_id, _) in enumerate(old_ids_by_name, start=1)}
+        sorted_classes = [name for _, name in old_ids_by_name]
+        categories = [{"id": new_id, "name": name} for new_id, name in enumerate(sorted_classes, start=1)]
+        annotations = [{**annotation, "category_id": old_to_new_id[annotation["category_id"]]} for annotation in self.annotations]
         with open(json_path, "w") as file:
-            json.dump({"info": self.info, "categories": categories, "images": self.images, "annotations": self.annotations}, file)
+            json.dump({"info": self.info, "categories": categories, "images": self.images, "annotations": annotations}, file)
         records = load_coco_json(str(json_path), str(self.split_dir / IMAGES_DIR), dataset_name=str(json_path))
-        _save_mosaic(records, self.categories, self.split_dir, rng)
+        _save_mosaic(records, sorted_classes, self.split_dir, rng)

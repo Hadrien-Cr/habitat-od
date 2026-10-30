@@ -1,0 +1,11 @@
+# Smoke-test fine-tuning config for root/train.py: 100 iterations of CustomFT_Detic on smoke_sl's
+# train/test split, to check the fine-tuning loop runs end-to-end quickly. Same model/data shape
+# as finetune_detic_swinb.yaml, just short enough to run in minutes -- WARMUP_ITERS/EVAL_PERIOD
+# scaled down to fit inside MAX_ITER.
+_BASE_: "finetune_detic_swinb.yaml"
+SOLVER:
+  MAX_ITER: 100
+  WARMUP_ITERS: 10
+  CHECKPOINT_PERIOD: 100
+TEST:
+  EVAL_PERIOD: 100

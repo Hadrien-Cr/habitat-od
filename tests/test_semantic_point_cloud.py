@@ -2,8 +2,8 @@
 Standalone viewer for common/utils/semantic_point_cloud.py::SemanticPointCloud.
 
 Runs against a real single-room ProcTHOR-hab scene via ObjectDetectorGTSensor on a raw
-habitat_sim.Simulator (no ExplorationEnv/Hydra config), driven by a FrontierAgent
-(common/agents/frontier_agent.py) with vanilla move_forward/turn_left/turn_right actions from a
+habitat_sim.Simulator (no ExplorationEnv/Hydra config), driven by a FrontierExplorationAgent
+(common/hybrid_exploration/frontier_exp_agent.py) with vanilla move_forward/turn_left/turn_right actions from a
 random start pose. Each fused frame's gt_instances are projected with project_semantic_masks_to_3d,
 fused via SemanticPointCloud.__add__, and .resolve() voxelizes them and resolves per-voxel
 class/object-id conflicts. Also hosts the write/read harness (run_viewer) and the retrieval mosaic
@@ -20,8 +20,8 @@ generalizes to unseen views.
 Retrieve: every exploration frame (fused and held-out) is kept in an ImageMemory; for each of the
 --retrieval-objects largest resolved objects, common/utils/retrieval.py's retrieve_views selects diverse frames it
 appears in, tiled one object per row into a retrieval_mosaic.png.
-Finally saves the FrontierAgent's exploration_map.png (navigable map, revealed area, trajectory,
-circled closest frontier) and an exploration_mosaic.png of that map at every step.
+Finally saves the FrontierExplorationAgent's exploration_map.png (free/explored area, trajectory)
+and an exploration_mosaic.png of that map at every step.
 
 Has no pytest test functions - run it directly. Requires HABITAT_DATA pointing at real ai2thor-hab data
 (see INSTALL.MD).
@@ -42,7 +42,8 @@ import torch
 from detectron2.structures import Instances
 
 from habitat.config.default_structured_configs import ObjectDetectorGTSensorConfig
-from common.agents.frontier_agent import FrontierAgent, FrontierAgentConfig
+from common.hybrid_exploration.exploration_map import MapConfig
+from common.hybrid_exploration.frontier_exp_agent import DiscretePlannerConfig, FrontierExplorationAgent, FrontierExplorationConfig
 from common.env_utils.object_annotations import objects_world_mesh
 from common.env_utils.object_detector_sensors import ObjectDetectorGTSensor
 from common.env_utils.sense import bbs_instances_as_gt, keep_valid_instances
@@ -61,9 +62,10 @@ MIN_DEPTH = 0.5
 MAX_DEPTH = 15.0
 _AGENT_HEIGHT = 0.88  # matches common/config/hssd-hab/default.yaml's agent height
 _FORWARD_STEP_M = 0.25
+_FLOOR_RAY_START_M = 0.3
 _TURN_ANGLE_DEG = 30.0  # matches common/config/hssd-hab/default.yaml's turn_angle
 _ENV_NAME = "ProcTHOR-hab"
-_VOCAB_NAME = "ProcTHOR-native"  # CLASS_LABELS_PROCTHOR - see vocab_constants.py
+_VOCAB_NAME = "PROCTHOR100"  # CLASS_LABELS_PROCTHOR100 - see vocab_constants.py
 _DATASET_CONFIG = f"{HABITAT_DATA}/scene_datasets/ai2thor-hab/ai2thor-hab/ai2thor-hab.scene_dataset_config.json" if HABITAT_DATA else None
 _DEFAULT_SCENE_ID = "ProcTHOR-Train-9632"  # same one test_object_detector.py uses
 
@@ -167,7 +169,7 @@ class _Viewer:
     out_stem: str
     rng: np.random.Generator
     island_index: int
-    explorer: FrontierAgent
+    explorer: FrontierExplorationAgent
     map_tiles: list = field(default_factory=list)
 
 
@@ -269,18 +271,27 @@ def _start_viewer(args: argparse.Namespace, out_name: str) -> _Viewer:
     sensor.setup_semantic_labels()
     colors = make_colors(len(sensor.get_classes()), seed=0, ctype=0)
     rng = np.random.default_rng(args.seed)
-    explorer = FrontierAgent(sim.pathfinder, FrontierAgentConfig(HFOV_DEG, _TURN_ANGLE_DEG), rng)
+    camera = DepthCamera(HFOV_DEG, MIN_DEPTH, MAX_DEPTH)
+    config = FrontierExplorationConfig(MapConfig(HFOV_DEG), DiscretePlannerConfig(_TURN_ANGLE_DEG))
+    explorer = FrontierExplorationAgent(config, camera, rng, out_dir, out_stem)
     return _Viewer(sim, sensor, colors, out_dir, out_stem, rng, _floor_island(sim.pathfinder), explorer)
 
 
+def _navmesh_floor_offset(sim: habitat_sim.Simulator, position: np.ndarray) -> float:
+    ray = habitat_sim.geo.Ray(position + np.array([0.0, _FLOOR_RAY_START_M, 0.0]), np.array([0.0, -1.0, 0.0]))
+    return float(position[1] - sim.cast_ray(ray).hits[0].point[1])
+
+
 def exploration_frames(viewer: _Viewer, num_steps: int) -> Iterator[Tuple[dict, habitat_sim.AgentState]]:
-    """Observations and agent states along a FrontierAgent run from a random start, until it stops or num_steps frames."""
+    """Observations and agent states along a FrontierExplorationAgent run from a random start, until it stops or num_steps frames."""
     sim_agent = viewer.sim.get_agent(0)
-    sim_agent.set_state(_random_agent_state(viewer.sim, viewer.rng, viewer.island_index))
+    start = _random_agent_state(viewer.sim, viewer.rng, viewer.island_index)
+    sim_agent.set_state(start)
+    viewer.explorer.reset(np.array(start.position), start.position[1] - _navmesh_floor_offset(viewer.sim, np.array(start.position)))
     obs = viewer.sim.get_sensor_observations()
     for _ in range(num_steps):
         yield obs, sim_agent.get_state()
-        action = viewer.explorer.act(sim_agent.get_state())
+        action = viewer.explorer.act(sim_agent.get_state(), obs["depth"])
         viewer.map_tiles.append(viewer.explorer.map_tile())
         if action == "stop":
             return

@@ -2,7 +2,7 @@
 
 `main.py` builds retrieval datasets from a collection config (`--config`, e.g. `config/collection_procthor.yaml`). It maps
 every collection scene (`collection.scenes`): `common/hybrid_exploration`'s `HybridFrontierAgent` explores the scene in
-exhaustive mode, while a class-agnostic `Detector` (`detector.py`) segments every frame, and its detections are lifted to
+exhaustive mode, while a class-agnostic `Detector` (`common/vision/detector.py`) segments every frame, and its detections are lifted to
 3D and fused into a concept-graphs `ConceptGraphMemory` (`common/utils/concept_graph.py`). When exploration ends, the map
 is resolved, filtered and classified, and diverse views of each object are retrieved into three object-view train sets.
 The evaluation scenes (`evaluation.scenes`) give a COCO test set of fully annotated frames shared by all three.
@@ -55,16 +55,23 @@ come from, out of it; they belong with the code that builds them (`common/env_ut
   - (1.4.6) **Merge overlapping objects:** a pair merges when overlap ratio > 0.5, embedding similarity > 0.5 and their
     sum > 1.2. Pairs merge greedily, highest sum first.
 - (1.5) **Steer.** Every fused object is passed to `agent.update_objects` as an `ObjectBelief` of its points, with
-  confidence min(detections, 5) / 5. Then `agent.act` picks the action, and the step's decision map (trajectory, revealed
-  area, objects and every candidate's score) is saved to `datadump/<run_name>/<scene>/decision_frames/step_<step>.png`,
-  and the step's detector predictions drawn on its rgb to `datadump/<run_name>/<scene>/prediction_frames/step_<step>.png`.
+  confidence min(detections, 5) / 5. Then `agent.act` picks the action. The step's labelled detector-prediction tile
+  (`segmentation_tile`) is kept and, once exploration ends, saved both individually
+  (`datadump/<run_name>/<scene>/prediction_frames/step_<step>.png`) and as one `predictions_mosaic.png`
+  (`save_exploration_visuals`, which also writes that scene's final `decision.png`/`object.png`). Each step also saves a
+  3-tile (observation, belief map, ground truth) snapshot to
+  `datadump/<run_name>/<scene>/images/exploration_snapshots/snapshot_<step>.png`, assembled into `exploration.webp`
+  (lossless animated WebP, not GIF -- GIF's 256-color palette cap crowds out or merges rare colors like the belief
+  map's green explored tint) once exploration ends.
 - (1.6) **Ground truth:** the step's ground-truth instances come from the `bbsgt` sensor, filtered by
   `object_params.min_area_fraction` (min(2 × mask area, box area) ≥ 2e-4 of the frame's pixels) and `filter_low_visibility`/`min_mesh_visibility_fraction`
-  (`mesh_visibility_fraction`: the 3×3-opened mask area over the object's largest box face projected at the mask's mean depth),
+  (`mesh_visibility_fraction`: the sum of the mask's connected components' own bounding-box areas, over the object's largest
+  box face projected at the mask's mean depth),
   and remapped to the kept classes. They don't affect the map; they are kept RLE-encoded, with their object id and
   visibility fraction, for recovery (5.3).
-- (1.7) **Stop** when the agent returns `stop` (also after its last 3 steps all collided, `HybridConfig.max_successive_collisions`)
-  or `collection.steps_per_scene` (500) runs out.
+- (1.7) **Stop** when the agent returns `stop`, its last 3 steps all collided (`HybridConfig.max_successive_collisions`),
+  it gets stuck (no net translation over the last 15 steps, logged as a warning) or `collection.steps_per_scene` (500)
+  runs out.
 
 ### 2. Resolve (`ConceptGraphMemory.resolve`)
 
@@ -130,9 +137,9 @@ come from, out of it; they belong with the code that builds them (`common/env_ut
 
 ### 6. Test set (`evaluation_set.py`), per evaluation scene
 
-- (6.1) **Explore:** a vanilla `FrontierAgent` explores until `evaluation.downsampling` × `evaluation.frames_per_scene`
-  (4 × 50) of its frames show some ground truth (filtered and remapped as in 1.6), it stops, or
-  `evaluation.max_steps_per_scene` (1000) run out.
+- (6.1) **Explore:** a vanilla `FrontierAgent`, revealing fog of war out to `frontier_agent.visibility_dist_m` (3.0),
+  explores until `evaluation.downsampling` × `evaluation.frames_per_scene` (4 × 50) of its frames show some ground truth
+  (filtered and remapped as in 1.6), it stops, or `frontier_agent.steps` (1000) run out.
 - (6.2) **Diverse frames:** those frames are embedded by CLIP ViT-B/32 (unit-norm image embeddings), and
   `evaluation.frames_per_scene` of them are picked by farthest-point sampling (`k_centroid_greedy`) on cosine distance.
 - (6.3) Each picked frame is written to the COCO test set with all its ground-truth instances as annotations, each
@@ -166,9 +173,7 @@ folder holds its json, its mosaic and an `images/` folder:
 | `main.py` | the full run: per collection scene, exploration loop and `SceneMapper`, resolve → foreground → size-masked classify, retrieval and recovery into the train sets; then the test sets |
 | `evaluation_set.py` | a test scene's frontier exploration and CLIP-diverse frame selection |
 | `config/collection_procthor.yaml` | collection config: `run_name`, `seed`, `object_params`, `collection` and `evaluation` scenes and budgets |
-| `pretrain.py` | Detic training with Detic's own `train_net.py` loop on LVIS v1 (see the root `CLAUDE.md`) |
-| `meta_arch.py` | `CustomFT_Detic`, Detic's `CustomRCNN` registered as a `META_ARCHITECTURE` for fine-tuning; not implemented yet |
-| `test.py` | COCO evaluation of a Detic config and checkpoint on a `test/` split, its zero-shot classifier reset to the split's categories; results in `test/inference/<config stem>/` |
+| `meta_arch.py` | `CustomFT_Detic`, Detic's `CustomRCNN` registered as a `META_ARCHITECTURE` for fine-tuning on a train variant's `ObjectViewsDataset`; trained by the root `train.py` |
 
 ## Running
 

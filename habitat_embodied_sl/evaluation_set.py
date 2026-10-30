@@ -1,5 +1,5 @@
-"""Test set of an evaluation scene: a vanilla FrontierAgent explores it until downsampling x frames_per_scene of its frames
-show some valid ground truth (or max_steps_per_scene run out), then the frames_per_scene most diverse of those, by
+"""Test set of an evaluation scene: a FrontierExplorationAgent explores it until downsampling x frames_per_scene of its frames
+show some valid ground truth (or frontier_agent.steps run out), then the frames_per_scene most diverse of those, by
 farthest-point sampling of their CLIP image embeddings, are kept with all their valid ground-truth instances."""
 from typing import List, Tuple
 
@@ -11,12 +11,12 @@ from omegaconf import DictConfig
 from PIL import Image
 from tqdm import tqdm
 
+from common import constants
+from common.env_utils.env_base import build_agent, build_env
 from common.env_utils.object_annotations import resolve_classes
 from common.env_utils.sense import ground_truth_instances
-from common.samplers.diversity_sampler import k_centroid_greedy
-from common.utils.plot_utils import save_decision_map
-from habitat_embodied_al import constants
-from habitat_embodied_al.reproduce.main import build_agent, build_env
+from common.utils.diversity_sampling import k_centroid_greedy
+from common.utils.plot_utils import save_tile
 
 _CLIP_MODEL = "ViT-B/32"
 _CLIP_BATCH_SIZE = 64
@@ -49,24 +49,25 @@ def evaluation_frames(scene: str, cfg: DictConfig, classes: list, image_size: in
 
 
 def explored_frames(scene: str, cfg: DictConfig, classes: list, image_size: int) -> List[Tuple[int, np.ndarray, Instances]]:
-    """(step, rgb, valid ground truth of classes) of each frame of a FrontierAgent's exploration of the scene showing some,
-    until cfg.evaluation.downsampling x frames_per_scene of them are met, the agent stops or max_steps_per_scene run out;
+    """(step, rgb, valid ground truth of classes) of each frame of a FrontierExplorationAgent's exploration of the scene showing some,
+    until cfg.evaluation.downsampling x frames_per_scene of them are met, the agent stops or frontier_agent.steps run out;
     its final map and trajectory saved as datasets/<run_name>/test/decision_frames/<scene>.png."""
-    evaluation, object_params = cfg.evaluation, cfg.object_params
-    env, habitat_cfg = build_env(scene, cfg.seed, evaluation.max_steps_per_scene, object_params, image_size)
+    evaluation, object_params, frontier_agent = cfg.evaluation, cfg.object_params, cfg.frontier_agent
+    env, habitat_cfg = build_env(scene, cfg.seed, frontier_agent.steps, object_params, image_size)
     rng = np.random.default_rng(cfg.seed)
-    agent = build_agent("fbe", rng, env, habitat_cfg)
+    agent = build_agent("fbe", rng, env, habitat_cfg, frontier_agent.visibility_dist_m, str(constants.DATASET_ROOT / cfg.run_name / "planner_dumps"), scene)
     obs = env.reset(env.episodes[0], rng=rng)
+    agent.reset(np.array(env.get_agent_state().position), env.navmesh_floor_offset())
     vocabulary = resolve_classes(object_params.env_name, object_params.vocab_name)
     frames = []
-    for step in tqdm(range(evaluation.max_steps_per_scene), desc=f"test {scene}", ncols=80):
+    for step in tqdm(range(frontier_agent.steps), desc=f"test {scene}", ncols=80):
         ground_truth = ground_truth_instances(obs, vocabulary, classes)
         if len(ground_truth):
             frames.append((step, obs["rgb"][:, :, :3], ground_truth))
-        action = agent.act(env.get_agent_state())
+        action = agent.act(env.get_agent_state(), obs["depth"])
         if len(frames) >= evaluation.downsampling * evaluation.frames_per_scene or action == "stop":
             break
         obs, _, _, _ = env.step(action)
-    save_decision_map(agent, constants.DATASET_ROOT / cfg.run_name / "test" / "decision_frames" / f"{scene}.png")
+    save_tile(agent.map_tile(), constants.DATASET_ROOT / cfg.run_name / "test" / "decision_frames" / f"{scene}.png")
     env.close()
     return frames

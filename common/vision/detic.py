@@ -6,11 +6,14 @@ from typing import List, Sequence, Tuple
 
 import numpy as np
 import torch
+from detectron2.checkpoint import DetectionCheckpointer  # type: ignore
 from detectron2.config import CfgNode, get_cfg  # type: ignore
 from detectron2.data import DatasetCatalog, MetadataCatalog  # type: ignore
 from detectron2.data.datasets.builtin import _PREDEFINED_SPLITS_LVIS  # type: ignore
 from detectron2.data.datasets.lvis import get_lvis_instances_meta, register_lvis_instances  # type: ignore
 from detectron2.data.datasets.lvis_v1_categories import LVIS_CATEGORIES  # type: ignore
+from detectron2.modeling import build_model  # type: ignore
+from torch import nn
 
 DETIC_ROOT = Path(__file__).resolve().parents[2] / "third_party" / "Detic"
 METADATA_DIR = Path(__file__).resolve().parents[2] / "datasets" / "metadata"
@@ -18,7 +21,19 @@ sys.path[:0] = [str(DETIC_ROOT), str(DETIC_ROOT / "third_party" / "CenterNet2")]
 
 from centernet.config import add_centernet_config  # type: ignore  # noqa: E402
 from detic.config import add_detic_config  # type: ignore  # noqa: E402
-from detic.predictor import get_clip_embeddings  # type: ignore  # noqa: E402
+from detic.modeling.utils import reset_cls_test  # type: ignore  # noqa: E402
+from detic.modeling.text.text_encoder import build_text_encoder  # type: ignore  # noqa: E402
+
+def get_clip_embeddings(vocabulary, prompt='a ', text_encoder=None) -> torch.Tensor:
+    if text_encoder is None:
+        text_encoder = build_text_encoder(pretrain=True)
+        text_encoder.eval()
+    texts = [prompt + x for x in vocabulary]
+    emb = text_encoder(texts).detach().permute(1, 0).contiguous().cpu()
+    return emb
+
+def cosine_similarity(vec1, vec2):
+    return torch.dot(vec1, vec2) / (torch.norm(vec1) * torch.norm(vec2))
 
 
 def _detic_path(path: str) -> str:
@@ -69,6 +84,14 @@ class Vocabulary:
         np.save(embeddings_path, embeddings.numpy())
         prompts_path.write_text("\n".join(prompts) + "\n")
         return embeddings
+
+
+def build_vocabulary_model(cfg: CfgNode, vocabulary: Vocabulary) -> nn.Module:
+    """cfg's model loaded from its MODEL.WEIGHTS, its zero-shot classifier reset to vocabulary's CLIP text embeddings."""
+    model = build_model(cfg)
+    DetectionCheckpointer(model).load(cfg.MODEL.WEIGHTS)
+    reset_cls_test(model, vocabulary.clip_embeddings(), len(vocabulary.classes))
+    return model
 
 
 LVIS = Vocabulary("lvis", tuple(category["name"] for category in sorted(LVIS_CATEGORIES, key=lambda category: category["id"])))

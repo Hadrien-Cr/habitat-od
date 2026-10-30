@@ -1,10 +1,10 @@
 from typing import Iterable, Tuple
 
 import numpy as np
-import sophus.sophuspy as sp
+import sophuspy as sp
 from scipy.spatial.transform import Rotation
 
-from common.interfaces import Pose
+from common.env_utils.sense import Pose
 
 
 def normalize_ang_error(ang):

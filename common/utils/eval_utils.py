@@ -13,8 +13,9 @@ from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 from tabulate import tabulate
 
+from common.hybrid_exploration.ground_truth_map import GroundTruthMapTracker
 from common.hybrid_exploration.hybrid_agent import HybridFrontierAgent
-from common.utils.projection_utils import ResolvedObjects, ground_truth_topdown, save_resolved_ply, semantic_topdown
+from common.utils.projection_utils import ResolvedObjects, estimated_semantic_topdown, gt_semantic_topdown, save_resolved_ply
 from common.utils.retrieval import SegmentationStyle
 
 _IOU_THRESHOLDS = np.round(np.arange(0.25, 0.951, 0.05), 2)
@@ -294,15 +295,15 @@ def _ap(precision: np.ndarray, iou_mask: np.ndarray, area_index: int = 0, class_
 
 
 def _summary(precision: np.ndarray) -> Dict[str, float]:
-    """AP averaged over IoU 0.5:0.95 (overall and per volume range), and at IoU 0.25 and 0.5."""
-    coco_range = _IOU_THRESHOLDS >= 0.5
+    """AP averaged over IoU 0.5:0.95, and at IoU 0.25 (overall and per volume range) and 0.5."""
+    iou_25 = _IOU_THRESHOLDS == 0.25
     return {
-        "AP": _ap(precision, coco_range),
-        "AP25": _ap(precision, _IOU_THRESHOLDS == 0.25),
+        "AP": _ap(precision, _IOU_THRESHOLDS >= 0.5),
+        "AP25": _ap(precision, iou_25),
         "AP50": _ap(precision, _IOU_THRESHOLDS == 0.5),
-        "APs": _ap(precision, coco_range, area_index=1),
-        "APm": _ap(precision, coco_range, area_index=2),
-        "APl": _ap(precision, coco_range, area_index=3),
+        "AP25s": _ap(precision, iou_25, area_index=1),
+        "AP25m": _ap(precision, iou_25, area_index=2),
+        "AP25l": _ap(precision, iou_25, area_index=3),
     }
 
 
@@ -412,12 +413,21 @@ def _confusion_table(matrix: np.ndarray, labels: list) -> str:
 
 
 def save_maps(resolved: ResolvedObjects, meshes: List[Tuple[int, int, trimesh.Trimesh]], agent: HybridFrontierAgent, style: SegmentationStyle, out_dir: Path) -> None:
-    """semantic_point_cloud.ply, semantic_wireframes.glb and semantic_topdown.png of resolved's objects, and
-    ground_truth_topdown.png of the (object id, class, world mesh) meshes."""
+    """semantic_point_cloud.ply, semantic_wireframes.glb and estimated_topdown.png of resolved's objects over the
+    agent's own belief map, and ground_truth_topdown.png of meshes over the ground-truth navmesh."""
+    assert agent.estimated_map is not None, "Call reset() first"
     save_resolved_ply(resolved, style.colors, out_dir / "semantic_point_cloud.ply")
     save_resolved_wireframes(resolved, style.classes, style.colors, out_dir / "semantic_wireframes.glb")
-    cv2.imwrite(str(out_dir / "semantic_topdown.png"), semantic_topdown(resolved, agent, style.classes, style.colors)[:, :, ::-1])
-    cv2.imwrite(str(out_dir / "ground_truth_topdown.png"), ground_truth_topdown(meshes, agent, style.classes, style.colors)[:, :, ::-1])
+    cv2.imwrite(
+        str(out_dir / "estimated_topdown.png"),
+        estimated_semantic_topdown(resolved, agent.estimated_map, style.classes, style.colors)[:, :, ::-1],
+    )
+    start_position, _ = agent.trajectory[0]
+    ground_truth = GroundTruthMapTracker(agent.pathfinder, start_position, fov_deg=0.0, visibility_dist_m=0.0, resolution=agent.estimated_map.map_pixels_size)
+    cv2.imwrite(
+        str(out_dir / "ground_truth_topdown.png"),
+        gt_semantic_topdown(meshes, ground_truth.navigable, ground_truth.to_pixels, ground_truth.meters_per_pixel, style.classes, style.colors)[:, :, ::-1],
+    )
 
 
 def evaluate_resolved(resolved: ResolvedObjects, meshes: List[Tuple[int, int, trimesh.Trimesh]], classes: list, out_dir: Path) -> None:

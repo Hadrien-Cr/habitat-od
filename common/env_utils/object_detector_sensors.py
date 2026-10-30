@@ -16,6 +16,8 @@ from common.env_utils.visibility_utils import mesh_visibility_fraction
 
 log = logging.getLogger(__name__)
 
+FILTER_KEYS = ("filtered_class", "filtered_low_area", "filtered_low_visibility")
+
 
 @registry.register_sensor
 class ObjectDetectorGTSensor(habitat.Sensor): # type: ignore
@@ -117,9 +119,7 @@ class ObjectDetectorGTSensor(habitat.Sensor): # type: ignore
                 "info": {
                     "object_id": obj_id,
                     "env_name": self.env_name,
-                    "filtered_class": filtered_class,
-                    "filtered_low_area": filtered_low_area,
-                    "filtered_low_visibility": filtered_low_visibility,
+                    **dict(zip(FILTER_KEYS, (filtered_class, filtered_low_area, filtered_low_visibility))),
                     "visibility_fraction": visibility_fraction
                 }
             })

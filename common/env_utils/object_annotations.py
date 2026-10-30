@@ -4,7 +4,7 @@ import json
 import os
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Optional
+from typing import Any, Optional
 
 import magnum as mn
 import numpy as np
@@ -14,7 +14,7 @@ import habitat_sim # type: ignore
 import habitat.sims.habitat_simulator.sim_utilities as sutils # type: ignore
 
 from common.env_utils.vocab_constants import (
-    CLASS_LABELS_HSSD400, CLASS_LABELS_PROCTHOR, HSSD400_TO_VOCAB, PROCTHOR_NATIVE_CLASSES, PROCTHOR_NATIVE_VOCAB, PROCTHOR_VARIANT_SUFFIXES, VOCABULARIES,
+    CLASS_LABELS_HSSD400, CLASS_LABELS_PROCTHOR100, HSSD400_TO_VOCAB, PROCTHOR_NATIVE_TO_CLASS, PROCTHOR_NATIVE_VOCAB, PROCTHOR_VARIANT_SUFFIXES, VOCABULARIES,
 )
 from common.env_utils.visibility_utils import compute_obj_dimensions, compute_obj_render_dimensions, compute_dimensions_from_obb, box_size_measures, SIZE_MEASURES
 from common.utils.grid_utils import HabitatObjOccupancyGrid
@@ -24,8 +24,10 @@ BASE_DIR = os.environ.get("BASE_DIR")
 assert BASE_DIR is not None, "BASE_DIR environment variable must be set to the repo root"
 
 PROCTHOR_ROOT = os.path.join(str(HABITAT_DATA), "scene_datasets", "ai2thor-hab", "ai2thor-hab")
-HSSD80_SIZES_PATH = os.path.join(str(BASE_DIR), "common", "env_utils", "hssd80_sizes.csv")
-PROCTHOR_NATIVE_SIZES_PATH = os.path.join(str(BASE_DIR), "common", "env_utils", "procthor_native_sizes.csv")
+HSSD400_SIZES_PATH = os.path.join(str(BASE_DIR), "common", "env_utils", "hssd400_sizes.csv")
+PROCTHOR100_SIZES_PATH = os.path.join(str(BASE_DIR), "common", "env_utils", "procthor100_sizes.csv")
+HSSD400_SCENE_CLASSES_PATH = os.path.join(str(BASE_DIR), "common", "env_utils", "hssd400_scene_classes.csv")
+PROCTHOR100_SCENE_CLASSES_PATH = os.path.join(str(BASE_DIR), "common", "env_utils", "procthor100_scene_classes.csv")
 
 
 def get_obj_from_id(sim: habitat_sim.Simulator, obj_id: int):
@@ -211,17 +213,22 @@ def _resolve_native_vocab(env_name: str, vocab_name: str) -> list[str]:
 
 def _procthor_base_class(name: str) -> str:
     """name without a PROCTHOR_VARIANT_SUFFIXES suffix (AppleSliced -> Apple) when what remains is a class of its own."""
-    return next((name[:-len(suffix)] for suffix in PROCTHOR_VARIANT_SUFFIXES if name.endswith(suffix) and name[:-len(suffix)] in PROCTHOR_NATIVE_CLASSES), name)
+    return next((name[:-len(suffix)] for suffix in PROCTHOR_VARIANT_SUFFIXES if name.endswith(suffix) and name[:-len(suffix)] in PROCTHOR_NATIVE_TO_CLASS), name)
 
 
 @lru_cache(maxsize=None)
 def _procthor_class_ids(mapping_path: str) -> dict[int, int]:
-    """{native semantic id habitat_sim applies to ProcTHOR-hab objects at load time: its PROCTHOR_NATIVE_CLASSES (and CLASS_LABELS_PROCTHOR) index}, from
-    configs/object_semantic_id_mapping.json, variants folded into their base class and "Undefined" left out."""
+    """{native semantic id habitat_sim applies to ProcTHOR-hab objects at load time: its CLASS_LABELS_PROCTHOR100 index}, from
+    configs/object_semantic_id_mapping.json, variants folded into their base class; "Undefined" and classes outside
+    CLASS_LABELS_PROCTHOR100 (never placed by ProcTHOR's own generator - see vocab_constants.py) left out."""
     name_to_id: dict[str, int] = json.load(open(mapping_path))
-    unlisted = [name for name in name_to_id if name != "Undefined" and _procthor_base_class(name) not in PROCTHOR_NATIVE_CLASSES]
-    assert not unlisted, f"ProcTHOR-hab classes missing from PROCTHOR_NATIVE_CLASSES: {unlisted}"
-    return {native_id: PROCTHOR_NATIVE_CLASSES.index(_procthor_base_class(name)) for name, native_id in name_to_id.items() if name != "Undefined"}
+    unlisted = [name for name in name_to_id if name != "Undefined" and _procthor_base_class(name) not in PROCTHOR_NATIVE_TO_CLASS]
+    assert not unlisted, f"ProcTHOR-hab classes missing from PROCTHOR_NATIVE_TO_CLASS: {unlisted}"
+    return {
+        native_id: CLASS_LABELS_PROCTHOR100.index(PROCTHOR_NATIVE_TO_CLASS[_procthor_base_class(name)])
+        for name, native_id in name_to_id.items()
+        if name != "Undefined" and PROCTHOR_NATIVE_TO_CLASS[_procthor_base_class(name)] in CLASS_LABELS_PROCTHOR100
+    }
 
 
 def _setup_hssd(sim, vocab_name: str) -> ObjectAnnotation:
@@ -246,7 +253,7 @@ def _setup_hssd(sim, vocab_name: str) -> ObjectAnnotation:
             node.semantic_id = obj.object_id * 1000 + class_id
 
         obj_id_to_class_id[obj.object_id] = class_id
-        dimensions_by_obj_id[obj.object_id] = compute_obj_dimensions(obj)
+        dimensions_by_obj_id[obj.object_id] = compute_obj_render_dimensions(obj)
 
     object_info_list = get_objects_info(sim, target_vocab_object_annotations, hssd400_object_annotations)
     object_occupancy_grid = HabitatObjOccupancyGrid(sim, meters_per_grid_pixel=0.125, list_object_info=object_info_list)
@@ -263,7 +270,7 @@ def _setup_procthor(sim, vocab_name: str) -> ObjectAnnotation:
     # writable visual_scene_nodes - unlike its native per-category semantic id (which merges
     # same-class instances), we can bake a per-instance id here too.
     assert vocab_name == PROCTHOR_NATIVE_VOCAB, (
-        f"ProcTHOR-hab's vocabulary is CLASS_LABELS_PROCTHOR, got vocab_name={vocab_name!r}, expected {PROCTHOR_NATIVE_VOCAB!r}"
+        f"ProcTHOR-hab's vocabulary is CLASS_LABELS_PROCTHOR100, got vocab_name={vocab_name!r}, expected {PROCTHOR_NATIVE_VOCAB!r}"
     )
     ai2_root = os.path.dirname(sim.config.sim_cfg.scene_dataset_config_file)
     class_ids = _procthor_class_ids(os.path.join(ai2_root, "configs", "object_semantic_id_mapping.json"))
@@ -285,9 +292,9 @@ def _setup_procthor(sim, vocab_name: str) -> ObjectAnnotation:
             node.semantic_id = obj.object_id * 1000 + class_id
 
         obj_id_to_class_id[obj.object_id] = class_id
-        dimensions_by_obj_id[obj.object_id] = compute_obj_dimensions(obj)
+        dimensions_by_obj_id[obj.object_id] = compute_obj_render_dimensions(obj)
 
-    return ObjectAnnotation(env_name="ProcTHOR-hab", classes=CLASS_LABELS_PROCTHOR, obj_id_to_class_id=obj_id_to_class_id, dimensions_by_obj_id=dimensions_by_obj_id)
+    return ObjectAnnotation(env_name="ProcTHOR-hab", classes=CLASS_LABELS_PROCTHOR100, obj_id_to_class_id=obj_id_to_class_id, dimensions_by_obj_id=dimensions_by_obj_id)
 
 
 def _setup_native_semantic_scene(sim, env_name: str, vocab_name: str) -> ObjectAnnotation:
@@ -339,9 +346,9 @@ def resolve_classes(env_name: str, vocab_name: str) -> list[str]:
     has closed. ProcTHOR-hab's only vocab_name is PROCTHOR_NATIVE_VOCAB."""
     if env_name == "ProcTHOR-hab":
         assert vocab_name == PROCTHOR_NATIVE_VOCAB, (
-            f"ProcTHOR-hab's vocabulary is CLASS_LABELS_PROCTHOR, got vocab_name={vocab_name!r}, expected {PROCTHOR_NATIVE_VOCAB!r}"
+            f"ProcTHOR-hab's vocabulary is CLASS_LABELS_PROCTHOR100, got vocab_name={vocab_name!r}, expected {PROCTHOR_NATIVE_VOCAB!r}"
         )
-        return CLASS_LABELS_PROCTHOR
+        return CLASS_LABELS_PROCTHOR100
     elif env_name in ("MP3D", "Gibson-Semantic"):
         return _resolve_native_vocab(env_name, vocab_name)
     elif env_name == "HSSD-HAB":
@@ -351,15 +358,35 @@ def resolve_classes(env_name: str, vocab_name: str) -> list[str]:
         raise NotImplementedError(f"Environment {env_name} not supported for object annotations")
 
 
-def _scene_placements(scene_glob: str) -> list[tuple[str, np.ndarray]]:
-    """(template name, scale) of every object instance placed in the scene_glob scenes."""
-    instances = [inst for path in glob.glob(scene_glob) for inst in json.load(open(path))["object_instances"]]
+def kept_classes_from_args(args: Any) -> list[str]:
+    """resolve_classes(args.env_name, args.vocab_name), minus "unknown", filtered to args.filter_classes if given."""
+    full_classes = resolve_classes(args.env_name, args.vocab_name)
+    return [c for c in full_classes if c != "unknown" and (not args.filter_classes or c in args.filter_classes)]
+
+
+def _scene_paths(scene_glob: str) -> list[str]:
+    return glob.glob(scene_glob)
+
+
+def _all_procthor_scenes(procthor_root: str) -> list[str]:
+    """Paths of every ProcTHOR scene (Train/Val/Test splits)."""
+    return glob.glob(os.path.join(procthor_root, "configs", "scenes", "ProcTHOR", "**", "*.scene_instance.json"), recursive=True)
+
+
+def _scene_placements(scene_paths: list[str]) -> list[tuple[str, np.ndarray]]:
+    """(template name, scale) of every object instance placed in scene_paths' scenes."""
+    instances = [inst for path in scene_paths for inst in json.load(open(path))["object_instances"]]
     return [(os.path.basename(inst["template_name"]), np.abs(inst["non_uniform_scale"])) for inst in instances]
 
 
-def _template_placements(object_config_glob: str) -> list[tuple[str, np.ndarray]]:
-    """(template name, unit scale) of every object_config_glob template, placed or not."""
-    return [(os.path.basename(path).removesuffix(".object_config.json"), np.ones(3)) for path in glob.glob(object_config_glob)]
+def _scene_placements_by_scene(scene_paths: list[str]) -> dict[str, list[str]]:
+    """{scene name: [template name, ...]} of every object instance placed in each scene_paths file, one entry per placed instance."""
+    placements_by_scene = {}
+    for path in scene_paths:
+        scene_name = os.path.basename(path).removesuffix(".scene_instance.json")
+        instances = json.load(open(path))["object_instances"]
+        placements_by_scene[scene_name] = [os.path.basename(inst["template_name"]) for inst in instances]
+    return placements_by_scene
 
 
 def _template_dims_and_semantic_ids(dataset_config: str, template_names: set[str]) -> dict[str, tuple[np.ndarray, int]]:
@@ -404,6 +431,29 @@ def _write_class_size_table(dataset_config: str, placements: list[tuple[str, np.
     _class_size_table(placements, template_info, class_of_template).round(6).to_csv(output_path)
 
 
+def _scene_class_counts(template_names: list[str], semantic_ids: dict[str, int], class_of_template) -> dict[str, int]:
+    """{class name: occurrences} over one scene's placed template_names."""
+    classes = (class_of_template(name, semantic_ids.get(name)) for name in template_names)
+    return pd.Series([c for c in classes if c is not None]).value_counts().to_dict()
+
+
+def _write_scene_class_table(dataset_config: str, placements_by_scene: dict[str, list[str]], class_of_template, all_classes: list[str], output_path: str) -> None:
+    """One row per scene plus a leading "total" row, one column per all_classes entry (zero-filled where absent); columns with occurrences sorted by total descending, zero-occurrence columns after them, alphabetically."""
+    all_template_names = {name for names in placements_by_scene.values() for name in names}
+    semantic_ids = {name: sem_id for name, (_, sem_id) in _template_dims_and_semantic_ids(dataset_config, all_template_names).items()}
+    rows = {
+        scene_name: {class_name: 0 for class_name in all_classes} | _scene_class_counts(template_names, semantic_ids, class_of_template)
+        for scene_name, template_names in placements_by_scene.items()
+    }
+    table = pd.DataFrame.from_dict(rows, orient="index", columns=all_classes)
+    table = pd.concat([table.sum().to_frame("total").T, table])
+    totals = table.loc["total"]
+    present = totals[totals > 0].sort_values(ascending=False).index
+    absent = sorted(totals[totals == 0].index)
+    table = table[list(present) + absent]
+    table.rename_axis("scene").to_csv(output_path)
+
+
 def class_size_ranges(sizes_path: str) -> dict[str, dict[str, tuple[float, float]]]:
     """{class: {size measure: (min, max)}} of a hssd_hab_sizes/procthor_hab_sizes table."""
     table = pd.read_csv(sizes_path, index_col="class")
@@ -413,23 +463,46 @@ def class_size_ranges(sizes_path: str) -> dict[str, dict[str, tuple[float, float
     }
 
 
-def hssd_hab_sizes(output_path: str = HSSD80_SIZES_PATH) -> None:
-    _, target_vocab_object_annotations, _ = _load_hssd_vocab("HSSD80")
+def hssd_hab_sizes(output_path: str = HSSD400_SIZES_PATH) -> None:
+    _, target_vocab_object_annotations, _ = _load_hssd_vocab("HSSD400")
     hssd_root = os.path.join(str(HABITAT_DATA), "scene_datasets", "hssd-hab")
     _write_class_size_table(
         os.path.join(hssd_root, "hssd-hab.scene_dataset_config.json"),
-        _scene_placements(os.path.join(hssd_root, "scenes", "*.scene_instance.json")),
+        _scene_placements(_scene_paths(os.path.join(hssd_root, "scenes", "*.scene_instance.json"))),
         lambda name, _: target_vocab_object_annotations.get(name),
         output_path,
     )
 
 
-def procthor_hab_sizes(output_path: str = PROCTHOR_NATIVE_SIZES_PATH) -> None:
+def procthor_hab_sizes(output_path: str = PROCTHOR100_SIZES_PATH) -> None:
     class_ids = _procthor_class_ids(os.path.join(PROCTHOR_ROOT, "configs", "object_semantic_id_mapping.json"))
     _write_class_size_table(
         os.path.join(PROCTHOR_ROOT, "ai2thor-hab.scene_dataset_config.json"),
-        _template_placements(os.path.join(PROCTHOR_ROOT, "configs", "objects", "*.object_config.json")),
-        lambda _, native_id: CLASS_LABELS_PROCTHOR[class_ids[native_id]] if native_id in class_ids else None,
+        _scene_placements(_all_procthor_scenes(PROCTHOR_ROOT)),
+        lambda _, native_id: CLASS_LABELS_PROCTHOR100[class_ids[native_id]] if native_id in class_ids else None,
+        output_path,
+    )
+
+
+def hssd_hab_scene_classes(output_path: str = HSSD400_SCENE_CLASSES_PATH) -> None:
+    classes, target_vocab_object_annotations, _ = _load_hssd_vocab("HSSD400")
+    hssd_root = os.path.join(str(HABITAT_DATA), "scene_datasets", "hssd-hab")
+    _write_scene_class_table(
+        os.path.join(hssd_root, "hssd-hab.scene_dataset_config.json"),
+        _scene_placements_by_scene(_scene_paths(os.path.join(hssd_root, "scenes", "*.scene_instance.json"))),
+        lambda name, _: target_vocab_object_annotations.get(name),
+        [c for c in classes if c != "unknown"],
+        output_path,
+    )
+
+
+def procthor_hab_scene_classes(output_path: str = PROCTHOR100_SCENE_CLASSES_PATH) -> None:
+    class_ids = _procthor_class_ids(os.path.join(PROCTHOR_ROOT, "configs", "object_semantic_id_mapping.json"))
+    _write_scene_class_table(
+        os.path.join(PROCTHOR_ROOT, "ai2thor-hab.scene_dataset_config.json"),
+        _scene_placements_by_scene(_all_procthor_scenes(PROCTHOR_ROOT)),
+        lambda _, native_id: CLASS_LABELS_PROCTHOR100[class_ids[native_id]] if native_id in class_ids else None,
+        CLASS_LABELS_PROCTHOR100,
         output_path,
     )
 
@@ -437,3 +510,5 @@ def procthor_hab_sizes(output_path: str = PROCTHOR_NATIVE_SIZES_PATH) -> None:
 if __name__ == "__main__":
     hssd_hab_sizes()
     procthor_hab_sizes()
+    hssd_hab_scene_classes()
+    procthor_hab_scene_classes()

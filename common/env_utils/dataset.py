@@ -11,22 +11,25 @@ from habitat.core.dataset import Dataset # type: ignore
 from habitat.core.registry import registry # type: ignore
 from habitat.tasks.nav.nav import NavigationEpisode, NavigationGoal # type: ignore
 
+# Sentinel start_position/start_rotation recognized by ExplorationEnv.reset() as "pick a random
+# navigable point/rotation instead" -- NavigationEpisode's own validators reject None.
+NO_FIXED_START_POSITION = [0.0, 0.0, 0.0]
+NO_FIXED_START_ROTATION = [0.0, 0.0, 0.0, 1.0]
+
 
 @registry.register_dataset(name="ExplorationSynthetic")
 class ExplorationNavDataset(Dataset):
     r"""Episode dataset for ExplorationTask (common/env_utils/env_base.py) that needs no real
     per-scene episode files on disk, unlike habitat-lab's usual ObjectNav/PointNav dataset
-    types. collect_random/collect_validation (habitat_embodied_al/collection.py) always
-    teleport the agent explicitly (ExplorationEnv.get_random_point() or a
-    target-object viewpoint) before capturing anything, so an episode's start_position/
-    start_rotation only need to be *some* value that lets Env.reset() succeed before the
-    first teleport overwrites them -- nothing is ever captured from them, so there's nothing
-    to source from a real dataset.
+    types. Its episodes carry NO_FIXED_START as their start_position/start_rotation (habitat-lab's
+    own NavigationEpisode requires non-None values, so a real sentinel is used instead of None):
+    ExplorationEnv.reset() recognizes it and falls back to a random navigable point/rotation,
+    exactly as agent.act()-driven exploration needs.
 
     One trivial episode is synthesized per scene in config.content_scenes,
     carrying config.scene_dataset_config (see
     common/env_utils/env_registry.py::resolve_env, set by
-    habitat_embodied_al/collection.py::configure_scene from object_params'
+    common/env_utils/env_base.py::configure_scene from object_params'
     env_name) so Env.__init__ resolves the right scene dataset regardless
     of which of the 4 env_names is being collected -- this is what lets one
     shared Hydra config (common/config/hssd-hab/default.yaml, despite its
@@ -50,8 +53,8 @@ class ExplorationNavDataset(Dataset):
                     episode_id=str(episode_id),
                     scene_id=scene,
                     scene_dataset_config=config.scene_dataset_config,
-                    start_position=[0.0, 0.0, 0.0],
-                    start_rotation=[0.0, 0.0, 0.0, 1.0],
+                    start_position=NO_FIXED_START_POSITION,
+                    start_rotation=NO_FIXED_START_ROTATION,
                     goals=[NavigationGoal(position=[10.0, 0.0, 10.0])],
                 )
             )

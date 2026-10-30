@@ -1,3 +1,4 @@
+import cv2
 import numpy as np
 import quaternion
 
@@ -52,6 +53,12 @@ def within_size_ranges(dimensions: np.ndarray, size_ranges: dict[str, tuple[floa
     return all(low <= measures[name] <= high for name, (low, high) in size_ranges.items())
 
 
+def components_bbox_area(mask: np.ndarray) -> int:
+    """Sum of each connected component's own bounding-box area in mask."""
+    _, _, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8))
+    return int(np.sum(stats[1:, cv2.CC_STAT_WIDTH] * stats[1:, cv2.CC_STAT_HEIGHT]))
+
+
 def mesh_visibility_fraction(
     obj_dimensions: np.ndarray,
     object_mask: np.ndarray,
@@ -73,7 +80,7 @@ def mesh_visibility_fraction(
     face_pixels = face_area * (focal / obj_depth) ** 2
 
     # Compute the fraction of pixels that are visible
-    visible_pixels = np.count_nonzero(object_mask)
+    visible_pixels = components_bbox_area(object_mask)
     visibility_fraction = visible_pixels / (face_pixels + 1e-8)
 
     return visibility_fraction

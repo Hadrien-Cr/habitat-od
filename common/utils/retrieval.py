@@ -13,7 +13,7 @@ from PIL import Image
 
 from common.env_utils.visibility_utils import mesh_visibility_fraction
 from common.utils.image_memory import Frame, ImageMemory
-from common.utils.plot_utils import make_mosaic, plot_segmentation, plot_segmentation_pred, rows_mosaic
+from common.utils.plot_utils import make_mosaic, plot_segmentation, plot_segmentation_pred, rows_mosaic, save_tile
 from common.utils.projection_utils import DepthCamera, ResolvedObjects, nearest_resized, viewing_angles
 
 _HIGHLIGHT_COLOR = (255, 0, 0)
@@ -75,8 +75,7 @@ def segmentation_tile(rgb: np.ndarray, instances: Instances, style: Segmentation
 
 def save_prediction_frame(rgb: np.ndarray, instances: Instances, style: SegmentationStyle, label: str, out_path: Path) -> None:
     """segmentation_tile of rgb/instances/style/label, as a single labelled tile."""
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    make_mosaic([segmentation_tile(rgb, instances, style, label)], N_cols=1).save(out_path)
+    save_tile(segmentation_tile(rgb, instances, style, label), out_path)
 
 
 def retrieve_views(fused: ResolvedObjects, memory: ImageMemory, raytraced: dict, camera: DepthCamera, selection: ViewSelection) -> Dict[int, List[int]]:
@@ -234,3 +233,10 @@ def box_tile(rgb: np.ndarray, masks: torch.Tensor, classes: torch.Tensor, style:
 
 def view_label(object_id: int, frame_id: int) -> str:
     return f"object{object_id} frame{frame_id:03d}"
+
+
+def retrieve_resolved_views(fused, camera: DepthCamera, min_mesh_visibility_fraction: float, selection: ViewSelection) -> Tuple[dict, Dict[int, List[int]]]:
+    """(frames raytraced with fused's resolved objects, the views retrieve_views selects of each)."""
+    resolved, memory = fused.resolved_objects, fused.image_memory
+    raytraced = memory.raytrace_frames(resolved, camera, min_mesh_visibility_fraction)
+    return raytraced, retrieve_views(resolved, memory, raytraced, camera, selection)

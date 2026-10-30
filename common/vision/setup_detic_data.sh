@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Lays out the data Detic's BoxSup-C2_L_CLIP_SwinB_896b32_4x training reads (habitat_embodied_sl/pretrain.py)
+# Lays out the data Detic's BoxSup-C2_L_CLIP_SwinB_896b32_4x training reads
 # under Detic's own datasets/ and models/ dirs, the paths its configs and metadata already point at:
 #   datasets/coco/{train2017,val2017}            COCO 2017 images (LVIS v1 reuses them)
 #   datasets/lvis/lvis_v1_{train,val}.json       LVIS v1 annotations

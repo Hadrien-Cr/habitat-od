@@ -1,0 +1,13 @@
+# Fine-tuning config for habitat_embodied_sl/meta_arch.py's CustomFT_Detic, from Detic's Swin-B LVIS+COCO+IN-21k checkpoint
+# (same architecture as the BoxSup base). Relative paths resolve against third_party/Detic (common/vision/detic.py::detic_cfg);
+# ROI_HEADS.NUM_CLASSES is set from the collection config's kept classes (meta_arch.py).
+_BASE_: "../../common/vision/config/BoxSup-C2_L_CLIP_SwinB_896b32_4x.yaml"
+MODEL:
+  META_ARCHITECTURE: "CustomFT_Detic"
+  WEIGHTS: "models/Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.pth"
+  ROI_HEADS:
+    NAME: "PositiveOnlyDeticCascadeROIHeads"
+    SCORE_THRESH_TEST: 0.02
+  ROI_BOX_HEAD:
+    ZEROSHOT_WEIGHT_PATH: "rand"
+    USE_FED_LOSS: False

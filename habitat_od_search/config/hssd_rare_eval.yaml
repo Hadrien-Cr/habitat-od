@@ -1,0 +1,24 @@
+# HSSD-rare object-search evaluation config for habitat_od_search/agent.py (see ../README.md).
+run_name: hssd_rare_eval
+seed: 0
+
+# Empty: every scene with a saved third_party/IMPRINT/dataset/hssd_rare_eps/<scene_id>.json.gz (see
+# habitat_od_search/hssd_rare_dataset.py::available_scenes).
+scenes: []
+
+object_params:
+  env_name: "HSSD-HAB"
+  vocab_name: "HSSD400"
+  min_area_fraction: 0.0002
+  filter_low_visibility: True
+  min_mesh_visibility_fraction: 0.2
+  filter_classes: []
+
+agent:
+  max_steps: 500
+  input_image_size: 1024
+  resolution_m: 0.1
+  visibility_dist_m: 3.0
+  lift_image_size: 512
+  goal_score_thresh: 0.5
+  goal_reach_m: 1.0

@@ -1,5 +1,5 @@
 """
-Corrupts the ground-truth semantic mask of one test_dummy_scene.py object per case into a degenerate one: the chair
+Corrupts the ground-truth semantic mask of one dummy_scene.py object per case into a degenerate one: the chair
 standing 0.1 m off the outer wall gets the convex hull of its mask (covering the wall seen through and around it), the
 table and a bottle on it get blobs of noise (random pixels of their mask, grown by dilation, smaller for the bottle)
 spilling over what lies around them. Each is viewed diagonally, from a horizontal offset to its floor center.
@@ -35,7 +35,7 @@ from common.utils.pose_utils import sensor_pose_matrix
 from common.utils.projection_utils import background_wall_mask, dbscan_labels, downsample_points, floor_mask, object_points
 from common.utils.retrieval import SegmentationStyle, instances_from_masks, segmentation_tile
 from common.utils.spot import fill_convex_hull
-from test_dummy_scene import _DEPTH_CAMERA, _PROCTHOR_OBJECTS_DIR, _TABLE, _TABLETOP_OBJECTS, _WALL_OBJECT, _dummy_sim
+from dummy_scene import _DEPTH_CAMERA, _PROCTHOR_OBJECTS_DIR, _TABLE, _TABLETOP_OBJECTS, _WALL_OBJECT, _dummy_sim
 
 pytestmark = pytest.mark.skipif(not os.path.isdir(_PROCTHOR_OBJECTS_DIR), reason="requires HABITAT_DATA pointing at a real ai2thor-hab dataset (see INSTALL.MD)")
 

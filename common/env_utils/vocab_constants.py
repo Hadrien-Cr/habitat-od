@@ -1,10 +1,11 @@
 import csv
 import os
-import re
 from typing import Optional
 import numpy as np
 import pandas as pd
 from detectron2.data import MetadataCatalog
+from common.vision.detic import get_clip_embeddings, cosine_similarity, build_text_encoder
+
 
 def rgb_to_hex(rgb):
     r,g,b = rgb
@@ -140,20 +141,6 @@ CLASS_LABELS_HSSD400 = [
     "wood", "wooden_house", "workout_bike", "workstation", "wreath", "yard",
 ]
 
-CLASS_LABELS_HSSD80 = [
-    "alarm_clock", "animal", "bathtub", "bed", "bench", "bicycle", "blender", "book",
-    "bottle", "bowl", "breadbin", "cabinet", "camera", "candle", "car", "carpet", 
-    "ceiling_lamp", "chair", "chest_of_drawers", "clothing", "coffee_maker", "colander", 
-    "couch", "counter", "curtain", "cushion", "dishwasher", "door", "drinkware", "earphone", 
-    "exercise_bike", "eyeglasses", "filing_cabinet", "fireplace", "floor_lamp", "flower", "fridge", 
-    "grandfather_clock", "kettle", "kitchen_scale", "laptop", "mantel_clock", "microwave", "mirror", 
-    "mixing_bowl", "mobile_phone", "motorcycle", "oven", "pan", "pathway_light", "person", "phone", 
-    "picture", "picture_frame", "plate", "plush_toy", "pot", "potted_plant", "printer", "range_hood", 
-    "shelves", "shoes", "shower", "sink", "soap_dispenser", "spicemill", "stand", "stool", "table", 
-    "table_lamp", "teapot", "toaster", "toilet", "toiletry", "trashcan", "tray", "treadmill", 
-    "tree", "tv", "vase", "wall_clock", "wall_lamp", "wardrobe", "washer_dryer", "window"
-]
-
 CLASS_LABELS_SCANNET200 = [
     "alarm clock", "armchair", "backpack", "bag", "ball", "bar", "basket", 
     "bathroom cabinet", "bathroom counter", "bathroom stall", 
@@ -230,39 +217,67 @@ CLASS_LABELS_COCO80 = [
     "toothbrush"
 ]
 
-PROCTHOR_NATIVE_VOCAB = "ProcTHOR-native"
+PROCTHOR_NATIVE_VOCAB = "PROCTHOR100"
 # ProcTHOR-hab's native categories (configs/object_semantic_id_mapping.json, in its id order), its state and size
 # variants (AppleSliced, SoapBottleFilled, PaintingSmall, ...) folded into their base class
 PROCTHOR_VARIANT_SUFFIXES = ("Sliced", "Cracked", "Filled", "Full", "Dirty", "Empty", "Small", "Medium", "Large")
-PROCTHOR_NATIVE_CLASSES = [
-    "unknown", "Apple", "Tomato", "Bread", "Sink", "Pot", "Pan", "Knife", "Fork", "Spoon", "Bowl", "Toaster",
-    "CoffeeMachine", "Microwave", "StoveBurner", "Fridge", "Cabinet", "Egg", "Chair", "Lettuce", "Potato", "Mug",
-    "Plate", "DiningTable", "CounterTop", "GarbageCan", "Omelette", "EggShell", "StoveKnob", "Container", "Cup",
-    "ButterKnife", "Statue", "Sandwich", "Television", "HousePlant", "TissueBox", "VacuumCleaner", "Painting",
-    "WateringCan", "Laptop", "RemoteControl", "Box", "Newspaper", "PaintingHanger", "KeyChain", "Dirt", "CellPhone",
-    "CreditCard", "Cloth", "Candle", "Toilet", "Plunger", "Bathtub", "ToiletPaper", "ToiletPaperHanger", "SoapBottle",
-    "SoapBar", "ShowerDoor", "SprayBottle", "ScrubBrush", "ToiletPaperRoll", "Lamp", "LightSwitch", "Bed", "Book",
-    "AlarmClock", "SportsEquipment", "Pen", "Pencil", "Blinds", "Mirror", "TowelHolder", "Towel", "Watch",
-    "MiscTableObject", "ArmChair", "BaseballBat", "BasketBall", "Faucet", "Boots", "Bottle", "DishSponge", "Drawer",
-    "FloorLamp", "Kettle", "LaundryHamper", "LaundryHamperLid", "Lighter", "Ottoman", "PanLid", "PaperTowelRoll",
-    "PepperShaker", "PotLid", "SaltShaker", "Safe", "SmallMirror", "Sofa", "SoapContainer", "Spatula", "TeddyBear",
-    "TennisRacket", "Tissue", "Vase", "WallMirror", "MassObjectSpawner", "MassScale", "Footstool", "Shelf", "Dresser",
-    "Desk", "SideTable", "Pillow", "Bench", "Cart", "ShowerGlass", "DeskLamp", "Window", "BathtubBasin", "SinkBasin",
-    "CD", "Curtains", "Poster", "HandTowel", "HandTowelHolder", "Ladle", "WineBottle", "ShowerCurtain", "ShowerHead",
-    "TVStand", "CoffeeTable", "ShelvingUnit", "AluminumFoil", "DogBed", "Dumbbell", "TableTopDecor", "RoomDecor",
-    "Stool", "GarbageBag", "Desktop", "TargetCircle", "Floor", "ScreenFrame", "ScreenSheet", "Wall", "Doorway",
-    "WashingMachine", "ClothesDryer", "Doorframe",
+
+# PROCTHOR100: the subset of ProcTHOR-hab's native categories that are ever actually placed
+# by the procedural generator across all 12000 ProcTHOR scenes (Train+Val+Test) - the other
+# ~54 native categories (e.g. cabinet, mirror, shelf) exist in object_semantic_id_mapping.json
+# and are placed by iTHOR/RoboTHOR/ArchitecTHOR's hand-authored scenes, but never by ProcTHOR's
+# generator itself. CLIP tokenizes a run-together CamelCase name into meaningless subwords, so
+# the vocabulary is spaced lowercase.
+CLASS_LABELS_PROCTHOR100 = [
+    "unknown", "apple", "tomato", "bread", "sink", "pot", "pan", "knife", "fork", "spoon", "bowl", "toaster",
+    "coffee machine", "microwave", "fridge", "egg", "chair", "lettuce", "potato", "mug", "plate", "dining table",
+    "counter top", "garbage can", "cup", "butter knife", "statue", "television", "house plant", "tissue box",
+    "vacuum cleaner", "painting", "laptop", "remote control", "box", "newspaper", "key chain", "cell phone",
+    "credit card", "cloth", "candle", "toilet", "plunger", "toilet paper", "soap bottle", "soap bar", "spray bottle",
+    "bed", "book", "alarm clock", "pen", "pencil", "watch", "arm chair", "baseball bat", "basket ball", "faucet",
+    "boots", "bottle", "dish sponge", "floor lamp", "kettle", "laundry hamper", "ottoman", "paper towel roll",
+    "pepper shaker", "salt shaker", "safe", "sofa", "spatula", "teddy bear", "tennis racket", "vase", "dresser",
+    "desk", "side table", "pillow", "cart", "desk lamp", "window", "ladle", "wine bottle", "tv stand", "coffee table",
+    "shelving unit", "dog bed", "dumbbell", "table top decor", "room decor", "stool", "garbage bag", "desktop",
+    "doorway", "washing machine", "clothes dryer", "doorframe",
 ]
-_CAMEL_CASE_BOUNDARY = re.compile(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 
-
-def spaced_class_name(native_name: str) -> str:
-    """A ProcTHOR-hab CamelCase category as lowercase words (GarbageCan -> garbage can, TVStand -> tv stand)."""
-    return _CAMEL_CASE_BOUNDARY.sub(" ", native_name).lower()
-
-
-# CLIP tokenizes a run-together CamelCase name into meaningless subwords, so the vocabulary is the spaced one
-CLASS_LABELS_PROCTHOR = [spaced_class_name(name) for name in PROCTHOR_NATIVE_CLASSES]
+PROCTHOR_NATIVE_TO_CLASS = {
+    "unknown": "unknown", "Apple": "apple", "Tomato": "tomato", "Bread": "bread", "Sink": "sink", "Pot": "pot",
+    "Pan": "pan", "Knife": "knife", "Fork": "fork", "Spoon": "spoon", "Bowl": "bowl", "Toaster": "toaster",
+    "CoffeeMachine": "coffee machine", "Microwave": "microwave", "StoveBurner": "stove burner", "Fridge": "fridge",
+    "Cabinet": "cabinet", "Egg": "egg", "Chair": "chair", "Lettuce": "lettuce", "Potato": "potato", "Mug": "mug",
+    "Plate": "plate", "DiningTable": "dining table", "CounterTop": "counter top", "GarbageCan": "garbage can",
+    "Omelette": "omelette", "EggShell": "egg shell", "StoveKnob": "stove knob", "Container": "container", "Cup": "cup",
+    "ButterKnife": "butter knife", "Statue": "statue", "Sandwich": "sandwich", "Television": "television",
+    "HousePlant": "house plant", "TissueBox": "tissue box", "VacuumCleaner": "vacuum cleaner", "Painting": "painting",
+    "WateringCan": "watering can", "Laptop": "laptop", "RemoteControl": "remote control", "Box": "box",
+    "Newspaper": "newspaper", "PaintingHanger": "painting hanger", "KeyChain": "key chain", "Dirt": "dirt",
+    "CellPhone": "cell phone", "CreditCard": "credit card", "Cloth": "cloth", "Candle": "candle", "Toilet": "toilet",
+    "Plunger": "plunger", "Bathtub": "bathtub", "ToiletPaper": "toilet paper", "ToiletPaperHanger": "toilet paper hanger",
+    "SoapBottle": "soap bottle", "SoapBar": "soap bar", "ShowerDoor": "shower door", "SprayBottle": "spray bottle",
+    "ScrubBrush": "scrub brush", "ToiletPaperRoll": "toilet paper roll", "Lamp": "lamp", "LightSwitch": "light switch",
+    "Bed": "bed", "Book": "book", "AlarmClock": "alarm clock", "SportsEquipment": "sports equipment", "Pen": "pen",
+    "Pencil": "pencil", "Blinds": "blinds", "Mirror": "mirror", "TowelHolder": "towel holder", "Towel": "towel",
+    "Watch": "watch", "MiscTableObject": "misc table object", "ArmChair": "arm chair", "BaseballBat": "baseball bat",
+    "BasketBall": "basket ball", "Faucet": "faucet", "Boots": "boots", "Bottle": "bottle", "DishSponge": "dish sponge",
+    "Drawer": "drawer", "FloorLamp": "floor lamp", "Kettle": "kettle", "LaundryHamper": "laundry hamper",
+    "LaundryHamperLid": "laundry hamper lid", "Lighter": "lighter", "Ottoman": "ottoman", "PanLid": "pan lid",
+    "PaperTowelRoll": "paper towel roll", "PepperShaker": "pepper shaker", "PotLid": "pot lid", "SaltShaker": "salt shaker",
+    "Safe": "safe", "SmallMirror": "small mirror", "Sofa": "sofa", "SoapContainer": "soap container", "Spatula": "spatula",
+    "TeddyBear": "teddy bear", "TennisRacket": "tennis racket", "Tissue": "tissue", "Vase": "vase",
+    "WallMirror": "wall mirror", "MassObjectSpawner": "mass object spawner", "MassScale": "mass scale",
+    "Footstool": "footstool", "Shelf": "shelf", "Dresser": "dresser", "Desk": "desk", "SideTable": "side table",
+    "Pillow": "pillow", "Bench": "bench", "Cart": "cart", "ShowerGlass": "shower glass", "DeskLamp": "desk lamp",
+    "Window": "window", "BathtubBasin": "bathtub basin", "SinkBasin": "sink basin", "CD": "cd", "Curtains": "curtains",
+    "Poster": "poster", "HandTowel": "hand towel", "HandTowelHolder": "hand towel holder", "Ladle": "ladle",
+    "WineBottle": "wine bottle", "ShowerCurtain": "shower curtain", "ShowerHead": "shower head", "TVStand": "tv stand",
+    "CoffeeTable": "coffee table", "ShelvingUnit": "shelving unit", "AluminumFoil": "aluminum foil", "DogBed": "dog bed",
+    "Dumbbell": "dumbbell", "TableTopDecor": "table top decor", "RoomDecor": "room decor", "Stool": "stool",
+    "GarbageBag": "garbage bag", "Desktop": "desktop", "TargetCircle": "target circle", "Floor": "floor",
+    "ScreenFrame": "screen frame", "ScreenSheet": "screen sheet", "Wall": "wall", "Doorway": "doorway",
+    "WashingMachine": "washing machine", "ClothesDryer": "clothes dryer", "Doorframe": "doorframe",
+}
 
 def generate_mappings(source_vocab: list[str], target_vocab: list[str]):
     import sys
@@ -270,20 +285,13 @@ def generate_mappings(source_vocab: list[str], target_vocab: list[str]):
 
     detic_root = os.path.join(os.environ["BASE_DIR"], "third_party/Detic")
     sys.path.insert(0, detic_root)
-    from detic.modeling.text.text_encoder import build_text_encoder  # type: ignore
-
-    def get_clip_embeddings(texts: list[str], text_encoder) -> torch.Tensor:
-        return text_encoder(texts).detach().permute(1, 0).contiguous().cpu()
-
-    def cosine_similarity(vec1, vec2):
-        return torch.dot(vec1, vec2) / (torch.norm(vec1) * torch.norm(vec2))
 
     text_encoder = build_text_encoder(pretrain=True)
     text_encoder.eval()
 
     prompts = ["a {} can be seen"]
 
-    def ensemble_embeddings(vocab):
+    def ensemble_embeddings(vocab) -> torch.Tensor:
         all_embs = [get_clip_embeddings([prompt.format(c.replace("_", " ")) for c in vocab], text_encoder).permute(1, 0) for prompt in prompts]
         stacked = torch.stack(all_embs, dim=0)
         emb = torch.mean(stacked, dim=0)
@@ -315,7 +323,6 @@ def generate_mappings(source_vocab: list[str], target_vocab: list[str]):
 
 
 HSSD400_VOCAB_REGISTRY: list[tuple[str, list[str]]] = [
-    ("HSSD80",     CLASS_LABELS_HSSD80),
     ("SCANNET200", CLASS_LABELS_SCANNET200),
     ("NYU40",      CLASS_LABELS_NYU40),
     ("MPCAT40",    CLASS_LABELS_MPCAT40),
@@ -388,7 +395,7 @@ VOCABULARIES: dict[str, tuple[list[str], Optional[dict[str, str]], list[tuple[in
 }
 for vocab_name, labels in HSSD400_VOCAB_REGISTRY:
     VOCABULARIES[vocab_name] = (labels, HSSD400_TO_VOCAB[vocab_name], make_colors(len(labels), seed=0, ctype=0))
-VOCABULARIES[PROCTHOR_NATIVE_VOCAB] = (CLASS_LABELS_PROCTHOR, None, make_colors(len(CLASS_LABELS_PROCTHOR), seed=0, ctype=0))
+VOCABULARIES[PROCTHOR_NATIVE_VOCAB] = (CLASS_LABELS_PROCTHOR100, None, make_colors(len(CLASS_LABELS_PROCTHOR100), seed=0, ctype=0))
 
 for vocab_name, (class_labels, _, colors) in VOCABULARIES.items():
     meta = MetadataCatalog.get(vocab_name)

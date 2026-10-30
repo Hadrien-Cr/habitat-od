@@ -4,7 +4,7 @@ seed: 0
 
 object_params:
   env_name: "ProcTHOR-hab"
-  vocab_name: "ProcTHOR-native"
+  vocab_name: "PROCTHOR100"
   min_area_fraction: 0.0002
   filter_low_visibility: True
   min_mesh_visibility_fraction: 0.2
@@ -20,7 +20,10 @@ collection:
 evaluation:
   frames_per_scene: 50
   downsampling: 4
-  max_steps_per_scene: 1000
   scenes: [
     "ProcTHOR-Val-0", "ProcTHOR-Val-1",
   ]
+
+frontier_agent:
+  visibility_dist_m: 3.0
+  steps: 1000

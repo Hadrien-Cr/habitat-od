@@ -7,13 +7,13 @@
       "type": "debugpy",
       "request": "launch",
       "program": "${file}",
-      "python": "/mnt/found_disk/hcrassou/miniconda3/envs/habitat_od/bin/python",
+      "python": "/home/hcrassou/miniconda3/envs/habitat_od/bin/python",
       "env": {
         "CUDA_VISIBLE_DEVICES": "1",
         "BASE_DIR": "/home/hcrassou/habitat-od",
         "PYTHONPATH": "/home/hcrassou/habitat-od",
         "PYTHONNOUSERSITE": "1",
-        "HABITAT_DATA": "/mnt/found_disk/hcrassou/habitat-data",
+        "HABITAT_DATA": "/home/hcrassou/habitat_data/data",
         "PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION": "python",
         "HABITAT_SIM_LOG": "assets=quiet"
       },

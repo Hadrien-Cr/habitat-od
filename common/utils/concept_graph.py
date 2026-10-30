@@ -17,7 +17,7 @@ from common.utils.projection_utils import (
 from common.utils.similarity_utils import (
     bounds_intersection_matrix, overlap_ratio_matrix, view_iou_matrix, visual_similarity_matrix, within_radius,
 )
-from detector import Detector
+from common.vision.detector import Detector
 
 
 UNCLASSIFIED = -1

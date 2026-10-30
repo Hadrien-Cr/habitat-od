@@ -11,11 +11,9 @@ from detectron2.utils.visualizer import Visualizer as DetVisualizer
 from detectron2.utils.visualizer import ColorMode
 from detectron2.data import Metadata
 
+from common.env_utils.object_detector_sensors import FILTER_KEYS
+from common.env_utils.sense import filter_reason
 from common.hybrid_exploration.plotting import plot_occupancy
-
-if TYPE_CHECKING:
-    from common.agents.frontier_agent import FrontierAgent
-    from common.hybrid_exploration.hybrid_agent import HybridFrontierAgent
 
 # Fixed-order categorical hues (validated for CVD/contrast) -- reused as-is,
 # never cycled per-key, so the same slot always means the same series.
@@ -112,18 +110,30 @@ def plot_al_history(history: list[dict], out_path: Path) -> Path:
     return out_path
 
 
+_UNEXPLORED_COLOR = (255, 255, 255)
+_EXPLORED_FREE_COLOR = (225, 225, 225)
+_EXPLORED_OBSTACLE_COLOR = (90, 90, 90)
+
+
 def plot_semantic_2d_map(
     bg_grid,
     footprints: list[tuple[int, np.ndarray]],
     colors: dict[int, tuple[int,int,int]],
     classes: dict[int, str],
     meters_per_grid_pixel: float = 0.01,
-    scale=1.0
+    scale=1.0,
+    explored: Optional[np.ndarray] = None,
 ) -> Image.Image:
-    """bg_grid's navigable map with each object's (class, top-down mask) footprint colored by class, labelled once at its centroid."""
+    """bg_grid's navigable map with each object's (class, top-down mask) footprint colored by class, labelled once at its
+    centroid. Without explored, non-navigable cells are black and navigable ones flat grey; with it (the agent's own
+    explored grid), cells split three ways: white unexplored, light grey explored-free, dark grey explored-obstacle."""
     footprints = sorted(footprints, key=lambda footprint: footprint[1].sum(), reverse=True)
-    colored = np.zeros((*bg_grid.shape, 3), dtype=np.uint8)
-    colored[bg_grid == 1] = [100, 100, 100]
+    if explored is None:
+        colored = np.zeros((*bg_grid.shape, 3), dtype=np.uint8)
+    else:
+        colored = np.full((*bg_grid.shape, 3), _UNEXPLORED_COLOR, dtype=np.uint8)
+        colored[explored.astype(bool) & ~bg_grid.astype(bool)] = _EXPLORED_OBSTACLE_COLOR
+    colored[bg_grid.astype(bool)] = _EXPLORED_FREE_COLOR
     for class_id, mask in footprints:
         colored[mask] = colors[class_id]
 
@@ -229,7 +239,7 @@ def plot_segmentation_gt(rgb: np.ndarray, gt_instances, classes: list[str], colo
     for i, (box, class_id, info) in enumerate(zip(
         gt_instances.gt_boxes.tensor.cpu().numpy(),
         gt_instances.gt_classes.cpu().numpy(),
-        gt_instances.infos if hasattr(gt_instances, "infos") else [{"filtered_low_area": False, "filtered_low_visibility": False, "visibility_fraction": 0.0}] * len(gt_instances.gt_boxes))
+        gt_instances.infos if hasattr(gt_instances, "infos") else [dict.fromkeys(FILTER_KEYS, False)] * len(gt_instances.gt_boxes))
     ):
         x1, y1, x2, y2 = box
         height_ratio = (y2 - y1) / rgb.shape[0]
@@ -237,7 +247,7 @@ def plot_segmentation_gt(rgb: np.ndarray, gt_instances, classes: list[str], colo
             np.clip((height_ratio - 0.02) / 0.08 + 1, 1, 2) * 0.5 * det_visualizer._default_font_size
         )
         det_visualizer.draw_text(
-            f"{i}: gt={classes[class_id]}",
+            f"{i}: gt={classes[class_id]} {filter_reason(info)}",
             font_size=font_size,
             position=(x1, min(y2, rgb.shape[0]-1.5*font_size)),
             horizontal_alignment="left",
@@ -287,9 +297,11 @@ def plot_segmentation(
         im = Image.fromarray(rgb)
     return im
 
-def plot_exploration_map(top_down_map: np.ndarray, revealed_mask: np.ndarray, trajectory_px: list, frontier_px: Optional[np.ndarray] = None) -> np.ndarray:
+def plot_exploration_map(
+    top_down_map: np.ndarray, revealed_mask: np.ndarray, trajectory_px: list, frontier_px: Optional[np.ndarray] = None, goal_px: Optional[np.ndarray] = None,
+) -> np.ndarray:
     """BGR top-down map: unrevealed navigable area gray, revealed green, non-navigable black, (row, col) trajectory as red dots linked by arrows,
-    current position circled in red, frontier_px as a purple cross."""
+    current position circled in red, frontier_px as a purple cross, goal_px (e.g. a detected search target) as a green cross."""
     image = np.full(top_down_map.shape + (3,), 100, dtype=np.uint8)
     image[(revealed_mask > 0) & (top_down_map > 0)] = (127, 200, 127)
     image[top_down_map == 0] = (0, 0, 0)
@@ -304,6 +316,8 @@ def plot_exploration_map(top_down_map: np.ndarray, revealed_mask: np.ndarray, tr
         cv2.circle(image, points[-1], 5, (0, 0, 255), 2)
     if frontier_px is not None:
         cv2.drawMarker(image, (int(frontier_px[1]), int(frontier_px[0])), (128, 0, 128), cv2.MARKER_CROSS, 10, 2)
+    if goal_px is not None:
+        cv2.drawMarker(image, (int(goal_px[1]), int(goal_px[0])), (0, 200, 0), cv2.MARKER_CROSS, 14, 3)
     return image
 
 
@@ -329,6 +343,7 @@ def _padded_row(tiles: list[np.ndarray], width: int) -> np.ndarray:
 
 
 def _draw_label(img: np.ndarray, label: str) -> np.ndarray:
+    cv2.rectangle(img, (0, 0), (img.shape[1] - 1, 32), (0, 0, 0), -1)
     cv2.putText(img, label, (5, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2, cv2.LINE_AA)
     return img
 
@@ -381,20 +396,29 @@ def rows_mosaic(rows: list[list[tuple[str, np.ndarray]]]) -> Optional[Image.Imag
     return make_mosaic(tiles, row_sizes=[len(row) for row in rows]) if tiles else None
 
 
-def save_decision_map(agent: Union["HybridFrontierAgent", "FrontierAgent"], out_path: Path) -> None:
-    """The agent's map with its trajectory and last step's decision, as a single labelled tile."""
+def save_tile(tile: tuple, out_path: Path) -> None:
+    """(label, image) tile as a single-tile mosaic, saved to out_path."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    make_mosaic([agent.map_tile()], N_cols=1).save(out_path)
+    make_mosaic([tile], N_cols=1).save(out_path)
 
 
-def save_exploration_visuals(agent: "HybridFrontierAgent", prediction_tiles: list, out_dir: Path) -> None:
-    """predictions_mosaic.png and prediction_frames/step_<step>.png of every step, and decision.png and object.png of
-    the last step."""
-    save_decision_map(agent, out_dir / "decision.png")
-    make_mosaic(prediction_tiles, N_cols=5).save(out_dir / "predictions_mosaic.png")
-    frames_dir = out_dir / "prediction_frames"
-    frames_dir.mkdir(parents=True, exist_ok=True)
-    for step, tile in enumerate(prediction_tiles):
-        make_mosaic([tile], N_cols=1).save(frames_dir / f"step_{step:04d}.png")
-    occupancy = plot_occupancy(agent.map.revealed, [agent.map.to_pixels(belief.points) for belief in agent.objects.values()])
-    make_mosaic([("objects", occupancy[:, :, ::-1].copy())], N_cols=1).save(out_dir / "object.png")
+def letterboxed(image: np.ndarray, width: int, height: int) -> np.ndarray:
+    """image scaled to fit within (width, height) without distorting its aspect ratio, centered on black bars."""
+    scale = min(width / image.shape[1], height / image.shape[0])
+    resized = cv2.resize(image, (max(1, int(image.shape[1] * scale)), max(1, int(image.shape[0] * scale))), interpolation=cv2.INTER_NEAREST)
+    canvas = np.zeros((height, width, 3), dtype=np.uint8)
+    y0, x0 = (height - resized.shape[0]) // 2, (width - resized.shape[1]) // 2
+    canvas[y0:y0 + resized.shape[0], x0:x0 + resized.shape[1]] = resized
+    return canvas
+
+
+
+def save_gif(images_dir: Path, out_name: str = "episode.webp", fps: int = 6) -> None:
+    """Assembles every snapshot_<step>.png in images_dir into images_dir/out_name, in step order, as lossless
+    animated WebP -- GIF's 256-color-palette cap otherwise crowds out or merges colors across frames full of
+    distinct anti-aliased shades (e.g. a rare green tint quantized into a nearby gray)."""
+    frames = sorted(images_dir.glob("snapshot_*.png"))
+    if not frames:
+        return
+    images = [Image.open(frame).convert("RGB") for frame in frames]
+    images[0].save(images_dir / out_name, format="WEBP", lossless=True, save_all=True, append_images=images[1:], duration=1000 // fps, loop=0)

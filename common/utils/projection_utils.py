@@ -1,7 +1,7 @@
 import logging
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -14,7 +14,6 @@ from scipy import ndimage
 from scipy.spatial.kdtree import KDTree
 
 from common.env_utils.visibility_utils import mesh_visibility_fraction
-from common.hybrid_exploration.hybrid_agent import HybridFrontierAgent
 from common.utils.plot_utils import plot_semantic_2d_map
 
 log = logging.getLogger(__name__)
@@ -33,9 +32,9 @@ TOPDOWN_MAP_SCALE = 8
 
 @dataclass(frozen=True)
 class DepthCamera:
-    hfov: float
-    min_depth: float
-    max_depth: float
+    hfov: float = 90.0
+    min_depth: float = 0.1
+    max_depth: float = 10.0
 
 
 def camera_intrinsics(width: int, height: int, hfov: float) -> Tuple[float, float, float, float]:
@@ -223,39 +222,44 @@ def filled_footprint(pixels: np.ndarray, shape: tuple) -> np.ndarray:
     return ndimage.binary_fill_holes(ndimage.binary_closing(mask, iterations=_FOOTPRINT_CLOSING_ITERATIONS) | mask)
 
 
-def semantic_topdown(resolved: "ResolvedObjects", agent: HybridFrontierAgent, classes: list, colors: list) -> np.ndarray:
-    """RGB top-down map of resolved's objects, by class, over the agent's navigable map."""
-    pixels = agent.to_pixels(resolved.resolved_points)
-    inside = ((pixels >= 0) & (pixels < np.array(agent.top_down_map.shape))).all(axis=1)
+def estimated_semantic_topdown(resolved: "ResolvedObjects", estimated_map, classes: list, colors: list) -> np.ndarray:
+    """RGB top-down map of resolved's objects, by class, over the agent's own explored-and-free belief map --
+    the fully agent-side counterpart to gt_semantic_topdown, built from EstimatedMap alone (no ground truth)."""
+    navigable = estimated_map.explored & ~estimated_map.obstacles.astype(bool)
+    pixels = estimated_map.to_pixels(resolved.resolved_points)
+    inside = ((pixels >= 0) & (pixels < np.array(navigable.shape))).all(axis=1)
     pixels, infos = pixels[inside], resolved.resolved_infos[inside]
     object_classes = dict(zip(infos[:, 1], infos[:, 0]))
     object_footprints = [
-        (object_classes[object_id], filled_footprint(pixels[infos[:, 1] == object_id], agent.top_down_map.shape))
+        (object_classes[object_id], filled_footprint(pixels[infos[:, 1] == object_id], navigable.shape))
         for object_id in object_classes
     ]
     image = plot_semantic_2d_map(
-        agent.top_down_map, object_footprints, dict(enumerate(colors)), dict(enumerate(classes)),
-        meters_per_grid_pixel=agent.meters_per_pixel(), scale=TOPDOWN_MAP_SCALE,
+        navigable, object_footprints, dict(enumerate(colors)), dict(enumerate(classes)),
+        meters_per_grid_pixel=estimated_map.meters_per_pixel, scale=TOPDOWN_MAP_SCALE, explored=estimated_map.explored,
     )
     return np.array(image)
 
 
-def mesh_footprint(mesh: trimesh.Trimesh, agent: HybridFrontierAgent) -> np.ndarray:
-    """Top-down silhouette of mesh on the agent's map: the union of its triangles' floor projections."""
-    triangles = np.unique(agent.to_pixels(mesh.vertices)[mesh.faces][:, :, ::-1].astype(np.int32), axis=0)
-    mask = np.zeros(agent.top_down_map.shape, dtype=np.uint8)
+def mesh_footprint_on_grid(mesh: trimesh.Trimesh, shape: tuple, to_pixels) -> np.ndarray:
+    """Top-down silhouette of mesh on a (shape) grid, via to_pixels (world xyz -> row, col): the union of
+    its triangles' floor projections."""
+    triangles = np.unique(to_pixels(mesh.vertices)[mesh.faces][:, :, ::-1].astype(np.int32), axis=0)
+    mask = np.zeros(shape, dtype=np.uint8)
     # one call per triangle: a multi-polygon fillPoly fills by parity, leaving overlaps empty
     for triangle in triangles:
-        cv2.fillConvexPoly(mask, triangle, 1)
+        cv2.fillConvexPoly(mask, triangle, 1) # type: ignore
     return mask > 0
 
 
-def ground_truth_topdown(meshes: List[Tuple[int, int, trimesh.Trimesh]], agent: HybridFrontierAgent, classes: list, colors: list) -> np.ndarray:
-    """RGB top-down map of the silhouette of every (object id, class, world mesh) of meshes."""
-    footprints = [(class_id, mesh_footprint(mesh, agent)) for _, class_id, mesh in meshes]
+def gt_semantic_topdown(
+    meshes: List[Tuple[int, int, trimesh.Trimesh]], navigable: np.ndarray, to_pixels, meters_per_pixel: float, classes: list, colors: list,
+) -> np.ndarray:
+    """RGB top-down map of the silhouette of every (object id, class, world mesh) of meshes, by class, over the
+    ground-truth navmesh (navigable, e.g. env_base.gt_navigable_mask) -- entirely ground truth, no agent state."""
+    footprints = [(class_id, mesh_footprint_on_grid(mesh, navigable.shape, to_pixels)) for _, class_id, mesh in meshes]
     image = plot_semantic_2d_map(
-        agent.top_down_map, footprints, dict(enumerate(colors)), dict(enumerate(classes)),
-        meters_per_grid_pixel=agent.meters_per_pixel(), scale=TOPDOWN_MAP_SCALE,
+        navigable, footprints, dict(enumerate(colors)), dict(enumerate(classes)), meters_per_grid_pixel=meters_per_pixel, scale=TOPDOWN_MAP_SCALE,
     )
     return np.array(image)
 

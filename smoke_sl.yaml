@@ -5,19 +5,22 @@ seed: 0
 
 object_params:
   env_name: "ProcTHOR-hab"
-  vocab_name: "ProcTHOR-native"
+  vocab_name: "PROCTHOR100"
   min_area_fraction: 0.0002
   filter_low_visibility: True
   min_mesh_visibility_fraction: 0.2
   filter_classes: []
 
 collection:
-  steps_per_scene: 500
+  steps_per_scene: 300
   k_retrieval: 3
   scenes: ["ProcTHOR-Train-0"]
 
 evaluation:
   frames_per_scene: 4
   downsampling: 2
-  max_steps_per_scene: 60
   scenes: ["ProcTHOR-Val-0"]
+
+frontier_agent:
+  visibility_dist_m: 3.0
+  steps: 1000

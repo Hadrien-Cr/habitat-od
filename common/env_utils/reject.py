@@ -18,7 +18,7 @@ import os
 
 BASE_DIR = os.environ["BASE_DIR"]
 CSV_PATH = os.path.join(BASE_DIR, "common", "env_utils", "hssd400_cross_vocab_mapping.csv")
-_VOCAB_NAMES = ["HSSD80", "SCANNET200", "NYU40", "MPCAT40", "COCO80"]
+_VOCAB_NAMES = ["SCANNET200", "NYU40", "MPCAT40", "COCO80"]
 
 
 def _load_rows(path: str) -> list[list[str]]:
