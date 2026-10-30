@@ -102,15 +102,16 @@ def test_exploration_gif() -> None:
             heading = float(TopDownMap.get_polar_angle(state))
             trajectory_px.append(ground_truth.to_pixel(np.array(state.position)))
             ground_truth.reveal(np.array(state.position), heading)
-            mosaic = exploration_snapshot(obs, agent, ground_truth, trajectory_px)
-
-            if mosaic is not None:
-                mosaic.save(images_dir / f"snapshot_{step:03d}.png")
 
             act_start = time.perf_counter()
             action = agent.act(state, obs["rgb"], obs["depth"], collided)
             profile_timer.update("act", time.perf_counter() - act_start)
             plan_log.write(agent.plan_debug_line(step, action) + "\n")
+
+            mosaic = exploration_snapshot(obs, agent, ground_truth, trajectory_px)
+            if mosaic is not None:
+                mosaic.save(images_dir / f"snapshot_{step:03d}.png")
+
             if action == "stop":
                 found_target = True
                 break

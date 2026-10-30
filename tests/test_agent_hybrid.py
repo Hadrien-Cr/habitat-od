@@ -151,9 +151,6 @@ def _explore_and_fuse(sim: habitat_sim.Simulator, config: HybridConfig, detector
         heading = float(TopDownMap.get_polar_angle(state))
         trajectory_px.append(ground_truth.to_pixel(np.array(state.position)))
         ground_truth.reveal(np.array(state.position), heading)
-        mosaic = exploration_snapshot(obs, agent, ground_truth, trajectory_px)
-        if mosaic is not None:
-            mosaic.save(images_dir / f"snapshot_{step:03d}.png")
         frame = Frame(obs["rgb"][:, :, :3], obs["depth"], sensor_pose_matrix(state.sensor_states["depth"]))
         frame_id = fused.image_memory.add_frame(frame)
         predictions.append(detector.predict(frame.rgb))
@@ -161,6 +158,9 @@ def _explore_and_fuse(sim: habitat_sim.Simulator, config: HybridConfig, detector
         beliefs = _oracle_beliefs(beliefs, obs, frame.pose)
         agent.update_objects(beliefs)
         action = agent.act(state, obs["depth"])
+        mosaic = exploration_snapshot(obs, agent, ground_truth, trajectory_px)
+        if mosaic is not None:
+            mosaic.save(images_dir / f"snapshot_{step:03d}.png")
         stuck = _is_stuck(agent.trajectory, _STUCK_WINDOW_STEPS, _STUCK_RADIUS_M)
         if action == "stop" or stuck:
             break

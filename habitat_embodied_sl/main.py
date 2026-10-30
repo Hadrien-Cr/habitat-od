@@ -135,13 +135,13 @@ def explore(env: ExplorationEnv, mapper: SceneMapper, obs: dict, steps: int, sty
         heading = float(TopDownMap.get_polar_angle(state))
         trajectory_px.append(ground_truth.to_pixel(np.array(state.position)))
         ground_truth.reveal(np.array(state.position), heading)
-        mosaic = exploration_snapshot(obs, mapper.agent, ground_truth, trajectory_px)
-        if mosaic is not None:
-            mosaic.save(images_dir / f"snapshot_{step:04d}.png")
         frame, instances = mapper.observe(obs, env)
         prediction_tiles.append(segmentation_tile(frame.rgb, instances, style, f"step{step:04d}"))
         mapper.agent.update_objects(object_beliefs(mapper.fused))
         action = mapper.agent.act(env.get_agent_state(), obs["depth"], collided)
+        mosaic = exploration_snapshot(obs, mapper.agent, ground_truth, trajectory_px)
+        if mosaic is not None:
+            mosaic.save(images_dir / f"snapshot_{step:04d}.png")
         stuck = _is_stuck(mapper.agent.trajectory, _STUCK_WINDOW_STEPS, _STUCK_RADIUS_M)
         if action == "stop" or stuck:
             break
