@@ -1,4 +1,4 @@
-"""Overlays of the hybrid agent's objects and scored candidates on its BGR top-down map."""
+"""Overlays of the hybrid agent's objects and goal map on its BGR top-down map."""
 from typing import Dict, List, Tuple
 
 import cv2
@@ -6,7 +6,8 @@ import numpy as np
 
 _UNCERTAIN_COLOR = (0, 140, 255)
 _CONFIDENT_COLOR = (255, 0, 0)
-_GOAL_COLOR = (255, 0, 255)
+_GOAL_MAP_COLOR = (255, 144, 30)  # BGR -- dodger blue, distinct from _CONFIDENT_COLOR's pure blue
+_GOAL_MAP_DILATION_SELEM = np.ones((5, 5), dtype=np.uint8)  # goal cells are otherwise single pixels, too faint to see
 _BACKGROUND_GRAY = 100
 _POINT_COLOR = (255, 255, 255)
 _EXPLORED_COLOR = (127, 200, 127)
@@ -39,10 +40,8 @@ def draw_objects(image: np.ndarray, objects: Dict[int, Tuple[np.ndarray, float]]
         draw_points(image, pixels, _CONFIDENT_COLOR if confidence >= confidence_thresh else _UNCERTAIN_COLOR)
 
 
-def draw_candidates(image: np.ndarray, pixels: np.ndarray, scores: np.ndarray) -> None:
-    """(row, col) candidates as circles colored by score (cool, relative to the best), the chosen one ringed in magenta."""
-    colors = cv2.applyColorMap((scores / max(scores.max(), 1e-9) * 255).astype(np.uint8)[:, None], cv2.COLORMAP_COOL)[:, 0]
-    for (row, col), color in zip(pixels, colors):
-        cv2.circle(image, (int(col), int(row)), 4, color.tolist(), -1)
-    best_row, best_col = pixels[int(np.argmax(scores))]
-    cv2.circle(image, (int(best_col), int(best_row)), 9, _GOAL_COLOR, 2)
+def draw_goal_map(image: np.ndarray, goal_map: np.ndarray) -> None:
+    """Every goal_map cell, dilated for visibility, drawn as a single flat color -- no per-candidate score to color
+    by anymore."""
+    dilated = cv2.dilate(goal_map, _GOAL_MAP_DILATION_SELEM, iterations=1)
+    draw_points(image, np.argwhere(dilated), _GOAL_MAP_COLOR)

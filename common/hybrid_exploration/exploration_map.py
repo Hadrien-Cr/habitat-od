@@ -117,6 +117,10 @@ class EstimatedMap:
         row, col = int(pixel[0]), int(pixel[1])
         return 0 <= row < self.obstacles.shape[0] and 0 <= col < self.obstacles.shape[1] and not self.obstacles[row, col]
 
+    def is_explored(self, pixel: np.ndarray) -> bool:
+        row, col = int(pixel[0]), int(pixel[1])
+        return 0 <= row < self.explored.shape[0] and 0 <= col < self.explored.shape[1] and bool(self.explored[row, col])
+
     def frontier_map(self) -> np.ndarray:
         """(M, M) uint8 dense mask of frontier_pixels, for DiscretePlanner.plan()'s frontier_map/goal_map arg."""
         grid = np.zeros_like(self.obstacles)

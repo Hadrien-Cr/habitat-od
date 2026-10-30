@@ -14,6 +14,7 @@ from common.agents.base_exploration_agent import ProfileTimer
 from common.hybrid_exploration.frontier_exp_agent import exploration_snapshot
 from common.hybrid_exploration.ground_truth_map import GroundTruthMapTracker
 from common.utils.plot_utils import save_gif
+from common.utils.pose_utils import quaternion_from_rpy
 from common.vision.detic import Vocabulary, get_clip_embeddings, build_text_encoder # type: ignore
 from common.vision.detector import Detector
 from habitat_od_search.agent import SearchAgent, SearchAgentConfig, GoalScoreConfig, DiscretePlannerConfig
@@ -53,8 +54,10 @@ def test_exploration_gif() -> None:
 
     profile_timer = ProfileTimer()
     try:
+        rng = np.random.default_rng(0)
         start = habitat_sim.AgentState()
         start.position = np.array(_START)
+        start.rotation = quaternion_from_rpy(0, 0, rng.uniform(0, 2 * np.pi))
         sim.get_agent(0).set_state(start)
         config = SearchAgentConfig(
             map_config=_MAP_CONFIG,
@@ -73,7 +76,7 @@ def test_exploration_gif() -> None:
         )
 
         agent = SearchAgent(detector=detector,
-            config=config, camera=_DEPTH_CAMERA, rng=np.random.default_rng(0), dump_location=str(_TESTDUMP_DIR), exp_name="test_search_agent",
+            config=config, camera=_DEPTH_CAMERA, rng=rng, dump_location=str(_TESTDUMP_DIR), exp_name="test_search_agent",
             target_name=_TARGET_OBJECT)
 
         text_encoder = build_text_encoder(pretrain=True)

@@ -4,7 +4,7 @@ explores in exhaustive mode for up to collection.steps_per_scene steps (or until
 over _STUCK_WINDOW_STEPS consecutive steps, logged as a warning) while a Detector (Detic's proposals scored by
 objectness alone, SAM masks) segments every frame; its masks and region embeddings are fused into a concept-graphs
 ConceptGraphMemory (common/utils/concept_graph.py) whose objects are the agent's beliefs. Each step's 3-tile
-(observation, belief map, ground truth) snapshot is saved to datadump/<run_name>/<scene>/images/exploration_snapshots/
+(observation, belief map, ground truth) snapshot is saved to datasets/<run_name>/<scene>/images/exploration_snapshots/
 and assembled into exploration.webp there. The map is then resolved, its
 foreground objects kept and classified (ConceptGraphMemory.classify), and up to collection.k_retrieval diverse views of
 each retrieved (common/utils/retrieval.py). Those views make three object-view train sets under
@@ -51,7 +51,7 @@ from common.utils.ground_truth_recovery import (
     GroundTruthAnnotation, GroundTruthView, encoded_views, recover_add_fn, recover_drop_fp, recover_gt_classes, recovered_objects,
 )
 from common.utils.image_memory import Frame
-from common.utils.plot_utils import save_gif, save_tile
+from common.utils.plot_utils import save_gif
 from common.utils.pose_utils import sensor_pose_matrix
 from common.utils.projection_utils import DepthCamera, estimated_semantic_topdown, nearest_resized
 from common.utils.dataset_writers import CocoFramesWriter, ObjectViewsWriter
@@ -151,10 +151,9 @@ def explore(env: ExplorationEnv, mapper: SceneMapper, obs: dict, steps: int, sty
 
 
 def map_scene(scene: str, cfg: DictConfig, detector: Detector, style: SegmentationStyle, args: argparse.Namespace) -> Tuple[SceneMapper, GroundTruthObjects]:
-    """(SceneMapper of the scene's exploration, the scene's annotated objects of detector's classes), saving the agent's
-    final decision map as datasets/<run_name>/<variant>/decision_frames/<scene>.png in every variant's folder, and the
-    exploration's decision map, object occupancy, every step's detector predictions (save_exploration_visuals) and
-    every step's 3-tile snapshot assembled into exploration.webp (save_gif) to datadump/<run_name>/<scene>/."""
+    """(SceneMapper of the scene's exploration, the scene's annotated objects of detector's classes), saving every
+    step's detector predictions (save_exploration_visuals) and every step's 3-tile snapshot assembled into
+    exploration.webp (save_gif) to datasets/<run_name>/<scene>/."""
     env, habitat_cfg = build_env(scene, cfg.seed, cfg.collection.steps_per_scene, cfg.object_params, args.input_image_size)
     agent = build_agent("hybrid", np.random.default_rng(cfg.seed), env, habitat_cfg)
     obs = env.reset(env.episodes[0], rng=agent.rng)
@@ -168,7 +167,7 @@ def map_scene(scene: str, cfg: DictConfig, detector: Detector, style: Segmentati
     map_config = agent.config.map_config
     ground_truth = env.gt_map_tracker(map_config.fov_deg, map_config.visibility_dist_m)
     ground_truth.set_object_footprints(gt_meshes)
-    scene_dump_dir = constants.DATADUMP_ROOT / cfg.run_name / scene
+    scene_dump_dir = constants.DATASET_ROOT / cfg.run_name / scene
     images_dir = scene_dump_dir / "images" / "exploration_snapshots"
     images_dir.mkdir(parents=True, exist_ok=True)
     prediction_tiles, stuck = explore(env, mapper, obs, cfg.collection.steps_per_scene, style, ground_truth, images_dir)
@@ -176,8 +175,6 @@ def map_scene(scene: str, cfg: DictConfig, detector: Detector, style: Segmentati
         print(f"Warning: agent got stuck in {scene} (no net translation over the last {_STUCK_WINDOW_STEPS} steps)")
     save_gif(images_dir, "exploration.webp", fps=_GIF_FPS)
     save_exploration_visuals(agent, prediction_tiles, scene_dump_dir)
-    for variant in _VARIANTS:
-        save_tile(agent.map_tile(), constants.DATASET_ROOT / cfg.run_name / variant / "decision_frames" / f"{scene}.png")
     env.close()
     return mapper, GroundTruthObjects.from_meshes(gt_meshes)
 

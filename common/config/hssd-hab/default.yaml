@@ -20,7 +20,7 @@ habitat:
       shuffle: False
   simulator:
     scene_dataset: "data/scene_datasets/hssd-hab/hssd-hab.scene_dataset_config.json"
-    turn_angle: 30
+    turn_angle: 45
     navmesh_include_static_objects: True
     agents:
       main_agent:

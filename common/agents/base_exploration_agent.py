@@ -1,8 +1,7 @@
 """Shared depth-observed world model for every exploration agent (FrontierExplorationAgent, HybridFrontierAgent,
 SearchAgent): an EstimatedMap built incrementally from the agent's own depth and pose, with DiscretePlanner-based
-planning on top -- FrontierExplorationAgent and SearchAgent plan entirely from this belief map; HybridFrontierAgent
-instead also takes the sim's ground-truth pathfinder, for path costs/waypoints between candidates it still finds from
-its own EstimatedMap (frontiers, object viewpoints)."""
+planning on top -- all three plan entirely from this belief map, HybridFrontierAgent via a goal_map of its own
+object viewpoints/frontiers."""
 from typing import List, Optional, Tuple
 
 import cv2
@@ -14,6 +13,7 @@ from habitat.tasks.nav.nav import TopDownMap  # type: ignore
 from common.agents.abstract_agent import Agent
 from common.hybrid_exploration.discrete_planner import DiscreteNavigationAction, DiscretePlanner
 from common.hybrid_exploration.exploration_map import EstimatedMap, MapConfig
+from common.hybrid_exploration.plotting import draw_in_view
 from common.utils.pose_utils import normalize_angle
 from common.utils.projection_utils import DepthCamera
 
@@ -65,8 +65,9 @@ class BaseExplorationAgent(Agent):
     _spin_action: Optional[str]
     _closest_goal_map: Optional[np.ndarray]
     _short_term_goal: Optional[Tuple[int, int]]
+    _initial_spin_steps_left: int
 
-    def __init__(self, map_config: MapConfig, rng: np.random.Generator, planner: Optional[DiscretePlanner] = None):
+    def __init__(self, map_config: MapConfig, rng: np.random.Generator, turn_angle_deg: float, planner: Optional[DiscretePlanner] = None):
         self.map_config = map_config
         self.rng = rng
         self.planner = planner
@@ -76,6 +77,8 @@ class BaseExplorationAgent(Agent):
         self._spin_action = None
         self._closest_goal_map = None
         self._short_term_goal = None
+        self._initial_spin_steps = int(round(360.0 / turn_angle_deg))
+        self._initial_spin_steps_left = self._initial_spin_steps
 
     def reset(self, position: np.ndarray, floor_height: float) -> None:
         self.floor_height = floor_height
@@ -86,6 +89,15 @@ class BaseExplorationAgent(Agent):
         self._spin_action = None
         self._closest_goal_map = None
         self._short_term_goal = None
+        self._initial_spin_steps_left = self._initial_spin_steps
+
+    def initial_spin(self) -> Optional[str]:
+        """spin()'s action for the episode's first full 360deg turn, None once that turn is complete -- lets each
+        agent build initial belief-map coverage around itself before planning any movement."""
+        if self._initial_spin_steps_left <= 0:
+            return None
+        self._initial_spin_steps_left -= 1
+        return self.spin()
 
     def observe(self, agent_state: habitat_sim.AgentState, depth: np.ndarray, camera: DepthCamera) -> Tuple[np.ndarray, float]:
         assert self.estimated_map is not None, "Call reset() first"
@@ -127,9 +139,9 @@ class BaseExplorationAgent(Agent):
         return self._spin_action
 
     def map_image(self) -> np.ndarray:
-        """BGR top-down map: the belief map (EstimatedMap.belief_image), a blue goal-score heatmap when the
-        agent defines goal_score_image() (e.g. SearchAgent's GoalScoreMap -- drawn where each cell's value
-        is > 0, colored by that value), the trajectory so far in
+        """BGR top-down map: the belief map (EstimatedMap.belief_image), the current field of view tinted yellow,
+        a blue goal-score heatmap when the agent defines goal_score_image() (e.g. SearchAgent's GoalScoreMap --
+        drawn where each cell's value is > 0, colored by that value), the trajectory so far in
         red, every current frontier cell (EstimatedMap.frontier_pixels, not just the one picked as goal) as a
         half-transparent orange dot, and the planner's actual target this step -- plan()'s own
         closest_goal_map, the geodesically (not just Euclidean) nearest frontier cell or found-object goal --
@@ -137,6 +149,7 @@ class BaseExplorationAgent(Agent):
         assert self.estimated_map is not None, "Call reset() first"
 
         image = self.estimated_map.belief_image()
+        draw_in_view(image, self.estimated_map.in_view)
         if hasattr(self, "goal_score_image"):
             self._blend_goal_score(image, self.goal_score_image())
         trajectory_px = [(int(pixel[1]), int(pixel[0])) for pixel in (self.estimated_map.to_pixel(position) for position, _ in self.trajectory)]

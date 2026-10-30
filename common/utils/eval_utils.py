@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 import cv2
+import habitat_sim
 import matplotlib.pyplot as plt
 import numpy as np
 import trimesh
@@ -412,7 +413,10 @@ def _confusion_table(matrix: np.ndarray, labels: list) -> str:
     return tabulate([[label, *row] for label, row in zip(labels, matrix.tolist())], headers=["gt \\ pred", *labels], tablefmt="pipe")
 
 
-def save_maps(resolved: ResolvedObjects, meshes: List[Tuple[int, int, trimesh.Trimesh]], agent: HybridFrontierAgent, style: SegmentationStyle, out_dir: Path) -> None:
+def save_maps(
+    resolved: ResolvedObjects, meshes: List[Tuple[int, int, trimesh.Trimesh]], agent: HybridFrontierAgent,
+    style: SegmentationStyle, out_dir: Path, pathfinder: habitat_sim.PathFinder,
+) -> None:
     """semantic_point_cloud.ply, semantic_wireframes.glb and estimated_topdown.png of resolved's objects over the
     agent's own belief map, and ground_truth_topdown.png of meshes over the ground-truth navmesh."""
     assert agent.estimated_map is not None, "Call reset() first"
@@ -423,7 +427,7 @@ def save_maps(resolved: ResolvedObjects, meshes: List[Tuple[int, int, trimesh.Tr
         estimated_semantic_topdown(resolved, agent.estimated_map, style.classes, style.colors)[:, :, ::-1],
     )
     start_position, _ = agent.trajectory[0]
-    ground_truth = GroundTruthMapTracker(agent.pathfinder, start_position, fov_deg=0.0, visibility_dist_m=0.0, resolution=agent.estimated_map.map_pixels_size)
+    ground_truth = GroundTruthMapTracker(pathfinder, start_position, fov_deg=0.0, visibility_dist_m=0.0, resolution=agent.estimated_map.map_pixels_size)
     cv2.imwrite(
         str(out_dir / "ground_truth_topdown.png"),
         gt_semantic_topdown(meshes, ground_truth.navigable, ground_truth.to_pixels, ground_truth.meters_per_pixel, style.classes, style.colors)[:, :, ::-1],

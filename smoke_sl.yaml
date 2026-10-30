@@ -13,7 +13,7 @@ object_params:
 
 collection:
   steps_per_scene: 300
-  k_retrieval: 3
+  k_retrieval: 5
   scenes: ["ProcTHOR-Train-0"]
 
 evaluation:

@@ -11,8 +11,7 @@ from common.agents.base_exploration_agent import BaseExplorationAgent
 from common.hybrid_exploration.discrete_planner import DiscretePlanner
 from common.hybrid_exploration.exploration_map import EstimatedMap, MapConfig
 from common.hybrid_exploration.hybrid_agent import HybridFrontierAgent
-from common.hybrid_exploration.plotting import plot_occupancy
-from common.utils.plot_utils import letterboxed, make_mosaic, rows_mosaic, save_tile
+from common.utils.plot_utils import letterboxed, make_mosaic, rows_mosaic
 from common.utils.projection_utils import DepthCamera
 
 
@@ -53,7 +52,7 @@ class FrontierExplorationAgent(BaseExplorationAgent):
             dump_location=dump_location,
             exp_name=exp_name,
         )
-        super().__init__(config.map_config, rng, planner)
+        super().__init__(config.map_config, rng, config.planner_config.turn_angle_deg, planner)
         self.camera = camera
         self.config = config
         self._successive_collisions = 0
@@ -72,6 +71,9 @@ class FrontierExplorationAgent(BaseExplorationAgent):
         if self._successive_collisions >= self.config.max_successive_collisions:
             return "stop"
         position, heading = self.observe(agent_state, depth, self.camera)
+        spin_action = self.initial_spin()
+        if spin_action is not None:
+            return spin_action
         frontier_map = self.estimated_map.frontier_map()
         if not frontier_map.any():
             return "stop" if self._had_frontier else self.spin()
@@ -111,16 +113,12 @@ def exploration_snapshot(
     ]])
 
 def save_exploration_visuals(agent: HybridFrontierAgent, prediction_tiles: list, out_dir: Path) -> None:
-    """predictions_mosaic.png and prediction_frames/step_<step>.png of every step, and decision.png and object.png of
-    the last step."""
+    """predictions_mosaic.png and prediction_frames/step_<step>.png of every step."""
     assert agent.estimated_map is not None, "Call reset() first"
-    
-    save_tile(agent.map_tile(), out_path = out_dir / "decision.png")
+
     make_mosaic(prediction_tiles, N_cols=5).save(out_dir / "predictions_mosaic.png")
     frames_dir = out_dir / "prediction_frames"
     frames_dir.mkdir(parents=True, exist_ok=True)
     for step, tile in enumerate(prediction_tiles):
         make_mosaic([tile], N_cols=1).save(frames_dir / f"step_{step:04d}.png")
-    occupancy = plot_occupancy(agent.estimated_map.explored, [agent.estimated_map.to_pixels(belief.points) for belief in agent.objects.values()])
-    make_mosaic([("objects", occupancy[:, :, ::-1].copy())], N_cols=1).save(out_dir / "object.png")
 

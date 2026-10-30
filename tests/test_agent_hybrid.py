@@ -1,13 +1,10 @@
 """
 Runs common/hybrid_exploration's HybridFrontierAgent in exhaustive mode in dummy_scene.py's synthetic flat, fed by an
 oracle detector: each visible object's points come from its semantic mask and depth.
-Into tests/testdump/test_agent_hybrid/ (emptied when the test starts) go the last step's decision (current view in
-yellow, candidates labelled with u*t above and t below, chosen goal ringed) as decision.png, the last step's believed object
-occupancy (object points in white, explored area green, the rest gray) to object.png, every step's
-class-agnostic predictions drawn on its rgb as one tile of predictions_mosaic.png and individually as
-prediction_frames/step_<step>.png, every step's 3-tile (observation, belief map, ground truth) snapshot to
-images/test_exploration_gif/snapshot_<step>.png and assembled into exploration.webp, and every fused object's center
-and size at every step, then every classified object's, to object_tracks.csv. Walls, floor and ceiling are flat-shaded.
+Into tests/testdump/test_agent_hybrid/ (emptied when the test starts) go every step's class-agnostic predictions
+drawn on its rgb as one tile of predictions_mosaic.png and individually as prediction_frames/step_<step>.png, and
+every step's 3-tile (observation, belief map, ground truth) snapshot to
+images/test_exploration_gif/snapshot_<step>.png and assembled into exploration.webp. Walls, floor and ceiling are flat-shaded.
 The run asserts it never got stuck (no net translation over _STUCK_WINDOW_STEPS consecutive steps).
 
 Alongside, as in habitat_embodied_sl/main.py, a Detector (Detic Swin-B's proposals scored by objectness alone) detects
@@ -44,7 +41,6 @@ from pathlib import Path
 
 import habitat_sim
 import numpy as np
-import pandas as pd
 import pytest
 import torch
 from detectron2.data import DatasetMapper
@@ -52,9 +48,9 @@ from detectron2.utils.env import seed_all_rng
 from habitat.tasks.nav.nav import TopDownMap
 from tqdm import tqdm
 
-from common.hybrid_exploration.frontier_exp_agent import exploration_snapshot, save_exploration_visuals
+from common.hybrid_exploration.frontier_exp_agent import DiscretePlannerConfig, exploration_snapshot, save_exploration_visuals
 from common.hybrid_exploration.ground_truth_map import GroundTruthMapTracker
-from common.hybrid_exploration.hybrid_agent import HybridConfig, HybridFrontierAgent, ViewpointMode
+from common.hybrid_exploration.hybrid_agent import HybridConfig, HybridFrontierAgent
 from common.hybrid_exploration.object_viewpoints import ObjectBelief
 from common.env_utils.object_annotations import PROCTHOR100_SIZES_PATH, class_size_ranges, objects_world_mesh
 from common.env_utils.vocab_constants import make_colors
@@ -63,12 +59,12 @@ from common.utils.image_memory import Frame
 from common.utils.plot_utils import save_gif
 from common.utils.pose_utils import sensor_pose_matrix
 from common.utils.eval_utils import evaluate_resolved, save_maps
-from common.utils.projection_utils import downsample_points, object_points, resolved_object_rows
+from common.utils.projection_utils import downsample_points, object_points
 from common.utils.dataset_writers import ObjectViewsWriter
 from common.utils.object_views_dataset import ObjectViewsDataset, balanced_loader, batches_mosaic
 from common.utils.retrieval import SegmentationStyle, ViewSelection, first_views_mosaic, retrieved_views, segmentation_tile, views_mosaic, retrieve_resolved_views
 from common.vision.detic import Vocabulary
-from common.utils.concept_graph import ConceptGraphMemory, fused_object_rows, object_size_ranges, predicted_objects
+from common.utils.concept_graph import ConceptGraphMemory, object_size_ranges, predicted_objects
 from common.vision.detector import Detector
 from dummy_scene import _CEILING_ID, _DEPTH_CAMERA, _DETIC_CLASSES, _MAP_CONFIG, _OBJECTS, _PROCTHOR_OBJECTS_DIR, _START, _TURN_ANGLE_DEG, _dummy_sim, _ground_truth_meshes, _navmesh_floor_offset
 
@@ -135,20 +131,20 @@ def _start_agent(sim: habitat_sim.Simulator, config: HybridConfig, camera) -> Hy
     start = habitat_sim.AgentState()
     start.position = np.array(_START)
     sim.get_agent(0).set_state(start)
-    agent = HybridFrontierAgent(config, camera, np.random.default_rng(_SEED), sim.pathfinder)
+    agent = HybridFrontierAgent(config, camera, np.random.default_rng(_SEED), _TESTDUMP_DIR, "test_agent_hybrid")
     agent.reset(np.array(_START), _START[1] - _navmesh_floor_offset(sim, np.array(_START)))
     return agent
 
 
 def _explore_and_fuse(sim: habitat_sim.Simulator, config: HybridConfig, detector: Detector, images_dir: Path) -> tuple:
-    """(agent, concept graph fused from every step's predictions and frames, every step's predictions, every step's
-    fused object rows, whether the agent got stuck) of one HybridFrontierAgent run steered by oracle beliefs, saving
-    a 3-tile (observation, belief map, ground truth) snapshot per step to images_dir/snapshot_<step>.png."""
+    """(agent, concept graph fused from every step's predictions and frames, every step's predictions, whether the
+    agent got stuck) of one HybridFrontierAgent run steered by oracle beliefs, saving a 3-tile (observation, belief
+    map, ground truth) snapshot per step to images_dir/snapshot_<step>.png."""
     sim_agent, agent = sim.get_agent(0), _start_agent(sim, config, _DEPTH_CAMERA)
     ground_truth = GroundTruthMapTracker(sim.pathfinder, np.array(_START), fov_deg=_MAP_CONFIG.fov_deg, visibility_dist_m=_MAP_CONFIG.visibility_dist_m)
     ground_truth.set_object_footprints(_ground_truth_meshes(sim))
     trajectory_px: list = []
-    beliefs, fused, predictions, object_tracks = {}, ConceptGraphMemory(), [], []
+    beliefs, fused, predictions = {}, ConceptGraphMemory(), []
     stuck = False
     for step in tqdm(range(_MAX_STEPS)):
         state, obs = sim_agent.get_state(), sim.get_sensor_observations()
@@ -162,7 +158,6 @@ def _explore_and_fuse(sim: habitat_sim.Simulator, config: HybridConfig, detector
         frame_id = fused.image_memory.add_frame(frame)
         predictions.append(detector.predict(frame.rgb))
         fused = fused + predicted_objects(frame_id, frame, predictions[-1], _DEPTH_CAMERA, state.position[1])
-        object_tracks += fused_object_rows(f"step{step:03d}", fused)
         beliefs = _oracle_beliefs(beliefs, obs, frame.pose)
         agent.update_objects(beliefs)
         action = agent.act(state, obs["depth"])
@@ -170,7 +165,7 @@ def _explore_and_fuse(sim: habitat_sim.Simulator, config: HybridConfig, detector
         if action == "stop" or stuck:
             break
         sim.step(action)
-    return agent, fused, predictions, object_tracks, stuck
+    return agent, fused, predictions, stuck
 
 
 def _prediction_tiles(fused: ConceptGraphMemory, predictions: list) -> list:
@@ -217,7 +212,7 @@ def _save_resolved_maps(sim: habitat_sim.Simulator, agent: HybridFrontierAgent, 
     """eval_utils.py's maps of fused's resolved objects and of the placed objects, then its evaluation against the placed objects."""
     meshes = _ground_truth_meshes(sim)
     with _timed("Saving maps"):
-        save_maps(fused.resolved_objects, meshes, agent, _DETIC_STYLE, Path(_TESTDUMP_DIR))
+        save_maps(fused.resolved_objects, meshes, agent, _DETIC_STYLE, Path(_TESTDUMP_DIR), sim.pathfinder)
     with _timed("Evaluating"):
         evaluate_resolved(fused.resolved_objects, meshes, _DETIC_CLASSES, Path(_TESTDUMP_DIR))
 
@@ -268,25 +263,22 @@ def test_exhaustive_mode_reaches_viewpoints():
         detector = Detector(_DETIC_CONFIG, _DETIC_CHECKPOINT, _DUMMY_VOCABULARY,
             sam_checkpoint=_SAM_CHECKPOINT if _MASK_SOURCE == "sam" else None, score_thresh=0.5, nms_thresh=0.5, mask_thresh=0.5,
             input_size=1024)
-    config = HybridConfig(_MAP_CONFIG, _TURN_ANGLE_DEG, viewpoint_mode=ViewpointMode.EXHAUSTIVE)
+    config = HybridConfig(_MAP_CONFIG, _TURN_ANGLE_DEG, planner_config=DiscretePlannerConfig(_TURN_ANGLE_DEG))
     images_dir = Path(_TESTDUMP_DIR) / "images" / "test_exploration_gif"
     images_dir.mkdir(parents=True)
     with _timed("Exploring and fusing"):
-        agent, fused, predictions, object_tracks, stuck = _explore_and_fuse(sim, config, detector, images_dir)
+        agent, fused, predictions, stuck = _explore_and_fuse(sim, config, detector, images_dir)
     assert not stuck, f"agent got stuck (no net translation over the last {_STUCK_WINDOW_STEPS} steps)"
     save_gif(images_dir, "exploration.webp", fps=_GIF_FPS)
 
     with _timed("Visualisation"):
         save_exploration_visuals(agent, _prediction_tiles(fused, predictions), Path(_TESTDUMP_DIR))
     _resolve_and_classify(fused, detector)
-    pd.DataFrame(object_tracks + resolved_object_rows("classified", fused.resolved_objects)).to_csv(
-        os.path.join(_TESTDUMP_DIR, "object_tracks.csv"), index=False,
-    )
     _save_resolved_maps(sim, agent, fused)
     if _LABEL_SOURCE == "gt":
         _relabel_with_ground_truth(sim, fused)
     with _timed("Retrieval mosaics"):
-        raytraced, object_frames = retrieve_resolved_views(fused, _DEPTH_CAMERA, _MIN_MESH_VISIBILITY_FRACTION, ViewSelection())
+        raytraced, object_frames = retrieve_resolved_views(fused, _DEPTH_CAMERA, _MIN_MESH_VISIBILITY_FRACTION, ViewSelection(k=5))
         _save_retrieval_mosaics(fused, raytraced, object_frames)
         _save_dataset_mosaic(fused, raytraced, object_frames)
     sim.close()

@@ -15,6 +15,7 @@ from common.agents.base_exploration_agent import ProfileTimer
 from common.hybrid_exploration.frontier_exp_agent import DiscretePlannerConfig, FrontierExplorationAgent, FrontierExplorationConfig, exploration_snapshot
 from common.hybrid_exploration.ground_truth_map import GroundTruthMapTracker
 from common.utils.plot_utils import save_gif
+from common.utils.pose_utils import quaternion_from_rpy
 from habitat.tasks.nav.nav import TopDownMap
 
 
@@ -50,15 +51,17 @@ def test_exploration_gif() -> None:
 
     profile_timer = ProfileTimer()
     try:
+        rng = np.random.default_rng(0)
         start = habitat_sim.AgentState()
         start.position = np.array(_START)
+        start.rotation = quaternion_from_rpy(0, 0, rng.uniform(0, 2 * np.pi))
         sim.get_agent(0).set_state(start)
-    
+
         config = FrontierExplorationConfig(
             map_config=_MAP_CONFIG,
             planner_config=DiscretePlannerConfig(turn_angle_deg=_TURN_ANGLE_DEG),
         )
-        agent = FrontierExplorationAgent(config, _DEPTH_CAMERA, np.random.default_rng(0), str(_TESTDUMP_DIR), "test_exploration_gif")
+        agent = FrontierExplorationAgent(config, _DEPTH_CAMERA, rng, str(_TESTDUMP_DIR), "test_exploration_gif")
         floor_height = _START[1] - _navmesh_floor_offset(sim, np.array(_START))
         agent.reset(np.array(_START), floor_height)
 

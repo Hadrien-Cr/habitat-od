@@ -60,7 +60,7 @@ class SearchAgent(BaseExplorationAgent):
             exp_name=exp_name,
         )
 
-        super().__init__(config.map_config, rng, planner)
+        super().__init__(config.map_config, rng, config.planner_config.turn_angle_deg, planner)
         self.detector = detector
         self.camera = camera
         self.config = config
@@ -113,7 +113,10 @@ class SearchAgent(BaseExplorationAgent):
         if self.step_count >= self.config.max_steps:
             self.navigation_target = None
             return "stop"
-        
+
+        spin_action = self.initial_spin()
+        if spin_action is not None:
+            return spin_action
 
         goal_map = self.goal_score_map.goal_mask(self.config.goal_score_thresh)
         if goal_map.any():

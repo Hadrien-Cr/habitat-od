@@ -1,6 +1,6 @@
 """Per-object sector viewpoints: a ring of candidate standing points around each object's footprint, one per sector."""
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Tuple
 
 import numpy as np
 
@@ -13,15 +13,14 @@ class ObjectBelief:
 
 @dataclass(frozen=True, eq=False)
 class Candidate:
-    """A goal the agent may pick; object_id/sector/look_at (the object's center) are None for a frontier."""
+    """A standing viewpoint for one object's sector."""
     position: np.ndarray
-    gain: float
-    object_id: Optional[int] = None
-    sector: Optional[int] = None
-    look_at: Optional[np.ndarray] = None
+    object_id: int
+    sector: int
+    look_at: np.ndarray
 
     def key(self) -> Tuple:
-        return ("frontier",) if self.object_id is None else (self.object_id, self.sector)
+        return (self.object_id, self.sector)
 
 
 def footprint(points: np.ndarray) -> Tuple[np.ndarray, float]:

@@ -454,5 +454,6 @@ def build_agent(
         config = FrontierExplorationConfig(MapConfig(fov, visibility_dist_m=visibility_dist_m), DiscretePlannerConfig(simulator_cfg.turn_angle))
         return FrontierExplorationAgent(config, camera, rng, dump_location, exp_name)
     if agent_name == "hybrid":
-        return HybridFrontierAgent(HybridConfig(MapConfig(fov), simulator_cfg.turn_angle), camera, rng, env.get_pathfinder())
+        config = HybridConfig(MapConfig(fov), simulator_cfg.turn_angle, planner_config=DiscretePlannerConfig(simulator_cfg.turn_angle))
+        return HybridFrontierAgent(config, camera, rng, dump_location, exp_name)
     raise ValueError(f"Unknown agent {agent_name!r}")

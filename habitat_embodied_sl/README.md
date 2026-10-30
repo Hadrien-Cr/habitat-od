@@ -55,7 +55,9 @@ come from, out of it; they belong with the code that builds them (`common/env_ut
   - (1.4.6) **Merge overlapping objects:** a pair merges when overlap ratio > 0.5, embedding similarity > 0.5 and their
     sum > 1.2. Pairs merge greedily, highest sum first.
 - (1.5) **Steer.** Every fused object is passed to `agent.update_objects` as an `ObjectBelief` of its points, with
-  confidence min(detections, 5) / 5. Then `agent.act` picks the action. The step's labelled detector-prediction tile
+  confidence min(detections, 5) / 5. Then `agent.act` picks the action: belief-map-only, via a shared `DiscretePlanner`
+  FMM pass over a goal map of every unseen object viewpoint (or, once none remain, every frontier cell) -- no
+  ground-truth navmesh pathfinding. The step's labelled detector-prediction tile
   (`segmentation_tile`) is kept and, once exploration ends, saved both individually
   (`datadump/<run_name>/<scene>/prediction_frames/step_<step>.png`) and as one `predictions_mosaic.png`
   (`save_exploration_visuals`, which also writes that scene's final `decision.png`/`object.png`). Each step also saves a
