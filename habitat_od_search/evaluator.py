@@ -239,7 +239,7 @@ def _save_step_visualization(
     ]])
     if mosaic is not None:
         vis_dir.mkdir(parents=True, exist_ok=True)
-        mosaic.save(vis_dir / f"snapshot_{step:03d}.png")
+        mosaic.save(vis_dir / f"snapshot_gif_{step:03d}.png")
 
 
 def run_evaluation(args: argparse.Namespace) -> None:

@@ -21,7 +21,7 @@ class DiscretePlannerConfig:
     collision_threshold: float = 0.05
     step_size: int = 5
     obs_dilation_selem_radius: int = 3
-    goal_dilation_selem_radius: int = 3
+    debug: bool = False
 
 
 @dataclass(frozen=True)
@@ -46,11 +46,11 @@ class FrontierExplorationAgent(BaseExplorationAgent):
             collision_threshold=config.planner_config.collision_threshold,
             step_size=config.planner_config.step_size,
             obs_dilation_selem_radius=config.planner_config.obs_dilation_selem_radius,
-            goal_dilation_selem_radius=config.planner_config.goal_dilation_selem_radius,
             map_size_cm=int(config.map_config.map_size_m * 100),
             map_resolution=int(config.map_config.resolution_m * 100),
             dump_location=dump_location,
             exp_name=exp_name,
+            debug=config.planner_config.debug,
         )
         super().__init__(config.map_config, rng, config.planner_config.turn_angle_deg, planner)
         self.camera = camera
@@ -80,11 +80,12 @@ class FrontierExplorationAgent(BaseExplorationAgent):
         self._had_frontier = True
         action, self._closest_goal_map, self._short_term_goal, _ = self.planner.plan(
             obstacle_map=self.estimated_map.obstacles,
-            goal_map=frontier_map,
+            goal_map=np.zeros_like(frontier_map, dtype=np.uint8),  # no goal map for vanilla frontier exploration
             frontier_map=frontier_map,
             sensor_pose=self.sensor_pose(position, heading),
-            found_goal=False,
-            use_dilation_for_stg=True,
+            found_goal=bool(frontier_map.any()),
+            use_dilation_for_stg=False,
+            current_timestep=len(self.trajectory) - 1,
         )
         return self.action_name(action)
 

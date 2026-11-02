@@ -65,9 +65,9 @@ from common.vision.detector import Detector
 
 _VARIANTS = ("pseudo", "pseudo_gt_classes", "recovered")
 _TILE_DOWNSCALE = 2
-_GIF_FPS = 6
-_STUCK_WINDOW_STEPS = 15
-_STUCK_RADIUS_M = 0.3
+_GIF_FPS = 10
+_STUCK_WINDOW_STEPS = 25
+_STUCK_RADIUS_M = 0.1
 
 
 def _is_stuck(trajectory: list, window: int, radius_m: float) -> bool:
@@ -141,7 +141,7 @@ def explore(env: ExplorationEnv, mapper: SceneMapper, obs: dict, steps: int, sty
         action = mapper.agent.act(env.get_agent_state(), obs["depth"], collided)
         mosaic = exploration_snapshot(obs, mapper.agent, ground_truth, trajectory_px)
         if mosaic is not None:
-            mosaic.save(images_dir / f"snapshot_{step:04d}.png")
+            mosaic.save(images_dir / f"snapshot_gif_{step:04d}.png")
         stuck = _is_stuck(mapper.agent.trajectory, _STUCK_WINDOW_STEPS, _STUCK_RADIUS_M)
         if action == "stop" or stuck:
             break

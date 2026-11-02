@@ -1,4 +1,5 @@
-"""Tests for FrontierExplorationAgent (common/hybrid_exploration/frontier_exp_agent.py)."""
+"""Tests for FrontierExplorationAgent (common/hybrid_exploration/frontier_exp_agent.py).
+Agent should satisfy stop conditions."""
 import os
 import shutil
 import tempfile
@@ -21,10 +22,10 @@ from habitat.tasks.nav.nav import TopDownMap
 
 _TESTDUMP_DIR = Path(os.path.dirname(__file__)) / "testdump" / "test_agent_frontier"
 _EXPLORATION_STEPS = 1000
-_GIF_FPS = 6
+_GIF_FPS = 10
 _COLLISION_DIST_M = 0.15  # matches common/env_utils/sensors.py::AgentCollisionSensor
-_STUCK_WINDOW_STEPS = 15
-_STUCK_RADIUS_M = 0.3
+_STUCK_WINDOW_STEPS = 25
+_STUCK_RADIUS_M = 0.1
 
 
 def _is_stuck(trajectory: list, window: int, radius_m: float) -> bool:
@@ -41,10 +42,9 @@ def test_exploration_gif() -> None:
     3-tile (observation, belief map, ground truth) snapshot per step and assembling them into exploration.webp."""
     from dummy_scene import _DEPTH_CAMERA, _MAP_CONFIG, _START, _TURN_ANGLE_DEG, _dummy_sim, _ground_truth_meshes, _navmesh_floor_offset
 
+    shutil.rmtree(_TESTDUMP_DIR, ignore_errors=True)
     images_dir = _TESTDUMP_DIR / "images" / "test_exploration_gif"
-    shutil.rmtree(images_dir, ignore_errors=True)
     images_dir.mkdir(parents=True)
-    plan_log = (_TESTDUMP_DIR / "plan_debug.txt").open("w")
 
     with tempfile.TemporaryDirectory() as assets_dir:
         sim = _dummy_sim(assets_dir)
@@ -54,12 +54,12 @@ def test_exploration_gif() -> None:
         rng = np.random.default_rng(0)
         start = habitat_sim.AgentState()
         start.position = np.array(_START)
-        start.rotation = quaternion_from_rpy(0, 0, rng.uniform(0, 2 * np.pi))
+        start.rotation = quaternion_from_rpy(0, 0, rng.integers(0, 8) * np.pi / 4)  # random start heading
         sim.get_agent(0).set_state(start)
 
         config = FrontierExplorationConfig(
             map_config=_MAP_CONFIG,
-            planner_config=DiscretePlannerConfig(turn_angle_deg=_TURN_ANGLE_DEG),
+            planner_config=DiscretePlannerConfig(turn_angle_deg=_TURN_ANGLE_DEG, debug=True),
         )
         agent = FrontierExplorationAgent(config, _DEPTH_CAMERA, rng, str(_TESTDUMP_DIR), "test_exploration_gif")
         floor_height = _START[1] - _navmesh_floor_offset(sim, np.array(_START))
@@ -84,11 +84,10 @@ def test_exploration_gif() -> None:
             act_start = time.perf_counter()
             action = agent.act(state, obs["depth"], collided)
             profile_timer.update("act", time.perf_counter() - act_start)
-            plan_log.write(agent.plan_debug_line(step, action) + "\n")
 
             mosaic = exploration_snapshot(obs, agent, ground_truth, trajectory_px)
             if mosaic is not None:
-                mosaic.save(images_dir / f"snapshot_{step:03d}.png")
+                mosaic.save(images_dir / f"snapshot_gif_{step:03d}.png")
 
             stuck = _is_stuck(agent.trajectory, _STUCK_WINDOW_STEPS, _STUCK_RADIUS_M)
             if action == "stop" or stuck:
@@ -103,7 +102,6 @@ def test_exploration_gif() -> None:
     
     finally:
         sim.close()
-        plan_log.close()
 
     print(profile_timer.display())
     save_gif(images_dir, "exploration.webp", fps=_GIF_FPS)

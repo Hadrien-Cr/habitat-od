@@ -2,6 +2,7 @@
 # https://github.com/facebookresearch/home-robot/blob/main/src/home_robot/home_robot/navigation_planner/discrete_planner.py
 import math
 import os
+from pathlib import Path
 import shutil
 import time
 from typing import List, Optional, Tuple
@@ -13,6 +14,7 @@ import skimage.morphology
 
 
 from common.utils import pose_utils as pu
+from common.utils.plot_utils import make_mosaic
 from common.utils.pose_utils import normalize_angle
 from common.hybrid_exploration.fmm_planner import FMMPlanner
 from dataclasses import dataclass
@@ -65,18 +67,18 @@ class DiscretePlanner:
         collision_threshold: float,
         step_size: int,
         obs_dilation_selem_radius: int,
-        goal_dilation_selem_radius: int,
         map_size_cm: int,
         map_resolution: int,
         dump_location: str,
         exp_name: str,
-        min_goal_distance_cm: float = 50.0,
+        min_goal_distance_cm: float = 100.0,
         min_obs_dilation_selem_radius: int = 1,
         agent_cell_radius: int = 1,
         map_downsample_factor: float = 1.0,
         map_update_frequency: int = 1,
         goal_tolerance: float = 0.01,
         continuous_angle_tolerance: float = 30.0,
+        debug: bool = True,
     ) -> None:
         """
         Arguments:
@@ -85,11 +87,9 @@ class DiscretePlanner:
              consider there's a collision (in meters)
             obs_dilation_selem_radius: radius (in cells) of obstacle dilation
              structuring element
-            obs_dilation_selem_radius: radius (in cells) of goal dilation
-             structuring element
             map_size_cm: global map size (in centimeters)
             map_resolution: size of map bins (in centimeters)
-            visualize: if True, render planner internals for debugging
+            debug: if True, save debug_mosaic planner snapshots
         """
         self.default_vis_dir = f"{dump_location}/images/{exp_name}"
         os.makedirs(self.default_vis_dir, exist_ok=True)
@@ -104,7 +104,6 @@ class DiscretePlanner:
         self.collision_threshold = collision_threshold
         self.step_size = step_size
         self.start_obs_dilation_selem_radius = obs_dilation_selem_radius
-        self.goal_dilation_selem_radius = goal_dilation_selem_radius
         self.min_obs_dilation_selem_radius = min_obs_dilation_selem_radius
         self.agent_cell_radius = agent_cell_radius
         self.goal_tolerance = goal_tolerance
@@ -129,6 +128,7 @@ class DiscretePlanner:
 
         self.map_downsample_factor = map_downsample_factor
         self.map_update_frequency = map_update_frequency
+        self.debug = debug
 
     def reset(self) -> None:
         self.vis_dir = self.default_vis_dir
@@ -147,9 +147,6 @@ class DiscretePlanner:
         self.obs_dilation_selem = skimage.morphology.disk(
             self.curr_obs_dilation_selem_radius
         )
-        self.goal_dilation_selem = skimage.morphology.disk(
-            self.goal_dilation_selem_radius
-        )
 
         self.vis_dir = os.path.join(self.default_vis_dir)
         shutil.rmtree(self.vis_dir, ignore_errors=True)
@@ -162,8 +159,8 @@ class DiscretePlanner:
         frontier_map: np.ndarray,
         sensor_pose: np.ndarray,
         found_goal: bool,
-        debug: bool = True,
         use_dilation_for_stg: bool = False,
+        current_timestep: Optional[int] = None,
     ) -> Tuple[DiscreteNavigationAction, np.ndarray, Tuple[int, int], np.ndarray]:
         """Plan a low-level action.
 
@@ -173,6 +170,9 @@ class DiscretePlanner:
             sensor_pose: (7,) array denoting global pose (x, y, o)
              and local map boundaries planning window (gx1, gx2, gy1, gy2)
             found_goal: whether we found the object goal category
+            current_timestep: caller's own step count, used in place of this planner's internal self-incrementing
+             timestep (e.g. for snapshot_planner_<n>.png naming/plan_debug_line to line up with the caller's own
+             step log) -- when None, the internal counter is used as before.
 
         Returns:
             action: low-level action
@@ -180,6 +180,12 @@ class DiscretePlanner:
             stg: short-term goal position (x, y) in map
             dilated_obstacles: (M, M) binary array denoting dilated obstacles
         """
+        if use_dilation_for_stg:
+            raise ValueError("use_dilation_for_stg=True is disabled for now; pass False")
+
+        if current_timestep is not None:
+            self.timestep = current_timestep
+
         assert self.collision_map is not None, "Obstacle map is None"
         assert self.visited_map is not None, "Goal map is None"
 
@@ -229,12 +235,12 @@ class DiscretePlanner:
             goal_map=np.copy(goal_map),
             start=start,
             planning_window=planning_window,
-            plan_to_dilated_goal=use_dilation_for_stg,
             frontier_map=frontier_map,
         )
 
         # if returned 'replan', retry with a smaller obstacle dilation radius
         if replan and not stop:
+            raise ValueError("replan is not supported")
             assert self.curr_obs_dilation_selem_radius is not None, "curr_obs_dilation_selem_radius is None"
             self.collision_map *= 0
             if self.curr_obs_dilation_selem_radius > self.min_obs_dilation_selem_radius:
@@ -242,10 +248,6 @@ class DiscretePlanner:
                 self.obs_dilation_selem = skimage.morphology.disk(
                     self.curr_obs_dilation_selem_radius
                 )
-                if debug:
-                    print(
-                        f"reduced obs dilation to {self.curr_obs_dilation_selem_radius}"
-                    )
 
             if found_goal:
                 (
@@ -261,7 +263,6 @@ class DiscretePlanner:
                     start=start,
                     planning_window=planning_window,
                     frontier_map=frontier_map,
-                    plan_to_dilated_goal=True,
                 )
 
                 found_goal = False
@@ -299,11 +300,30 @@ class DiscretePlanner:
             start_o,
             found_goal,
             stop,
-            debug,
         )
+
+        if self.debug:
+            self.plan_debug_line(action, start, short_term_goal, closest_goal_pt, stop, found_goal)
 
         self.last_action = action
         return action, closest_goal_map, short_term_goal, dilated_obstacles
+
+    def plan_debug_line(
+        self,
+        action: DiscreteNavigationAction,
+        start: Tuple[int, int],
+        short_term_goal: Tuple[int, int],
+        closest_goal_pt: Tuple[int, int],
+        stop: bool,
+        found_goal: bool,
+    ) -> None:
+        assert self.vis_dir is not None, "Call reset() first"
+        line = (
+            f"t={self.timestep} start={start} action={action.value} "
+            f"stg={short_term_goal} closest_goal_pt={closest_goal_pt} stop={stop} found_goal={found_goal}\n"
+        )
+        with open(os.path.join(self.vis_dir, "plan_debug.txt"), "a") as debug_file:
+            debug_file.write(line)
 
     def get_action(
         self,
@@ -314,7 +334,6 @@ class DiscretePlanner:
         start_compass: float,
         found_goal: bool,
         stop: bool,
-        debug: bool,
     ) -> DiscreteNavigationAction:
         # Short-term goal -> deterministic local policy
         if not (found_goal and stop):
@@ -337,7 +356,6 @@ class DiscretePlanner:
         start: np.ndarray,
         planning_window: List[int],
         frontier_map,
-        plan_to_dilated_goal: bool = False,
         visualize=False,
     ) -> Tuple[Tuple[int, int], np.ndarray, bool, bool, tuple[int, int], np.ndarray]:
         """Get short-term goal.
@@ -347,7 +365,6 @@ class DiscretePlanner:
             goal_map: (M, M) binary array denoting goal location
             start: start location (x, y)
             planning_window: local map boundaries (gx1, gx2, gy1, gy2)
-            plan_to_dilated_goal: for objectnav; plans to dialted goal points instead of explicitly checking reach.
 
         Returns:
             short_term_goal: short-term goal position (x, y) in map
@@ -372,7 +389,7 @@ class DiscretePlanner:
         obstacles = obstacle_map[x1:x2, y1:y2]
 
         # Dilate obstacles
-        dilated_obstacles = cv2.dilate(obstacles, self.obs_dilation_selem, iterations=1) # type:ignore
+        dilated_obstacles = cv2.dilate(obstacles, np.ones((3, 3)), iterations=1) # type:ignore
 
         # Create inverse map of obstacles - this is territory we assume is traversible
         # Traversible is now the map
@@ -389,43 +406,61 @@ class DiscretePlanner:
         fmm_planner = FMMPlanner(
             traversible,
             step_size=self.step_size,
-            vis_dir=self.vis_dir,
-            visualize=False,
-            print_images=False,
             goal_tolerance=self.goal_tolerance,
         )
+    
+        # Compute dilated goal map for use with simulation code - use this to compute closest goal
+        goal_dilation_radius = int(self.min_goal_distance_cm // self.map_resolution)
+        dilated_goal_map = cv2.dilate(
+            goal_map, skimage.morphology.disk(goal_dilation_radius), iterations=1
+        )
 
-        if plan_to_dilated_goal:
-            # Compute dilated goal map for use with simulation code - use this to compute closest goal
-            dilated_goal_map = cv2.dilate(
-                goal_map, self.goal_dilation_selem, iterations=1
-            )
-            # Set multi goal to the dilated goal map
-            # We will now try to find a path to any of these spaces
-            self.fmm_distance = fmm_planner.set_multi_goal(
-                dilated_goal_map,
-                self.timestep,
-                self.fmm_distance,
-                self.map_downsample_factor,
-                self.map_update_frequency,
-            )
-            
-            assert self.fmm_distance is not None
-            goal_distance_map, closest_goal_pt = self.get_closest_traversible_goal(
-                traversible, goal_map, start, dilated_goal_map=dilated_goal_map
-            )
-        else:
-            raise NotImplementedError
+        # important: if no traversible dilated goal, fall back to frontier map
+        if not np.any(dilated_goal_map * traversible):
+            dilated_goal_map = add_boundary(frontier_map) * traversible
+            if not np.any(dilated_goal_map):
+                raise ValueError("No traversible dilated goal map or frontier map available for planning")
+
+        # Set multi goal to the dilated goal map
+        # We will now try to find a path to any of these spaces
+        self.fmm_distance = fmm_planner.set_multi_goal(
+            dilated_goal_map,
+            self.timestep,
+            dd=self.fmm_distance, # type: ignore
+            map_downsample_factor=self.map_downsample_factor,
+            map_update_frequency=self.map_update_frequency,
+        )
+        
+        assert self.fmm_distance is not None
+        goal_distance_map, closest_goal_pt = self.get_closest_traversible_goal(
+            traversible, goal_map, start, dilated_goal_map=dilated_goal_map
+        )
 
         self.timestep += 1
 
         state = [start[0] - x1 + 1, start[1] - y1 + 1]
         # This is where we create the planner to get the trajectory to this state
-        stg_x, stg_y, replan, stop = fmm_planner.get_short_term_goal(
+        stg_x, stg_y, replan, stop, dist = fmm_planner.get_short_term_goal(
             state, continuous=False
         )
         stg_x, stg_y = stg_x + x1 - 1, stg_y + y1 - 1
         short_term_goal = int(stg_x), int(stg_y)
+
+        if self.debug:
+            self.debug_mosaic_save(
+                x1=x1,
+                x2=x2,
+                y1=y1,
+                y2=y2,
+                fmm_distance=self.fmm_distance,
+                dilated_goal_map=dilated_goal_map,
+                short_term_goal=short_term_goal,
+                traversible=traversible,
+                goal_map=goal_map,
+                frontier_map=frontier_map,
+                dist=dist,
+                start=start,
+            )
 
         return (
             short_term_goal,
@@ -435,6 +470,54 @@ class DiscretePlanner:
             closest_goal_pt,
             dilated_obstacles,
         )
+    
+    def debug_mosaic_save(
+        self,
+        x1: int,
+        x2: int,
+        y1: int,
+        y2: int,
+        fmm_distance: np.ndarray,
+        dilated_goal_map: np.ndarray,
+        short_term_goal: Tuple[int, int],
+        traversible: np.ndarray,
+        goal_map: np.ndarray,
+        frontier_map: np.ndarray,
+        dist: np.ndarray,
+        start: np.ndarray,
+    ) -> None:
+
+        # save obstacle map, goal map, fmm_distance, closest_goal_pt, stg
+        img_traversible_map = cv2.cvtColor((traversible[x1:x2, y1:y2] * 255).astype(np.uint8), cv2.COLOR_GRAY2BGR)
+        cv2.circle(img_traversible_map, (start[1] - y1, start[0] - x1), 2, (255, 255, 0), -1) # type: ignore
+
+        img_goal_map = img_traversible_map.copy()
+        img_goal_map[goal_map[x1:x2, y1:y2] == 1] = [0, 255, 0]
+        img_fmm_distance = cv2.cvtColor((fmm_distance[x1:x2, y1:y2] / np.max(fmm_distance[x1:x2, y1:y2]) * 255).astype(np.uint8), cv2.COLOR_GRAY2BGR)
+        
+        img_short_term_goal_pt = img_traversible_map.copy()
+        cv2.circle(img_short_term_goal_pt, (short_term_goal[1] - y1, short_term_goal[0] - x1), 2, (0, 0, 255), -1) # type: ignore
+        
+        img_dilated_goal_map = img_traversible_map.copy()
+        img_dilated_goal_map[dilated_goal_map[x1:x2, y1:y2] == 1] = [255, 0, 0]
+        img_dilated_traversible_goal_map = img_traversible_map.copy()
+        img_dilated_traversible_goal_map[dilated_goal_map[x1:x2, y1:y2] * traversible[x1:x2, y1:y2] == 1] = [255, 0, 255]
+        img_frontier_map = img_traversible_map.copy()
+        img_frontier_map[frontier_map[x1:x2, y1:y2] == 1] = [0, 255, 255]
+        img_dist = cv2.cvtColor((dist[x1:x2, y1:y2] / np.max(dist) * 255).astype(np.uint8), cv2.COLOR_GRAY2BGR)
+        mosaic = make_mosaic(
+            [
+                ("img_traversible_map",img_traversible_map),
+                ("img_goal_map",img_goal_map),
+                ("img_fmm_distance",img_fmm_distance),
+                ("img_shortest_goal_pt",img_short_term_goal_pt),
+                ("img_dilated_goal_map",img_dilated_goal_map),
+                ("img_dilated_traversible_goal_map",img_dilated_traversible_goal_map),
+                ("img_frontier_map",img_frontier_map),
+                ("img_dist",img_dist)
+            ],
+        )
+        mosaic.save(Path(os.path.join(self.vis_dir, f"snapshot_planner_{self.timestep}.png"))) # type: ignore
 
     def get_closest_traversible_goal(
         self, traversible, goal_map, start, dilated_goal_map=None
@@ -517,68 +600,3 @@ class DiscretePlanner:
                     )
                     [r, c] = pu.threshold_poses([r, c], self.collision_map.shape)
                     self.collision_map[r, c] = 1
-
-
-if __name__ == "__main__":
-    import numpy as np
-    import tempfile
-
-    discrete_planner = DiscretePlanner(
-        turn_angle=30,
-        collision_threshold=0.05,
-        step_size=5,
-        obs_dilation_selem_radius=3,
-        goal_dilation_selem_radius=3,
-        map_size_cm=10 * 100,
-        map_resolution=5,
-        dump_location="tmp_planner",
-        exp_name="single_step",
-    )
-    discrete_planner.reset()
-
-    # (10 m x 10 m) map
-    obstacle_map = np.zeros((200, 200), dtype=np.uint8)
-    goal_map = np.zeros_like(obstacle_map, dtype=np.uint8)
-    frontier_map = np.zeros_like(obstacle_map, dtype=np.uint8)
-
-    # Two nested square obstacles, with a gap between them.
-    obstacle_map[30:170, 30:34] = 1
-    obstacle_map[30:170, 166:170] = 1
-    obstacle_map[30:34, 30:170] = 1
-    obstacle_map[166:170, 30:170] = 1
-
-    obstacle_map[65:135, 65:69] = 1
-    obstacle_map[65:135, 131:135] = 1
-    obstacle_map[65:69, 65:135] = 1
-    obstacle_map[131:135, 65:135] = 1
-
-    # Start in the corridor between the squares; goal inside the inner square.
-    start_x, start_y = 45, 100
-    goal_map[100, 100] = 1
-
-    sensor_pose = np.array([
-        start_x * 0.05, start_y * 0.05, 0.0,
-        0, 200, 0, 200
-    ])
-
-    action, closest_goal, stg, dilated = discrete_planner.plan(
-        obstacle_map, goal_map, frontier_map, sensor_pose,
-        found_goal=True, debug=False, use_dilation_for_stg=True
-    )
-
-    assert action in DiscreteNavigationAction
-    assert closest_goal.shape == obstacle_map.shape
-    assert dilated.shape == obstacle_map.shape
-    assert obstacle_map[100, 100] == 0
-    assert goal_map[100, 100] == 1
-    assert obstacle_map[start_y, start_x] == 0
-
-    print("Nested-square test passed:", action, "STG:", stg)
-
-    # save images for visual inspection
-    cv2.imwrite(os.path.join(discrete_planner.vis_dir, "obstacle_map.png"), obstacle_map * 255)
-    cv2.imwrite(os.path.join(discrete_planner.vis_dir, "goal_map.png"), goal_map * 255)
-    cv2.imwrite(os.path.join(discrete_planner.vis_dir, "closest_goal_map.png"), closest_goal * 255)
-    cv2.imwrite(os.path.join(discrete_planner.vis_dir, "dilated_obstacles.png"), dilated * 255)
-
-    print("Planner images saved to:", discrete_planner.vis_dir)

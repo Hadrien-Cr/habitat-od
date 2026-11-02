@@ -182,20 +182,3 @@ class BaseExplorationAgent(Agent):
     def map_tile(self) -> Tuple[str, np.ndarray]:
         """(label, RGB map_image) mosaic tile of the current step."""
         return f"step{len(self.trajectory) - 1:03d}", self.map_image()[:, :, ::-1].copy()
-
-    def plan_debug_line(self, step: int, action: str) -> str:
-        """One text line of this step's planner state: the short-term goal plan() picked (stg) and the
-        goal cells it planned towards (closest_goal_map, in plan()'s own geodesic-nearest sense) -- logged
-        by callers to trace why action sequences oscillate instead of converging."""
-        closest_goal_map = self._closest_goal_map
-        goal_cells = 0
-        goal_centroid = None
-        if closest_goal_map is not None:
-            goal_cells = int(closest_goal_map.sum())
-            if goal_cells:
-                goal_rows, goal_cols = np.nonzero(closest_goal_map)
-                goal_centroid = (float(goal_rows.mean()), float(goal_cols.mean()))
-        return (
-            f"step={step:04d} action={action:12s} stg={self._short_term_goal} "
-            f"goal_cells={goal_cells} goal_centroid={goal_centroid}"
-        )

@@ -1,4 +1,5 @@
-"""Tests for SearchAgent (habitat_od_search/search_agent.py)."""
+"""Tests for SearchAgent (habitat_od_search/search_agent.py).
+Agent should satisfy stop conditions."""
 import os
 import shutil
 import tempfile
@@ -21,12 +22,12 @@ from habitat_od_search.agent import SearchAgent, SearchAgentConfig, GoalScoreCon
 from habitat.tasks.nav.nav import TopDownMap
 
 
-_TESTDUMP_DIR = Path(os.path.dirname(__file__)) / "testdump" / "test_search_agent"
+_TESTDUMP_DIR = Path(os.path.dirname(__file__)) / "testdump" / "test_agent_search"
 _EXPLORATION_STEPS = 1000
-_GIF_FPS = 6
+_GIF_FPS = 10
 _COLLISION_DIST_M = 0.15  # matches common/env_utils/sensors.py::AgentCollisionSensor
-_STUCK_WINDOW_STEPS = 15
-_STUCK_RADIUS_M = 0.3
+_STUCK_WINDOW_STEPS = 25
+_STUCK_RADIUS_M = 0.1
 _TARGET_OBJECT = "pillow"
 
 
@@ -44,10 +45,9 @@ def test_exploration_gif() -> None:
     3-tile (observation, belief map, ground truth) snapshot per step and assembling them into exploration.webp."""
     from dummy_scene import _DEPTH_CAMERA, _MAP_CONFIG, _START, _TURN_ANGLE_DEG, _dummy_sim, _ground_truth_meshes, _navmesh_floor_offset
 
+    shutil.rmtree(_TESTDUMP_DIR, ignore_errors=True)
     images_dir = _TESTDUMP_DIR / "images" / "test_exploration_gif"
-    shutil.rmtree(images_dir, ignore_errors=True)
     images_dir.mkdir(parents=True)
-    plan_log = (_TESTDUMP_DIR / "plan_debug.txt").open("w")
 
     with tempfile.TemporaryDirectory() as assets_dir:
         sim = _dummy_sim(assets_dir)
@@ -57,11 +57,11 @@ def test_exploration_gif() -> None:
         rng = np.random.default_rng(0)
         start = habitat_sim.AgentState()
         start.position = np.array(_START)
-        start.rotation = quaternion_from_rpy(0, 0, rng.uniform(0, 2 * np.pi))
+        start.rotation = quaternion_from_rpy(0, 0, rng.integers(0, 8) * np.pi / 4)  # random start heading
         sim.get_agent(0).set_state(start)
         config = SearchAgentConfig(
             map_config=_MAP_CONFIG,
-            planner_config=DiscretePlannerConfig(turn_angle_deg=_TURN_ANGLE_DEG),
+            planner_config=DiscretePlannerConfig(turn_angle_deg=_TURN_ANGLE_DEG, debug=True),
             goal_score_config=GoalScoreConfig(score_decay=0.9, lift_image_size=512),
             confidence_thresh=0.5,
             goal_score_thresh=0.5,
@@ -76,7 +76,7 @@ def test_exploration_gif() -> None:
         )
 
         agent = SearchAgent(detector=detector,
-            config=config, camera=_DEPTH_CAMERA, rng=rng, dump_location=str(_TESTDUMP_DIR), exp_name="test_search_agent",
+            config=config, camera=_DEPTH_CAMERA, rng=rng, dump_location=str(_TESTDUMP_DIR), exp_name="test_exploration_gif",
             target_name=_TARGET_OBJECT)
 
         text_encoder = build_text_encoder(pretrain=True)
@@ -106,11 +106,10 @@ def test_exploration_gif() -> None:
             act_start = time.perf_counter()
             action = agent.act(state, obs["rgb"], obs["depth"], collided)
             profile_timer.update("act", time.perf_counter() - act_start)
-            plan_log.write(agent.plan_debug_line(step, action) + "\n")
 
             mosaic = exploration_snapshot(obs, agent, ground_truth, trajectory_px)
             if mosaic is not None:
-                mosaic.save(images_dir / f"snapshot_{step:03d}.png")
+                mosaic.save(images_dir / f"snapshot_gif_{step:03d}.png")
 
             if action == "stop":
                 found_target = True
@@ -128,7 +127,6 @@ def test_exploration_gif() -> None:
         assert agent.estimated_map.coverage() > 0.0, "agent wrong marked any cell as explored"
     finally:
         sim.close()
-        plan_log.close()
 
     print(profile_timer.display())
     save_gif(images_dir, "exploration.webp", fps=_GIF_FPS)

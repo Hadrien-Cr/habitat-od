@@ -1,4 +1,5 @@
 """
+Agent should satisfy stop conditions.
 Runs common/hybrid_exploration's HybridFrontierAgent in exhaustive mode in dummy_scene.py's synthetic flat, fed by an
 oracle detector: each visible object's points come from its semantic mask and depth.
 Into tests/testdump/test_agent_hybrid/ (emptied when the test starts) go every step's class-agnostic predictions
@@ -89,7 +90,7 @@ _TESTDUMP_DIR = os.path.join(os.path.dirname(__file__), "testdump", "test_agent_
 _FULL_CONFIDENCE_AREA = 0.05
 _MIN_VISIBLE_PIXELS = 125
 _POINTS_VOXEL_M = 0.05
-_MAX_STEPS = 200
+_EXPLORATION_STEPS = 1000
 _MIN_MESH_VISIBILITY_FRACTION = 0.2
 _DETIC_STYLE = SegmentationStyle(_DETIC_CLASSES, make_colors(len(_DETIC_CLASSES), seed=0, ctype=0))
 _DETECTION_STYLE = SegmentationStyle(["object"], make_colors(1, seed=0, ctype=0))
@@ -97,9 +98,9 @@ _SEED = 0
 _LABEL_SOURCE = "pseudo"
 _BATCH_SIZE = 8
 _MOSAIC_BATCHES = 20
-_GIF_FPS = 6
-_STUCK_WINDOW_STEPS = 15
-_STUCK_RADIUS_M = 0.3
+_GIF_FPS = 10
+_STUCK_WINDOW_STEPS = 25
+_STUCK_RADIUS_M = 0.1
 
 
 def _is_stuck(trajectory: list, window: int, radius_m: float) -> bool:
@@ -131,7 +132,7 @@ def _start_agent(sim: habitat_sim.Simulator, config: HybridConfig, camera) -> Hy
     start = habitat_sim.AgentState()
     start.position = np.array(_START)
     sim.get_agent(0).set_state(start)
-    agent = HybridFrontierAgent(config, camera, np.random.default_rng(_SEED), _TESTDUMP_DIR, "test_agent_hybrid")
+    agent = HybridFrontierAgent(config, camera, np.random.default_rng(_SEED), _TESTDUMP_DIR, "test_exploration_gif")
     agent.reset(np.array(_START), _START[1] - _navmesh_floor_offset(sim, np.array(_START)))
     return agent
 
@@ -146,7 +147,8 @@ def _explore_and_fuse(sim: habitat_sim.Simulator, config: HybridConfig, detector
     trajectory_px: list = []
     beliefs, fused, predictions = {}, ConceptGraphMemory(), []
     stuck = False
-    for step in tqdm(range(_MAX_STEPS)):
+    
+    for step in tqdm(range(_EXPLORATION_STEPS), desc="Exploration"):
         state, obs = sim_agent.get_state(), sim.get_sensor_observations()
         heading = float(TopDownMap.get_polar_angle(state))
         trajectory_px.append(ground_truth.to_pixel(np.array(state.position)))
@@ -160,7 +162,7 @@ def _explore_and_fuse(sim: habitat_sim.Simulator, config: HybridConfig, detector
         action = agent.act(state, obs["depth"])
         mosaic = exploration_snapshot(obs, agent, ground_truth, trajectory_px)
         if mosaic is not None:
-            mosaic.save(images_dir / f"snapshot_{step:03d}.png")
+            mosaic.save(images_dir / f"snapshot_gif_{step:03d}.png")
         stuck = _is_stuck(agent.trajectory, _STUCK_WINDOW_STEPS, _STUCK_RADIUS_M)
         if action == "stop" or stuck:
             break
@@ -285,4 +287,4 @@ def test_exhaustive_mode_reaches_viewpoints():
 
 
 if __name__ == "__main__":
-    pytest.main([__file__, "-v", "-s"])
+    test_exhaustive_mode_reaches_viewpoints()

@@ -417,7 +417,7 @@ def save_gif(images_dir: Path, out_name: str = "episode.webp", fps: int = 6) -> 
     """Assembles every snapshot_<step>.png in images_dir into images_dir/out_name, in step order, as lossless
     animated WebP -- GIF's 256-color-palette cap otherwise crowds out or merges colors across frames full of
     distinct anti-aliased shades (e.g. a rare green tint quantized into a nearby gray)."""
-    frames = sorted(images_dir.glob("snapshot_*.png"))
+    frames = sorted(images_dir.glob("snapshot_gif_*.png"))
     if not frames:
         return
     images = [Image.open(frame).convert("RGB") for frame in frames]

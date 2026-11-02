@@ -1,5 +1,6 @@
 """Overlays of the hybrid agent's objects and goal map on its BGR top-down map."""
 from typing import Dict, List, Tuple
+from common.hybrid_exploration.object_viewpoints import ObjectBelief
 
 import cv2
 import numpy as np
@@ -7,7 +8,6 @@ import numpy as np
 _UNCERTAIN_COLOR = (0, 140, 255)
 _CONFIDENT_COLOR = (255, 0, 0)
 _GOAL_MAP_COLOR = (255, 144, 30)  # BGR -- dodger blue, distinct from _CONFIDENT_COLOR's pure blue
-_GOAL_MAP_DILATION_SELEM = np.ones((5, 5), dtype=np.uint8)  # goal cells are otherwise single pixels, too faint to see
 _BACKGROUND_GRAY = 100
 _POINT_COLOR = (255, 255, 255)
 _EXPLORED_COLOR = (127, 200, 127)
@@ -34,14 +34,16 @@ def plot_occupancy(explored: np.ndarray, pixel_sets: List[np.ndarray]) -> np.nda
     return image
 
 
-def draw_objects(image: np.ndarray, objects: Dict[int, Tuple[np.ndarray, float]], confidence_thresh: float) -> None:
+def draw_objects(image: np.ndarray, objects: Dict[int, ObjectBelief], confidence_thresh: float, to_pixels) -> None:
     """Each object's (row, col) points, orange while below confidence_thresh."""
-    for pixels, confidence in objects.values():
-        draw_points(image, pixels, _CONFIDENT_COLOR if confidence >= confidence_thresh else _UNCERTAIN_COLOR)
+    for belief in objects.values():
+        pixels = to_pixels(belief.points)
+        draw_points(image, pixels, _CONFIDENT_COLOR if belief.confidence >= confidence_thresh else _UNCERTAIN_COLOR)
 
 
-def draw_goal_map(image: np.ndarray, goal_map: np.ndarray) -> None:
-    """Every goal_map cell, dilated for visibility, drawn as a single flat color -- no per-candidate score to color
-    by anymore."""
-    dilated = cv2.dilate(goal_map, _GOAL_MAP_DILATION_SELEM, iterations=1)
-    draw_points(image, np.argwhere(dilated), _GOAL_MAP_COLOR)
+def draw_goal_map(image: np.ndarray, goal_map: np.ndarray, radius: int = 2) -> None:
+    """Every goal_map cell blended into a radial gradient of _GOAL_MAP_COLOR, full strength at the cell itself and
+    fading to nothing by radius pixels out (matching the planner's own disk-shaped goal dilation), for visibility."""
+    distance = cv2.distanceTransform((goal_map == 0).astype(np.uint8), cv2.DIST_L2, 5)
+    alpha = np.clip(1.0 - distance / radius, 0.0, 1.0)[..., None]
+    image[...] = ((1 - alpha) * image + alpha * np.array(_GOAL_MAP_COLOR)).astype(np.uint8)

@@ -19,6 +19,7 @@ from common.utils.projection_utils import DepthCamera
 from common.utils.retrieval import SegmentationStyle, segmentation_tile
 from common.vision.detic import Vocabulary
 from common.vision.detector import Detector
+from common.hybrid_exploration.plotting import draw_goal_map
 
 _DETECTION_COLOR = (255, 0, 255)  # RGB -- magenta, the single target class predict_target scores against
 
@@ -30,6 +31,7 @@ class SearchAgentConfig:
     max_steps: int
     confidence_thresh: float
     planner_config: DiscretePlannerConfig
+    reach_m: float = 1.0
 
 
 
@@ -53,11 +55,12 @@ class SearchAgent(BaseExplorationAgent):
             collision_threshold=config.planner_config.collision_threshold,
             step_size=config.planner_config.step_size,
             obs_dilation_selem_radius=config.planner_config.obs_dilation_selem_radius,
-            goal_dilation_selem_radius=config.planner_config.goal_dilation_selem_radius,
             map_size_cm=int(config.map_config.map_size_m * 100),
             map_resolution=int(config.map_config.resolution_m * 100),
+            min_goal_distance_cm=config.reach_m * 100,
             dump_location=dump_location,
             exp_name=exp_name,
+            debug=config.planner_config.debug,
         )
 
         super().__init__(config.map_config, rng, config.planner_config.turn_angle_deg, planner)
@@ -66,6 +69,7 @@ class SearchAgent(BaseExplorationAgent):
         self.config = config
         self.target_embedding = None
         self.goal_score_map = None
+        self._goal_map = None
         self.step_count = 0
         self.last_instances = None
         self.last_rgb = None
@@ -81,6 +85,7 @@ class SearchAgent(BaseExplorationAgent):
 
         self.target_embedding = target_embedding
         self.goal_score_map = GoalScoreMap(self.config.goal_score_config, self.estimated_map)
+        self._goal_map = None
         self.step_count = 0
         self.last_instances = None
         self.last_rgb = None
@@ -119,27 +124,29 @@ class SearchAgent(BaseExplorationAgent):
             return spin_action
 
         goal_map = self.goal_score_map.goal_mask(self.config.goal_score_thresh)
-        if goal_map.any():
-            action, self._closest_goal_map, self._short_term_goal, _ = self.planner.plan(
-                obstacle_map=self.estimated_map.obstacles,
-                goal_map=goal_map,
-                frontier_map=frontier_map,
-                sensor_pose=self.sensor_pose(position, heading),
-                found_goal=True,
-                use_dilation_for_stg=True,
-            )
-
-        else:
-            action, self._closest_goal_map, self._short_term_goal, _ = self.planner.plan(
-                obstacle_map=self.estimated_map.obstacles,
-                goal_map=frontier_map,
-                frontier_map=frontier_map,
-                sensor_pose=self.sensor_pose(position, heading),
-                found_goal=False,
-                use_dilation_for_stg=True,
-            )
+        self._goal_map = goal_map  # for visualization/debugging
+        
+        action, self._closest_goal_map, self._short_term_goal, _ = self.planner.plan(
+            obstacle_map=self.estimated_map.obstacles,
+            goal_map=goal_map,
+            frontier_map=frontier_map,
+            sensor_pose=self.sensor_pose(position, heading),
+            found_goal=np.any(goal_map),
+            use_dilation_for_stg=False,
+            current_timestep=self.step_count,
+        )
 
         return self.action_name(action)
+
+    def map_image(self) -> np.ndarray:
+        image = super().map_image()
+        assert self.estimated_map is not None, "Call reset() first"
+
+        if self._goal_map is not None:
+            draw_goal_map(image, self._goal_map, radius=int(self.config.reach_m / self.estimated_map.meters_per_pixel))
+        
+        return image
+
 
     def detections_tile(self) -> Tuple[str, np.ndarray]:
         """(label, RGB) tile of the last act() rgb frame with predict_target's detections (boxes/masks/scores)
