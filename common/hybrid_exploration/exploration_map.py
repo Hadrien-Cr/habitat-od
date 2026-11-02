@@ -15,8 +15,8 @@ from common.utils.pose_utils import sensor_pose_matrix
 @dataclass(frozen=True)
 class MapConfig:
     fov_deg: float
-    resolution_m: float = 0.05
-    map_size_m: float = 40.0
+    resolution_m: float = 0.1
+    map_size_m: float = 48.0
     visibility_dist_m: float = 3.0
     area_thresh_m: float = 3.0
     obstacle_height_m: float = 0.88  # matches common/config/hssd-hab/default.yaml's agent height

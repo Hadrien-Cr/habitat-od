@@ -57,7 +57,7 @@ class SearchAgent(BaseExplorationAgent):
             obs_dilation_selem_radius=config.planner_config.obs_dilation_selem_radius,
             map_size_cm=int(config.map_config.map_size_m * 100),
             map_resolution=int(config.map_config.resolution_m * 100),
-            min_goal_distance_cm=config.reach_m * 100,
+            min_goal_distance_cm=0.5 * config.reach_m * 100,
             dump_location=dump_location,
             exp_name=exp_name,
             debug=config.planner_config.debug,
@@ -101,7 +101,6 @@ class SearchAgent(BaseExplorationAgent):
         self.step_count += 1
         position, heading = self.observe(agent_state, depth, self.camera)
         self.goal_score_map.decay()
-        frontier_map = self.estimated_map.frontier_map()
 
         # forward the rgb to Detic, get the best detection's mask and score
         instances, best_score = self.detector.predict_target(rgb[:, :, :3], self.target_embedding)
@@ -119,12 +118,18 @@ class SearchAgent(BaseExplorationAgent):
             self.navigation_target = None
             return "stop"
 
+        
         spin_action = self.initial_spin()
         if spin_action is not None:
             return spin_action
 
         goal_map = self.goal_score_map.goal_mask(self.config.goal_score_thresh)
         self._goal_map = goal_map  # for visualization/debugging
+        
+        frontier_map = self.estimated_map.frontier_map()
+        
+        if not frontier_map.any() and not goal_map.any():
+            return "stop" 
         
         action, self._closest_goal_map, self._short_term_goal, _ = self.planner.plan(
             obstacle_map=self.estimated_map.obstacles,
@@ -142,7 +147,7 @@ class SearchAgent(BaseExplorationAgent):
         image = super().map_image()
         assert self.estimated_map is not None, "Call reset() first"
 
-        if self._goal_map is not None:
+        if self._goal_map is not None and np.any(self._goal_map):
             draw_goal_map(image, self._goal_map, radius=int(self.config.reach_m / self.estimated_map.meters_per_pixel))
         
         return image

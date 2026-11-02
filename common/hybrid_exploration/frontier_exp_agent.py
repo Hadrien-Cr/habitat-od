@@ -56,12 +56,10 @@ class FrontierExplorationAgent(BaseExplorationAgent):
         self.camera = camera
         self.config = config
         self._successive_collisions = 0
-        self._had_frontier = False
 
     def reset(self, position: np.ndarray, floor_height: float) -> None:
         super().reset(position, floor_height)
         self._successive_collisions = 0
-        self._had_frontier = False
 
     def act(self, agent_state: habitat_sim.AgentState, depth: np.ndarray, collided: bool = False) -> str:
         assert self.estimated_map is not None, "Call reset() first"
@@ -75,9 +73,10 @@ class FrontierExplorationAgent(BaseExplorationAgent):
         if spin_action is not None:
             return spin_action
         frontier_map = self.estimated_map.frontier_map()
+        
         if not frontier_map.any():
-            return "stop" if self._had_frontier else self.spin()
-        self._had_frontier = True
+            return "stop"
+        
         action, self._closest_goal_map, self._short_term_goal, _ = self.planner.plan(
             obstacle_map=self.estimated_map.obstacles,
             goal_map=np.zeros_like(frontier_map, dtype=np.uint8),  # no goal map for vanilla frontier exploration

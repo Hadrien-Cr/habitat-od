@@ -49,10 +49,10 @@ def remove_boundary(mat: np.ndarray, value=1) -> np.ndarray:
 
 class DiscretePlanner:
     """
-    This class translates planner inputs into a discrete low-level action
-    using an FMM planner.
-
-    This is a wrapper used to navigate to a particular object/goal location.
+    This is a wrapper of the FMMPlanner. 
+    It calls the FMM algorithm twice: 
+        first to compute the geodesic distance to the goal (fmm_planner.set_multi_goal) 
+        and then to find a short-term goal (fmm_planner.get_short_term_goal)
     """
 
     collision_map: Optional[np.ndarray]
@@ -240,43 +240,8 @@ class DiscretePlanner:
 
         # if returned 'replan', retry with a smaller obstacle dilation radius
         if replan and not stop:
+            print(dilated_obstacles.sum(), "goal map sum")
             raise ValueError("replan is not supported")
-            assert self.curr_obs_dilation_selem_radius is not None, "curr_obs_dilation_selem_radius is None"
-            self.collision_map *= 0
-            if self.curr_obs_dilation_selem_radius > self.min_obs_dilation_selem_radius:
-                self.curr_obs_dilation_selem_radius -= 1
-                self.obs_dilation_selem = skimage.morphology.disk(
-                    self.curr_obs_dilation_selem_radius
-                )
-
-            if found_goal:
-                (
-                    short_term_goal,
-                    closest_goal_map,
-                    replan,
-                    stop,
-                    closest_goal_pt,
-                    dilated_obstacles,
-                ) = self._get_short_term_goal(
-                    obstacle_map=obstacle_map,
-                    goal_map=goal_map,
-                    start=start,
-                    planning_window=planning_window,
-                    frontier_map=frontier_map,
-                )
-
-                found_goal = False
-                
-                if replan:
-                    print("Nowhere left to explore. Stopping.")
-                    # Calling the STOP action here will cause the agent to try grasping
-                    #  TODO separate out STOP_SUCCESS and STOP_FAILURE actions
-                    return (
-                        DiscreteNavigationAction.STOP,
-                        closest_goal_map,
-                        short_term_goal,
-                        dilated_obstacles,
-                    )
 
         # Normalize agent angle
         angle_agent = normalize_angle(start_o)
@@ -302,25 +267,20 @@ class DiscretePlanner:
             stop,
         )
 
-        if self.debug:
-            self.plan_debug_line(action, start, short_term_goal, closest_goal_pt, stop, found_goal)
-
         self.last_action = action
         return action, closest_goal_map, short_term_goal, dilated_obstacles
 
     def plan_debug_line(
         self,
-        action: DiscreteNavigationAction,
-        start: Tuple[int, int],
+        start: np.ndarray,
         short_term_goal: Tuple[int, int],
         closest_goal_pt: Tuple[int, int],
         stop: bool,
-        found_goal: bool,
     ) -> None:
         assert self.vis_dir is not None, "Call reset() first"
         line = (
-            f"t={self.timestep} start={start} action={action.value} "
-            f"stg={short_term_goal} closest_goal_pt={closest_goal_pt} stop={stop} found_goal={found_goal}\n"
+            f"t={self.timestep} start={start} "
+            f"stg={short_term_goal} closest_goal_pt={closest_goal_pt} stop={stop}\n"
         )
         with open(os.path.join(self.vis_dir, "plan_debug.txt"), "a") as debug_file:
             debug_file.write(line)
@@ -417,12 +377,13 @@ class DiscretePlanner:
 
         # important: if no traversible dilated goal, fall back to frontier map
         if not np.any(dilated_goal_map * traversible):
-            dilated_goal_map = add_boundary(frontier_map) * traversible
+            dilated_goal_map = add_boundary(frontier_map, value=0) * traversible
+
             if not np.any(dilated_goal_map):
                 raise ValueError("No traversible dilated goal map or frontier map available for planning")
+            
 
         # Set multi goal to the dilated goal map
-        # We will now try to find a path to any of these spaces
         self.fmm_distance = fmm_planner.set_multi_goal(
             dilated_goal_map,
             self.timestep,
@@ -439,7 +400,8 @@ class DiscretePlanner:
         self.timestep += 1
 
         state = [start[0] - x1 + 1, start[1] - y1 + 1]
-        # This is where we create the planner to get the trajectory to this state
+
+        # This is where we get the trajectory to this state
         stg_x, stg_y, replan, stop, dist = fmm_planner.get_short_term_goal(
             state, continuous=False
         )
@@ -461,6 +423,8 @@ class DiscretePlanner:
                 dist=dist,
                 start=start,
             )
+
+        self.plan_debug_line(start, short_term_goal, closest_goal_pt, stop)
 
         return (
             short_term_goal,

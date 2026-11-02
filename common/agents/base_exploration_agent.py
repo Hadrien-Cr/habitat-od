@@ -28,6 +28,7 @@ _GOAL_MARKER_COLOR = (200, 0, 200)  # BGR -- magenta/purple, matching EstimatedM
 _FRONTIER_PIXEL_COLOR = (0, 165, 255)  # BGR -- orange, every current frontier cell (not just the chosen goal)
 _FRONTIER_PIXEL_ALPHA = 0.5
 _VISITED_COLOR = (0, 0, 255)
+_CURRENT_POSITION_COLOR = (0, 255, 0)  # BGR -- green, the agent's current position on the map
 _GOAL_SCORE_COLORMAP = matplotlib.colormaps["cool"]  # cyan (low) -> magenta (high), by goal_score_image() value
 
 class ProfileTimer:
@@ -157,11 +158,14 @@ class BaseExplorationAgent(Agent):
             cv2.polylines(image, [np.array(trajectory_px)], isClosed=False, color=_VISITED_COLOR, thickness=1)
         for point in trajectory_px:
             cv2.circle(image, point, 2, _VISITED_COLOR, -1)
+        cv2.circle(image, trajectory_px[-1], 3, _CURRENT_POSITION_COLOR, -1)  # last position
+        
         if len(self.estimated_map.frontier_pixels):
             frontier_overlay = image.copy()
             for row, col in np.round(self.estimated_map.frontier_pixels).astype(int):
                 cv2.circle(frontier_overlay, (int(col), int(row)), 1, _FRONTIER_PIXEL_COLOR, -1)
             cv2.addWeighted(frontier_overlay, _FRONTIER_PIXEL_ALPHA, image, 1 - _FRONTIER_PIXEL_ALPHA, 0, dst=image)
+        
         if self._closest_goal_map is not None and self._closest_goal_map.any():
             goal_pixels = np.argwhere(self._closest_goal_map)
             for row, col in goal_pixels:

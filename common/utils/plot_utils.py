@@ -123,6 +123,7 @@ def plot_semantic_2d_map(
     meters_per_grid_pixel: float = 0.01,
     scale=1.0,
     explored: Optional[np.ndarray] = None,
+    text_color: tuple[int, int, int] = (255, 255, 255)
 ) -> Image.Image:
     """bg_grid's navigable map with each object's (class, top-down mask) footprint colored by class, labelled once at its
     centroid. Without explored, non-navigable cells are black and navigable ones flat grey; with it (the agent's own
@@ -146,7 +147,7 @@ def plot_semantic_2d_map(
     for class_id, mask in footprints:
         area_m = mask.sum() * meters_per_grid_pixel ** 2
         y, x = np.argwhere(mask).mean(axis=0) * scale
-        draw.text((x, y), classes[class_id], fill=(255,255,255), font_size= 4 * np.clip(np.sqrt(area_m), 1, 4) * scale, anchor="mm")
+        draw.text((x, y), classes[class_id], fill=text_color, font_size= 4 * np.clip(np.sqrt(area_m), 1, 4) * scale, anchor="mm")
 
     return img
 

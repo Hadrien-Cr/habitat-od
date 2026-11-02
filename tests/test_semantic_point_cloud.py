@@ -58,7 +58,7 @@ from common.utils.semantic_point_cloud import SemanticPointCloud, project_semant
 HABITAT_DATA = os.environ.get("HABITAT_DATA")
 _RESOLUTION = [640, 640]
 HFOV_DEG = 90
-MIN_DEPTH = 0.5
+MIN_DEPTH = 0.1
 MAX_DEPTH = 15.0
 _AGENT_HEIGHT = 0.88  # matches common/config/hssd-hab/default.yaml's agent height
 _FORWARD_STEP_M = 0.25

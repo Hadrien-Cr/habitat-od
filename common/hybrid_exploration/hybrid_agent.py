@@ -61,7 +61,7 @@ class HybridFrontierAgent(BaseExplorationAgent):
             obs_dilation_selem_radius=config.planner_config.obs_dilation_selem_radius,
             map_size_cm=int(config.map_config.map_size_m * 100),
             map_resolution=int(config.map_config.resolution_m * 100),
-            min_goal_distance_cm=config.reach_m * 100 - config.map_config.resolution_m * 100,  # ensure a goal cell is at least one cell away from the agent's current position, else the planner will consider it "reached" and return a no-op action
+            min_goal_distance_cm = 0.5 * config.reach_m * 100 ,  # ensure a goal cell is at least one cell away from the agent's current position, else the planner will consider it "reached" and return a no-op action
             dump_location=dump_location,
             exp_name=exp_name,
             debug=config.planner_config.debug,
@@ -72,7 +72,6 @@ class HybridFrontierAgent(BaseExplorationAgent):
         self.objects: Dict[int, ObjectBelief] = {}
         self.seen_sectors: Dict[int, np.ndarray] = {}
         self._goal_map: Optional[np.ndarray] = None
-        self._arrived_at: Optional[Tuple] = None
         self._successive_collisions = 0
 
     def reset(self, position: np.ndarray, floor_height: float) -> None:
@@ -80,7 +79,6 @@ class HybridFrontierAgent(BaseExplorationAgent):
         self.objects = {}
         self.seen_sectors = {}
         self._goal_map = None
-        self._arrived_at = None
         self._successive_collisions = 0
 
     def update_objects(self, objects: Dict[int, ObjectBelief]) -> None:
@@ -98,29 +96,35 @@ class HybridFrontierAgent(BaseExplorationAgent):
         self._successive_collisions = self._successive_collisions + 1 if collided else 0
         if self._successive_collisions >= self.config.max_successive_collisions:
             return "stop"
+        
         position, heading = self.observe(agent_state, depth, self.camera)
         self._mark_inspected(position, heading)
         spin_action = self.initial_spin()
 
         if spin_action is not None:
             return spin_action
+        
+        viewpoints = self._object_viewpoints(position[1])            
 
-        viewpoints = self._object_viewpoints(position[1])
         arrived = self._arrived_viewpoint(position, viewpoints)
 
         if arrived is not None:
-            self._arrived_at = arrived.key()
             action = self._turn_towards(position, heading, arrived.look_at)
-            assert action != -1, "Viewpoint already reached, but _arrived_viewpoint returned it as in reach"
+            assert isinstance(action, str), f"Viewpoint already reached, but _arrived_viewpoint returned it as in reach, {arrived} {position} {heading}"
             return action
 
         goal_map = self._build_goal_map(viewpoints)
         self._goal_map = goal_map  # for visualization/debugging
         
+        frontier_map = self.estimated_map.frontier_map()
+        
+        if not frontier_map.any() and not goal_map.any():
+            return "stop" 
+        
         action, self._closest_goal_map, self._short_term_goal, _ = self.planner.plan(
             obstacle_map=self.estimated_map.obstacles,
             goal_map=goal_map,
-            frontier_map=self.estimated_map.frontier_map(),
+            frontier_map=frontier_map,
             sensor_pose=self.sensor_pose(position, heading),
             found_goal=bool(goal_map.any()),
             use_dilation_for_stg=False,
@@ -130,10 +134,10 @@ class HybridFrontierAgent(BaseExplorationAgent):
 
     def _arrived_viewpoint(self, position: np.ndarray, viewpoints: List[Candidate]) -> Optional[Candidate]:
         """The viewpoint the agent is within reach of, preferring the one it last arrived at for drift tolerance."""
-        in_reach = [viewpoint for viewpoint in viewpoints if self._reached(position, viewpoint)]
-        if not in_reach:
+        vp_in_reach = [viewpoint for viewpoint in viewpoints if self._within_reach(position, viewpoint)]
+        if not vp_in_reach:
             return None
-        return next((viewpoint for viewpoint in in_reach if viewpoint.key() == self._arrived_at), in_reach[0])
+        return vp_in_reach[0]
 
     def _build_goal_map(self, viewpoints: List[Candidate]) -> np.ndarray:
         """uint8 mask over EstimatedMap.obstacles: every viewpoint if any exist, else every frontier cell."""
@@ -193,10 +197,6 @@ class HybridFrontierAgent(BaseExplorationAgent):
                 candidates.append((abs(standoff - target_standoff), ring[sector]))
         return min(candidates, key=lambda entry: entry[0])[1] if candidates else None
 
-    def _reached(self, position: np.ndarray, viewpoint: Candidate) -> bool:
-        """In reach, or the viewpoint the agent last arrived at: it drifts as the object's points grow, which would
-        otherwise flip the agent between facing the object and walking back to it."""
-        return viewpoint.key() == self._arrived_at or self._within_reach(position, viewpoint)
 
     def _within_reach(self, position: np.ndarray, viewpoint: Candidate) -> bool:
         return float(np.hypot(*(viewpoint.position - position)[[0, 2]])) <= self.config.reach_m
@@ -205,11 +205,12 @@ class HybridFrontierAgent(BaseExplorationAgent):
         """The turn bringing point within one turn step of the heading, None once it already is."""
         bearing = np.arctan2(point[2] - position[2], point[0] - position[0])
         error = np.arctan2(np.sin(bearing - (np.pi / 2 - heading)), np.cos(bearing - (np.pi / 2 - heading)))
+        
         if error > self._turn_angle:
             return "turn_right"
         if error < -self._turn_angle:
             return "turn_left"
-        
+
         return -1 
 
     @property
@@ -223,7 +224,7 @@ class HybridFrontierAgent(BaseExplorationAgent):
         if self.objects is not None:
             draw_objects(image, self.objects, self.config.confidence_thresh, self.estimated_map.to_pixels)
         
-        if self._goal_map is not None:
+        if self._goal_map is not None and np.any(self._goal_map):
             draw_goal_map(image, self._goal_map, radius=int(self.config.reach_m / self.estimated_map.meters_per_pixel))
         
         return image

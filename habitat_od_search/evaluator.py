@@ -27,7 +27,7 @@ from tqdm import tqdm
 from common.env_utils.env_base import build_env, gt_navigable_mask
 from common.hybrid_exploration.frontiers import reveal_fog_of_war
 from common.utils.plot_utils import plot_exploration_map, rows_mosaic, save_gif
-from habitat_od_search.agent import SearchAgent, build_search_agent, target_embedding
+from habitat_od_search.search_agent import SearchAgent, build_search_agent, target_embedding
 from habitat_od_search.hssd_rare_dataset import SceneGoal, available_scenes, load_scene_episodes, main_category, rarity_tiers
 
 _SUCCESS_DIST_M = 1.0

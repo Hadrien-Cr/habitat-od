@@ -18,7 +18,7 @@ from common.utils.plot_utils import save_gif
 from common.utils.pose_utils import quaternion_from_rpy
 from common.vision.detic import Vocabulary, get_clip_embeddings, build_text_encoder # type: ignore
 from common.vision.detector import Detector
-from habitat_od_search.agent import SearchAgent, SearchAgentConfig, GoalScoreConfig, DiscretePlannerConfig
+from habitat_od_search.search_agent import SearchAgent, SearchAgentConfig, GoalScoreConfig, DiscretePlannerConfig
 from habitat.tasks.nav.nav import TopDownMap
 
 

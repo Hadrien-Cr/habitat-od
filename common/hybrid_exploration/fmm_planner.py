@@ -138,7 +138,7 @@ class FMMPlanner:
             self.du,
             "constant",
             constant_values=self.fmm_dist.shape[0] ** 2,
-        )
+        ) # type: ignore
         subset = dist[
             state[0] : state[0] + 2 * self.du + 1, state[1] : state[1] + 2 * self.du + 1
         ]
@@ -162,8 +162,8 @@ class FMMPlanner:
         replan = subset[stg_x, stg_y] > -0.0001
 
         return (
-            (stg_x + state[0] - self.du) * scale,
-            (stg_y + state[1] - self.du) * scale,
+            float((stg_x + state[0] - self.du) * scale),
+            float((stg_y + state[1] - self.du) * scale),
             replan,
             stop,
             dist

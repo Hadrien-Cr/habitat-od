@@ -237,6 +237,7 @@ def estimated_semantic_topdown(resolved: "ResolvedObjects", estimated_map, class
     image = plot_semantic_2d_map(
         navigable, object_footprints, dict(enumerate(colors)), dict(enumerate(classes)),
         meters_per_grid_pixel=estimated_map.meters_per_pixel, scale=TOPDOWN_MAP_SCALE, explored=estimated_map.explored,
+        text_color = (0, 0, 0)
     )
     return np.array(image)
 
@@ -260,6 +261,7 @@ def gt_semantic_topdown(
     footprints = [(class_id, mesh_footprint_on_grid(mesh, navigable.shape, to_pixels)) for _, class_id, mesh in meshes]
     image = plot_semantic_2d_map(
         navigable, footprints, dict(enumerate(colors)), dict(enumerate(classes)), meters_per_grid_pixel=meters_per_pixel, scale=TOPDOWN_MAP_SCALE,
+        text_color = (255, 255, 255)
     )
     return np.array(image)
 

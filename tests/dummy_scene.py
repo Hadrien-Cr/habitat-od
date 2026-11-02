@@ -58,7 +58,7 @@ _CAMERA_HEIGHT = 1.0
 _RESOLUTION = [640, 640]
 _MAX_DEPTH_M = 16.0
 _DEPTH_CAMERA = DepthCamera(hfov=90.0, min_depth=0.1, max_depth=_MAX_DEPTH_M)
-_MAP_CONFIG = MapConfig(fov_deg=90.0, resolution_m=0.05, map_size_m=40.0, visibility_dist_m=5.0)
+_MAP_CONFIG = MapConfig(fov_deg=90.0, resolution_m=0.1, map_size_m=48.0, visibility_dist_m=5.0)
 _TURN_ANGLE_DEG = 45.0
 _START = (6.0, 0.0, -4.0)
 _FLOOR_RAY_START_M = 0.3
