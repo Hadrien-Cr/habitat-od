@@ -39,6 +39,7 @@ from common.utils.projection_utils import DepthCamera, TOPDOWN_MAP_SCALE, mesh_f
 
 
 _FLOOR_RAY_START_M = 0.3  # above the navmesh, below anything the agent can stand under
+SKY_RGB = (135, 206, 235)  # light blue instead of habitat-sim's black, where no geometry is rendered (through windows, outdoors)
 
 
 def gt_navigable_mask(pathfinder: habitat_sim.PathFinder, position: np.ndarray, resolution: int) -> np.ndarray:
@@ -128,6 +129,7 @@ class ExplorationEnv(RLEnv):
         # be re-applied every reset, not just once at construction.
         if self.get_env_name() == "ProcTHOR-hab":
             self.set_light_setup(AI2THOR_BRIGHT_LIGHTS)
+        self._paint_sky()
 
         episode = self._env._current_episode
         agent_state = habitat_sim.AgentState()
@@ -391,11 +393,16 @@ class ExplorationEnv(RLEnv):
     def original_action_space(self) -> spaces.space: # type: ignore
         return self.action_space
 
+    def _paint_sky(self) -> None:
+        """Clears the rgb sensor to SKY_RGB; reconfiguring the sim rebuilds its sensors, so after every reconfigure."""
+        self._env.sim.agents[0]._sensors["rgb"].specification().clear_color = [channel / 255.0 for channel in SKY_RGB]
+
     def change_scene(self, scene: str) -> None:
         with read_write(self._env._config):
             self._env._config.simulator.scene = self._env._config.dataset.scenes_dir + "/" +  scene
 
         self._env._sim.reconfigure(self._env._config.simulator)
+        self._paint_sky()
         self._env.task.sensor_suite.get("bbsgt").setup_semantic_labels()
         self._tdmap = None
         self._gt_semantic_map_cache_key = None
@@ -438,6 +445,13 @@ def build_env(scene_name: str, seed: int, max_steps: int, object_params: dict, i
     return ExplorationEnv(config=habitat_cfg), habitat_cfg
 
 
+def sensor_geometry(habitat_cfg: Any) -> tuple[float, DepthCamera]:
+    """(rgb sensor hfov in degrees, DepthCamera of the depth sensor) of habitat_cfg's agent."""
+    sim_sensors = habitat_cfg.habitat.simulator.agents.main_agent.sim_sensors
+    depth_cfg = sim_sensors.depth_sensor
+    return sim_sensors.rgb_sensor.hfov, DepthCamera(depth_cfg.hfov, depth_cfg.min_depth, depth_cfg.max_depth)
+
+
 def build_agent(
     agent_name: str, rng: np.random.Generator, env: ExplorationEnv, habitat_cfg: Any, visibility_dist_m: float = 3.0,
     dump_location: str = "outputs/planner_dumps", exp_name: str = "exp",
@@ -447,9 +461,7 @@ def build_agent(
     if agent_name == "random":
         return RandomAgent(rng, [action for action in env.get_legal_actions() if action != "stop"])
     simulator_cfg = habitat_cfg.habitat.simulator
-    fov = simulator_cfg.agents.main_agent.sim_sensors.rgb_sensor.hfov
-    depth_cfg = simulator_cfg.agents.main_agent.sim_sensors.depth_sensor
-    camera = DepthCamera(depth_cfg.hfov, depth_cfg.min_depth, depth_cfg.max_depth)
+    fov, camera = sensor_geometry(habitat_cfg)
     if agent_name == "fbe":
         config = FrontierExplorationConfig(MapConfig(fov, visibility_dist_m=visibility_dist_m), DiscretePlannerConfig(simulator_cfg.turn_angle))
         return FrontierExplorationAgent(config, camera, rng, dump_location, exp_name)

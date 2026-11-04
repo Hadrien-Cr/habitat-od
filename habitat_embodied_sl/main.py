@@ -1,7 +1,7 @@
 """Builds retrieval datasets from a collection config (--config, see habitat_embodied_sl/config/collection_procthor.yaml
 and habitat_embodied_sl/README.md). In each collection.scenes scene, common/hybrid_exploration's HybridFrontierAgent
 explores in exhaustive mode for up to collection.steps_per_scene steps (or until it gets stuck -- no net translation
-over _STUCK_WINDOW_STEPS consecutive steps, logged as a warning) while a Detector (Detic's proposals scored by
+over BaseExplorationAgent.is_stuck's window, which stops it, logged as a warning) while a Detector (Detic's proposals scored by
 objectness alone, SAM masks) segments every frame; its masks and region embeddings are fused into a concept-graphs
 ConceptGraphMemory (common/utils/concept_graph.py) whose objects are the agent's beliefs. Each step's 3-tile
 (observation, belief map, ground truth) snapshot is saved to datasets/<run_name>/<scene>/images/exploration_snapshots/
@@ -66,17 +66,7 @@ from common.vision.detector import Detector
 _VARIANTS = ("pseudo", "pseudo_gt_classes", "recovered")
 _TILE_DOWNSCALE = 2
 _GIF_FPS = 10
-_STUCK_WINDOW_STEPS = 25
-_STUCK_RADIUS_M = 0.1
 
-
-def _is_stuck(trajectory: list, window: int, radius_m: float) -> bool:
-    """True once the agent's last window positions all lie within radius_m of each other -- no net
-    translation, even while its heading keeps oscillating between turns."""
-    if len(trajectory) < window:
-        return False
-    recent = np.stack([position for position, _ in trajectory[-window:]])
-    return bool(np.all(np.linalg.norm(recent - recent[0], axis=1) < radius_m))
 
 
 def observe_frame(obs: dict, env: ExplorationEnv, lift_image_size: int) -> Frame:
@@ -127,7 +117,7 @@ def explore(env: ExplorationEnv, mapper: SceneMapper, obs: dict, steps: int, sty
     gets stuck or steps run out, saving a 3-tile (observation, belief map, ground truth) snapshot per step to
     images_dir/snapshot_<step>.png and returning (each step's labelled detector-prediction tile (segmentation_tile),
     whether the agent got stuck)."""
-    collided, stuck = False, False
+    collided = False
     prediction_tiles = []
     trajectory_px: list = []
     for step in tqdm(range(steps), desc="mapping", ncols=80):
@@ -142,12 +132,11 @@ def explore(env: ExplorationEnv, mapper: SceneMapper, obs: dict, steps: int, sty
         mosaic = exploration_snapshot(obs, mapper.agent, ground_truth, trajectory_px)
         if mosaic is not None:
             mosaic.save(images_dir / f"snapshot_gif_{step:04d}.png")
-        stuck = _is_stuck(mapper.agent.trajectory, _STUCK_WINDOW_STEPS, _STUCK_RADIUS_M)
-        if action == "stop" or stuck:
+        if action == "stop":
             break
         obs, _, _, _ = env.step(action)
         collided = bool(np.any(obs["agent_collision_sensor"]))
-    return prediction_tiles, stuck
+    return prediction_tiles, mapper.agent.is_stuck()
 
 
 def map_scene(scene: str, cfg: DictConfig, detector: Detector, style: SegmentationStyle, args: argparse.Namespace) -> Tuple[SceneMapper, GroundTruthObjects]:
@@ -172,7 +161,7 @@ def map_scene(scene: str, cfg: DictConfig, detector: Detector, style: Segmentati
     images_dir.mkdir(parents=True, exist_ok=True)
     prediction_tiles, stuck = explore(env, mapper, obs, cfg.collection.steps_per_scene, style, ground_truth, images_dir)
     if stuck:
-        print(f"Warning: agent got stuck in {scene} (no net translation over the last {_STUCK_WINDOW_STEPS} steps)")
+        print(f"Warning: agent got stuck in {scene} (no net translation)")
     save_gif(images_dir, "exploration.webp", fps=_GIF_FPS)
     save_exploration_visuals(agent, prediction_tiles, scene_dump_dir)
     env.close()

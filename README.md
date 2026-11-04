@@ -1,6 +1,14 @@
 # habitat-od
 
-Utils to create benchmark datasets for object detection in AI2THOR
+Generates COCO-format object-detection datasets from simulated indoor scenes (HSSD-HAB, ProcTHOR-hab, MP3D,
+Gibson-Semantic) in Habitat, fine-tunes detectors on them, and evaluates Detic-driven object search on IMPRINT's
+HSSD-rare ObjectNav episodes. Ground truth comes from the simulator's semantic sensor. See `INSTALL.MD` for setup.
+
+# Dataset collection
+
+`habitat_embodied_sl/main.py` explores scenes with an exploration agent, maps Detic detections into object views,
+and writes COCO train/test splits (e.g. `datasets/smoke_sl/{train,test}`). Its pipeline steps, thresholds and
+outputs are described in `habitat_embodied_sl/README.md`.
 
 # Training
 
@@ -33,13 +41,28 @@ PYTHONPATH=. python train.py --config smoke_sl.yaml \
     --config-file habitat_embodied_sl/config/smoke_sl_ft.yaml --variant pseudo
 ```
 
-# Roadmap
-- [x] habitat-od: Automatically generate an object detection dataset from HSSD-HAB scenes
-    - [x] Base Implementation
-    - [x] Implementation with co-visibility clustering
+# Object search (`habitat_od_search`)
 
-- [ ] habitat-c-od: Continual learning object detection dataset from ProcTHOR scenes
+Steps, thresholds, metrics and outputs are described in `habitat_od_search/README.md`.
 
-- [ ] habitat-act-od: Generate Active Vision dataset from ProcTHOR scenes
-    - [ ] Base Implementation
-    - [ ] Implement confusing examples
+- **`habitat_od_search/main.py`** -- evaluates `SearchAgent` (`search_agent.py`) on IMPRINT's HSSD-rare episodes
+  (`hssd_rare_dataset.py`). Each step, the agent scores its rgb against the CLIP text embedding of the episode's
+  target category, fuses the best detection into a goal-score map over its own depth-built map, and then either
+  heads to the believed goal or explores frontiers. The run is configured by `--config` (default
+  `habitat_od_search/config/hssd_rare_eval.yaml`). There are two ablations: `agent.use_gt_detections` swaps in
+  ground-truth goal detections, and `agent.use_oracle_path` follows the navmesh shortest path to the goal.
+  Per-episode success, SPL, distance to goal and failure category (`evaluator.py`: exploration failure, FN/FP
+  recognition failure, TP early stop) are appended to `habitat_od_search/logs/<run_name>/metrics.jsonl`. When
+  the run ends, per-rarity-tier summary and failure tables go to `summary.md`. With `save_visuals`, it also
+  writes per-step snapshots and an `episode.webp` per episode.
+- **`habitat_od_search/enhanced_detector.py`** -- enhanced-detector baseline for one target in one scene
+  (`--scene`, `--category`). It replaces the text embedding with an ensemble of Detic region embeddings of example
+  views of the target: simulator renders of the isolated object and Bing-scraped web images. It then ranks the
+  class-agnostic boxes collected from random poses against each query (`query_matches.png`). Outputs go to
+  `habitat_od_search/logs/enhanced_detector/<scene_id>/<category>/`.
+
+```bash
+export HABITAT_DATA=$HOME/habitat_data/data BASE_DIR=$(pwd) PYTHONNOUSERSITE=1
+PYTHONPATH=. python habitat_od_search/main.py --config habitat_od_search/config/hssd_rare_eval.yaml
+PYTHONPATH=. python habitat_od_search/enhanced_detector.py --scene 102344094
+```

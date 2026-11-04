@@ -32,6 +32,15 @@ class ContinuousNavigationAction:
     xyt: List[float]  # [x, y, theta] in meters and radians
 
 CM_TO_METERS = 0.01
+_DEBUG_CROP_CELLS = 128
+
+
+def _debug_crop(image: np.ndarray, center: Tuple[int, int]) -> np.ndarray:
+    """_DEBUG_CROP_CELLS-wide window of image around center, enlarged _DEBUG_ZOOM times."""
+    half = _DEBUG_CROP_CELLS // 2
+    row0, col0 = max(center[0] - half, 0), max(center[1] - half, 0)
+    crop = image[row0 : row0 + _DEBUG_CROP_CELLS, col0 : col0 + _DEBUG_CROP_CELLS]
+    return cv2.resize(crop, None, fx=4, fy=4, interpolation=cv2.INTER_NEAREST)
 
 
 def add_boundary(mat: np.ndarray, value=1) -> np.ndarray:
@@ -65,7 +74,7 @@ class DiscretePlanner:
         self,
         turn_angle: float,
         collision_threshold: float,
-        step_size: int,
+        step_size: float,
         obs_dilation_selem_radius: int,
         map_size_cm: int,
         map_resolution: int,
@@ -83,6 +92,7 @@ class DiscretePlanner:
         """
         Arguments:
             turn_angle (float): agent turn angle (in degrees)
+            step_size: length of one forward move (in cells), the distance of the short-term goal
             collision_threshold (float): forward move distance under which we
              consider there's a collision (in meters)
             obs_dilation_selem_radius: radius (in cells) of obstacle dilation
@@ -121,6 +131,7 @@ class DiscretePlanner:
 
         self.timestep = 0
         self.collision_width = 1
+        self.last_move_dist = None
 
         self.curr_obs_dilation_selem_radius = None
         self.obs_dilation_selem = None
@@ -216,6 +227,7 @@ class DiscretePlanner:
         ] = 1
 
         # check collisions if we have just moved and are uncertain
+        self.last_move_dist = None
         if self.last_action == DiscreteNavigationAction.MOVE_FORWARD or (
             type(self.last_action) == ContinuousNavigationAction
             and np.linalg.norm(self.last_action.xyt[:2]) > 0
@@ -236,12 +248,13 @@ class DiscretePlanner:
             start=start,
             planning_window=planning_window,
             frontier_map=frontier_map,
+            heading_deg=start_o,
         )
 
         # if returned 'replan', retry with a smaller obstacle dilation radius
         if replan and not stop:
-            print(dilated_obstacles.sum(), "goal map sum")
-            raise ValueError("replan is not supported")
+            # raise ValueError("replan is not supported")
+            return DiscreteNavigationAction.STOP, closest_goal_map, short_term_goal, dilated_obstacles
 
         # Normalize agent angle
         angle_agent = normalize_angle(start_o)
@@ -278,9 +291,17 @@ class DiscretePlanner:
         stop: bool,
     ) -> None:
         assert self.vis_dir is not None, "Call reset() first"
+        assert self.collision_map is not None, "Call reset() first"
+        if self.last_move_dist is None:
+            collision = "collision=n/a"
+        else:
+            collision = (
+                f"move_dist={self.last_move_dist:.3f} collision={self.last_move_dist < self.collision_threshold} "
+                f"collision_width={self.collision_width} collision_cells={int(self.collision_map.sum())}"
+            )
         line = (
             f"t={self.timestep} start={start} "
-            f"stg={short_term_goal} closest_goal_pt={closest_goal_pt} stop={stop}\n"
+            f"stg={short_term_goal} closest_goal_pt={closest_goal_pt} stop={stop} {collision}\n"
         )
         with open(os.path.join(self.vis_dir, "plan_debug.txt"), "a") as debug_file:
             debug_file.write(line)
@@ -316,8 +337,9 @@ class DiscretePlanner:
         start: np.ndarray,
         planning_window: List[int],
         frontier_map,
+        heading_deg: float,
         visualize=False,
-    ) -> Tuple[Tuple[int, int], np.ndarray, bool, bool, tuple[int, int], np.ndarray]:
+    ) -> Tuple[Tuple[float, float], np.ndarray, bool, bool, tuple[int, int], np.ndarray]:
         """Get short-term goal.
 
         Args:
@@ -327,7 +349,7 @@ class DiscretePlanner:
             planning_window: local map boundaries (gx1, gx2, gy1, gy2)
 
         Returns:
-            short_term_goal: short-term goal position (x, y) in map
+            short_term_goal: short-term goal position (x, y) in map, one forward move along a reachable heading
             closest_goal_map: (M, M) binary array denoting closest goal
              location in the goal map in geodesic distance
             replan: binary flag to indicate we couldn't find a plan to reach
@@ -349,7 +371,7 @@ class DiscretePlanner:
         obstacles = obstacle_map[x1:x2, y1:y2]
 
         # Dilate obstacles
-        dilated_obstacles = cv2.dilate(obstacles, np.ones((3, 3)), iterations=1) # type:ignore
+        dilated_obstacles = cv2.dilate(obstacles, self.obs_dilation_selem, iterations=1) # type:ignore
 
         # Create inverse map of obstacles - this is territory we assume is traversible
         # Traversible is now the map
@@ -399,14 +421,9 @@ class DiscretePlanner:
 
         self.timestep += 1
 
-        state = [start[0] - x1 + 1, start[1] - y1 + 1]
-
-        # This is where we get the trajectory to this state
-        stg_x, stg_y, replan, stop, dist = fmm_planner.get_short_term_goal(
-            state, continuous=False
-        )
-        stg_x, stg_y = stg_x + x1 - 1, stg_y + y1 - 1
-        short_term_goal = int(stg_x), int(stg_y)
+        state = np.array([start[0] - x1 + 1, start[1] - y1 + 1])
+        (stg_x, stg_y), replan, stop = self._heading_step_goal(traversible, state, heading_deg)
+        short_term_goal = (stg_x + x1 - 1, stg_y + y1 - 1)
 
         if self.debug:
             self.debug_mosaic_save(
@@ -420,7 +437,6 @@ class DiscretePlanner:
                 traversible=traversible,
                 goal_map=goal_map,
                 frontier_map=frontier_map,
-                dist=dist,
                 start=start,
             )
 
@@ -435,6 +451,26 @@ class DiscretePlanner:
             dilated_obstacles,
         )
     
+    def _heading_step_goal(self, traversible: np.ndarray, state: np.ndarray, heading_deg: float) -> Tuple[Tuple[float, float], bool, bool]:
+        """(the landing point of one step_size forward move along the reachable heading -- the current one turned by a whole
+        number of turn_angle -- whose straight path stays on traversible cells and ends closest to the goal on fmm_distance,
+        ties kept by the smallest turn; replan, when no such move gets closer than the agent's cell; stop, on the goal).
+        state is the agent's cell in the padded traversible/fmm_distance arrays."""
+        assert self.fmm_distance is not None
+        current = self.fmm_distance[tuple(state)]
+        n_headings = int(round(360.0 / self.turn_angle))
+        fractions = np.linspace(0.0, 1.0, 2 * int(np.ceil(self.step_size)) + 1)[1:]
+        best_goal, best_distance = None, current - 0.0001
+        for turn in sorted(range(1 - n_headings // 2, n_headings // 2 + 1), key=abs):
+            angle = np.radians(heading_deg + turn * self.turn_angle)
+            path = state + np.outer(fractions, [np.sin(angle), np.cos(angle)]) * self.step_size
+            cells = np.round(path).astype(int)
+            on_traversible = np.all((cells >= 0) & (cells < traversible.shape)) and traversible[cells[:, 0], cells[:, 1]].all()
+            if on_traversible and self.fmm_distance[tuple(cells[-1])] < best_distance:
+                best_goal, best_distance = path[-1], self.fmm_distance[tuple(cells[-1])]
+        goal = state if best_goal is None else best_goal
+        return (float(goal[0]), float(goal[1])), best_goal is None, current < self.goal_tolerance
+
     def debug_mosaic_save(
         self,
         x1: int,
@@ -443,11 +479,10 @@ class DiscretePlanner:
         y2: int,
         fmm_distance: np.ndarray,
         dilated_goal_map: np.ndarray,
-        short_term_goal: Tuple[int, int],
+        short_term_goal: Tuple[float, float],
         traversible: np.ndarray,
         goal_map: np.ndarray,
         frontier_map: np.ndarray,
-        dist: np.ndarray,
         start: np.ndarray,
     ) -> None:
 
@@ -460,7 +495,7 @@ class DiscretePlanner:
         img_fmm_distance = cv2.cvtColor((fmm_distance[x1:x2, y1:y2] / np.max(fmm_distance[x1:x2, y1:y2]) * 255).astype(np.uint8), cv2.COLOR_GRAY2BGR)
         
         img_short_term_goal_pt = img_traversible_map.copy()
-        cv2.circle(img_short_term_goal_pt, (short_term_goal[1] - y1, short_term_goal[0] - x1), 2, (0, 0, 255), -1) # type: ignore
+        cv2.circle(img_short_term_goal_pt, (round(short_term_goal[1]) - y1, round(short_term_goal[0]) - x1), 2, (0, 0, 255), -1) # type: ignore
         
         img_dilated_goal_map = img_traversible_map.copy()
         img_dilated_goal_map[dilated_goal_map[x1:x2, y1:y2] == 1] = [255, 0, 0]
@@ -468,17 +503,16 @@ class DiscretePlanner:
         img_dilated_traversible_goal_map[dilated_goal_map[x1:x2, y1:y2] * traversible[x1:x2, y1:y2] == 1] = [255, 0, 255]
         img_frontier_map = img_traversible_map.copy()
         img_frontier_map[frontier_map[x1:x2, y1:y2] == 1] = [0, 255, 255]
-        img_dist = cv2.cvtColor((dist[x1:x2, y1:y2] / np.max(dist) * 255).astype(np.uint8), cv2.COLOR_GRAY2BGR)
+        map_center = (start[0] - x1, start[1] - y1)
         mosaic = make_mosaic(
             [
-                ("img_traversible_map",img_traversible_map),
-                ("img_goal_map",img_goal_map),
-                ("img_fmm_distance",img_fmm_distance),
-                ("img_shortest_goal_pt",img_short_term_goal_pt),
-                ("img_dilated_goal_map",img_dilated_goal_map),
-                ("img_dilated_traversible_goal_map",img_dilated_traversible_goal_map),
-                ("img_frontier_map",img_frontier_map),
-                ("img_dist",img_dist)
+                ("img_traversible_map", _debug_crop(img_traversible_map, map_center)),
+                ("img_goal_map", _debug_crop(img_goal_map, map_center)),
+                ("img_fmm_distance", _debug_crop(img_fmm_distance, map_center)),
+                ("img_shortest_goal_pt", _debug_crop(img_short_term_goal_pt, map_center)),
+                ("img_dilated_goal_map", _debug_crop(img_dilated_goal_map, map_center)),
+                ("img_dilated_traversible_goal_map", _debug_crop(img_dilated_traversible_goal_map, map_center)),
+                ("img_frontier_map", _debug_crop(img_frontier_map, map_center)),
             ],
         )
         mosaic.save(Path(os.path.join(self.vis_dir, f"snapshot_planner_{self.timestep}.png"))) # type: ignore
@@ -544,6 +578,7 @@ class DiscretePlanner:
             self.collision_width = 1
 
         dist = pu.get_l2_distance(x1, x2, y1, y2)
+        self.last_move_dist = dist
 
         # We have a collision
         if dist < self.collision_threshold:

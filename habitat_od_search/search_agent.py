@@ -10,6 +10,9 @@ from typing import Optional, List, Tuple
 import habitat_sim
 import numpy as np
 import torch
+import trimesh
+from detectron2.structures import Instances
+from scipy.spatial import cKDTree
 
 from common.agents.base_exploration_agent import BaseExplorationAgent, DiscretePlanner, EstimatedMap
 from common.hybrid_exploration.exploration_map import MapConfig
@@ -23,6 +26,22 @@ from common.hybrid_exploration.plotting import draw_goal_map
 
 _DETECTION_COLOR = (255, 0, 255)  # RGB -- magenta, the single target class predict_target scores against
 
+def mesh_footprint(mesh: trimesh.Trimesh) -> np.ndarray:
+    """(1000, 2) top-down (x, z) points sampled on mesh's surface."""
+    return trimesh.sample.sample_surface(mesh, 1000, seed=0)[0][:, [0, 2]]
+
+
+def reach_view_point(pathfinder: habitat_sim.PathFinder, mesh: trimesh.Trimesh, floor_y: float, reach_m: float) -> np.ndarray:
+    """The navigable point at floor_y, on a _REACH_GRID_SPACING_M grid within reach_m (horizontally) of mesh's top-down
+    footprint, closest to mesh's bounding-box center."""
+    footprint = mesh_footprint(mesh)
+    lower, upper = footprint.min(axis=0) - reach_m, footprint.max(axis=0) + reach_m
+    grid = np.stack(np.meshgrid(np.arange(lower[0], upper[0], 0.1), np.arange(lower[1], upper[1], 0.1)), axis=-1).reshape(-1, 2)
+    near = grid[cKDTree(footprint).query(grid)[0] <= reach_m]
+    points = np.stack([near[:, 0], np.full(len(near), floor_y), near[:, 1]], axis=1)
+    navigable = points[[pathfinder.is_navigable(point) for point in points]]
+    return navigable[np.argmin(np.linalg.norm(navigable[:, [0, 2]] - mesh.bounds.mean(axis=0)[[0, 2]], axis=1))]
+
 @dataclass
 class SearchAgentConfig:
     map_config: MapConfig
@@ -32,6 +51,8 @@ class SearchAgentConfig:
     confidence_thresh: float
     planner_config: DiscretePlannerConfig
     reach_m: float = 1.0
+    use_gt_detections: bool = False  # act()'s gt_instances (all scored 1.0) instead of the detector's
+    use_oracle_path: bool = False  # act()'s oracle_action (the shortest path to a goal view point) instead of the planner's
 
 
 
@@ -53,11 +74,11 @@ class SearchAgent(BaseExplorationAgent):
         planner = DiscretePlanner(
             turn_angle=config.planner_config.turn_angle_deg,
             collision_threshold=config.planner_config.collision_threshold,
-            step_size=config.planner_config.step_size,
+            step_size=config.planner_config.step_size_m / config.map_config.resolution_m,
             obs_dilation_selem_radius=config.planner_config.obs_dilation_selem_radius,
             map_size_cm=int(config.map_config.map_size_m * 100),
             map_resolution=int(config.map_config.resolution_m * 100),
-            min_goal_distance_cm=0.5 * config.reach_m * 100,
+            min_goal_distance_cm=0.75 * config.reach_m * 100,
             dump_location=dump_location,
             exp_name=exp_name,
             debug=config.planner_config.debug,
@@ -73,13 +94,11 @@ class SearchAgent(BaseExplorationAgent):
         self.step_count = 0
         self.last_instances = None
         self.last_rgb = None
-        self.found_goal = False
-        self.navigation_target = None
         self._detection_style = SegmentationStyle(classes=[target_name], colors=[_DETECTION_COLOR])
 
 
-    def reset(self, position: np.ndarray, floor_height: float, target_embedding: torch.Tensor) -> None:
-        super().reset(position, floor_height)
+    def reset(self, start_state: habitat_sim.AgentState, floor_height: float, target_embedding: torch.Tensor) -> None:
+        super().reset(start_state, floor_height)
         assert self.estimated_map is not None, "BaseExplorationAgent.reset() must be called first"
         assert self.planner is not None, "Call reset() first"
 
@@ -89,21 +108,27 @@ class SearchAgent(BaseExplorationAgent):
         self.step_count = 0
         self.last_instances = None
         self.last_rgb = None
-        self.found_goal = False
-        self.navigation_target = None
 
-    def act(self, agent_state: habitat_sim.AgentState, rgb: np.ndarray, depth: np.ndarray, collided: bool = False) -> str:
+    def act(
+        self, agent_state: habitat_sim.AgentState, rgb: np.ndarray, depth: np.ndarray, collided: bool = False,
+        gt_instances: Optional[Instances] = None, oracle_action: Optional[str] = None,
+    ) -> str:
         assert self.estimated_map is not None, "Call reset() first"
         assert self.target_embedding is not None, "Call reset() first"
         assert self.goal_score_map is not None, "Call reset() first"
         assert self.planner is not None, "Call reset() first"
 
         self.step_count += 1
+        agent_state = self.start_frame_state(agent_state)
         position, heading = self.observe(agent_state, depth, self.camera)
         self.goal_score_map.decay()
 
-        # forward the rgb to Detic, get the best detection's mask and score
-        instances, best_score = self.detector.predict_target(rgb[:, :, :3], self.target_embedding)
+        if self.config.use_gt_detections:
+            assert gt_instances is not None, "use_gt_detections needs act()'s gt_instances"
+            instances, best_score = gt_instances, 1.0 if len(gt_instances) else 0.0
+        else:
+            instances, best_score = self.detector.predict_target(rgb[:, :, :3], self.target_embedding)
+        
         self.last_instances = instances
         self.last_rgb = rgb[:, :, :3]
 
@@ -114,9 +139,12 @@ class SearchAgent(BaseExplorationAgent):
                 depth, agent_state.sensor_states["depth"], instances.pred_masks[best_idx], best_score, self.camera,
             )
 
-        if self.step_count >= self.config.max_steps:
-            self.navigation_target = None
+        if self.step_count >= self.config.max_steps or self.is_stuck():
             return "stop"
+
+        if self.config.use_oracle_path:
+            assert oracle_action is not None, "use_oracle_path needs act()'s oracle_action"
+            return oracle_action
 
         
         spin_action = self.initial_spin()

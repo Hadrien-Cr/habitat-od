@@ -1,15 +1,19 @@
-# HSSD-rare object-search evaluation config for habitat_od_search/agent.py (see ../README.md).
+# HSSD-rare object-search evaluation config for habitat_od_search/main.py.
 run_name: hssd_rare_eval
 seed: 0
+# Saves a 3-tile (detections, belief map, ground truth) snapshot per step and an episode.webp per episode.
+save_visuals: False
 
 # Empty: every scene with a saved third_party/IMPRINT/dataset/hssd_rare_eps/<scene_id>.json.gz (see
 # habitat_od_search/hssd_rare_dataset.py::available_scenes).
 scenes: []
+max_episodes: null
+min_island_area_m2: 10.0
 
 object_params:
   env_name: "HSSD-HAB"
   vocab_name: "HSSD400"
-  min_area_fraction: 0.0002
+  min_area_fraction: 2e-4
   filter_low_visibility: True
   min_mesh_visibility_fraction: 0.2
   filter_classes: []
@@ -20,5 +24,11 @@ agent:
   resolution_m: 0.1
   visibility_dist_m: 3.0
   lift_image_size: 512
+  score_decay: 0.9
   goal_score_thresh: 0.5
-  goal_reach_m: 1.0
+  confidence_thresh: 0.5
+  reach_m: 1.0
+  # Ground-truth detections of the episode's goal objects (scored 1.0) instead of Detic's.
+  use_gt_detections: False
+  # Follow the navmesh shortest path to the nearest goal view point instead of planning (a navigation upper bound).
+  use_oracle_path: False

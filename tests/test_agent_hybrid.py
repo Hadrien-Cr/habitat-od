@@ -6,7 +6,7 @@ Into tests/testdump/test_agent_hybrid/ (emptied when the test starts) go every s
 drawn on its rgb as one tile of predictions_mosaic.png and individually as prediction_frames/step_<step>.png, and
 every step's 3-tile (observation, belief map, ground truth) snapshot to
 images/test_exploration_gif/snapshot_<step>.png and assembled into exploration.webp. Walls, floor and ceiling are flat-shaded.
-The run asserts it never got stuck (no net translation over _STUCK_WINDOW_STEPS consecutive steps).
+The run asserts it never got stuck (no net translation, BaseExplorationAgent.is_stuck).
 
 Alongside, as in habitat_embodied_sl/main.py, a Detector (Detic Swin-B's proposals scored by objectness alone) detects
 in every frame and SAM masks its boxes, and its masks and region embeddings are fused into a ConceptGraphMemory
@@ -99,17 +99,7 @@ _LABEL_SOURCE = "pseudo"
 _BATCH_SIZE = 8
 _MOSAIC_BATCHES = 20
 _GIF_FPS = 10
-_STUCK_WINDOW_STEPS = 25
-_STUCK_RADIUS_M = 0.1
 
-
-def _is_stuck(trajectory: list, window: int, radius_m: float) -> bool:
-    """True once the agent's last window positions all lie within radius_m of each other -- no net
-    translation, even while its heading keeps oscillating between turns."""
-    if len(trajectory) < window:
-        return False
-    recent = np.stack([position for position, _ in trajectory[-window:]])
-    return bool(np.all(np.linalg.norm(recent - recent[0], axis=1) < radius_m))
 
 
 def _object_belief(obs: dict, pose: np.ndarray, semantic_id: int, previous: ObjectBelief) -> ObjectBelief:
@@ -163,8 +153,8 @@ def _explore_and_fuse(sim: habitat_sim.Simulator, config: HybridConfig, detector
         mosaic = exploration_snapshot(obs, agent, ground_truth, trajectory_px)
         if mosaic is not None:
             mosaic.save(images_dir / f"snapshot_gif_{step:03d}.png")
-        stuck = _is_stuck(agent.trajectory, _STUCK_WINDOW_STEPS, _STUCK_RADIUS_M)
-        if action == "stop" or stuck:
+        if action == "stop":
+            stuck = agent.is_stuck()
             break
         sim.step(action)
     return agent, fused, predictions, stuck
@@ -270,7 +260,7 @@ def test_exhaustive_mode_reaches_viewpoints():
     images_dir.mkdir(parents=True)
     with _timed("Exploring and fusing"):
         agent, fused, predictions, stuck = _explore_and_fuse(sim, config, detector, images_dir)
-    assert not stuck, f"agent got stuck (no net translation over the last {_STUCK_WINDOW_STEPS} steps)"
+    assert not stuck, "agent got stuck (no net translation)"
     save_gif(images_dir, "exploration.webp", fps=_GIF_FPS)
 
     with _timed("Visualisation"):

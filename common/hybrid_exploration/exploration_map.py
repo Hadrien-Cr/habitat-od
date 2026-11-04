@@ -6,9 +6,10 @@ gates what FMMPlanner can plan through."""
 from dataclasses import dataclass
 
 import numpy as np
+import torch
 
-from common.hybrid_exploration.frontiers import detect_frontier_waypoints, reveal_fog_of_war
-from common.utils.projection_utils import DepthCamera, floor_mask, object_points
+from common.hybrid_exploration.frontiers import detect_frontier_waypoints, reveal_fog_of_war, without_small_frontiers
+from common.utils.projection_utils import DepthCamera, object_points, project_batch_masks
 from common.utils.pose_utils import sensor_pose_matrix
 
 
@@ -19,7 +20,9 @@ class MapConfig:
     map_size_m: float = 48.0
     visibility_dist_m: float = 3.0
     area_thresh_m: float = 3.0
+    min_frontier_size_m: float = 0.5  # shorter frontier fragments are dropped (without_small_frontiers)
     obstacle_height_m: float = 0.88  # matches common/config/hssd-hab/default.yaml's agent height
+    max_climb_m: float = 0.2  # matches habitat-sim's NavMeshSettings.agent_max_climb: lower steps/sills are traversable
     min_frontier_dist_m: float = 0.5  # frontier cells this close to the agent are excluded -- reveal_fog_of_war's
     # FOV cone has its apex at the agent's own position, which (before it has moved anywhere) is itself explored
     # but surrounded by unexplored space on most sides, so it would otherwise qualify as a "frontier" and make
@@ -78,22 +81,33 @@ class EstimatedMap:
         self.explored = previous_explored | self.in_view
         
         if not np.array_equal(previous_explored, self.explored) or not np.array_equal(self._frontier_obstacles, self.obstacles):
-            self.frontier_pixels = detect_frontier_waypoints(
+            frontier_pixels = detect_frontier_waypoints(
                 self.free(), self.explored, self.pixels(self.config.area_thresh_m ** 2), self.obstacles,
                 self.to_pixel(position), self.pixels(self.config.min_frontier_dist_m),
             )
+            self.frontier_pixels = without_small_frontiers(frontier_pixels, self.obstacles.shape, self.pixels(self.config.min_frontier_size_m))
             self._frontier_obstacles = self.obstacles.copy()
 
     def observe_obstacles(self, depth: np.ndarray, sensor_state, camera: DepthCamera, floor_height: float) -> None:
-        """Marks obstacles at every in-range depth point above floor_height and at most
-        floor_height + obstacle_height_m (points above that -- ceiling, door lintels, tall shelving -- don't
-        block the agent and are discarded, since they were never evidence of an obstacle)."""
-        points = object_points(depth, sensor_pose_matrix(sensor_state), np.ones(depth.shape[-2:], dtype=bool), camera)
-        points = points[points[:, 1] <= floor_height + self.config.obstacle_height_m]
-        if len(points) == 0:
-            return
-        obstacle_points = points[~floor_mask(points, floor_height)]
-        self._mark(self.obstacles, obstacle_points, fill=1)
+        """Marks obstacles at every in-range depth point above floor_height + max_climb_m (lower ones -- floor,
+        door sills, small bumps -- the agent steps over) and at most floor_height + obstacle_height_m (points
+        above that -- ceiling, door lintels, tall shelving -- don't block the agent either), plus missing_floor_points."""
+        pose = sensor_pose_matrix(sensor_state)
+        points = object_points(depth, pose, np.ones(depth.shape[-2:], dtype=bool), camera)
+        heights = points[:, 1] - floor_height
+        self._mark(self.obstacles, points[(heights > self.config.max_climb_m) & (heights <= self.config.obstacle_height_m)], fill=1)
+        self._mark(self.obstacles, self.missing_floor_points(depth, pose, camera, floor_height), fill=1)
+
+    def missing_floor_points(self, depth: np.ndarray, pose: np.ndarray, camera: DepthCamera, floor_height: float) -> np.ndarray:
+        """Floor-plane crossings, within visibility_dist_m, of the downward rays whose depth hit no geometry (clipped to
+        min_depth) -- e.g. the void past a terrace edge, which would otherwise stay free and keep yielding frontiers."""
+        missing = torch.as_tensor(np.asarray(depth).squeeze() <= camera.min_depth)
+        unit_depth_points = project_batch_masks(torch.ones(missing.shape), pose, missing, hfov=camera.hfov, min_depth=0.0, max_depth=2.0).numpy()
+        camera_center = pose[:3, 3]
+        rays = unit_depth_points - camera_center
+        rays = rays[rays[:, 1] < 0]
+        crossings = camera_center + rays * ((floor_height - camera_center[1]) / rays[:, 1])[:, None]
+        return crossings[np.linalg.norm(crossings[:, [0, 2]] - camera_center[[0, 2]], axis=1) <= self.config.visibility_dist_m]
 
     def _mark(self, grid: np.ndarray, points: np.ndarray, fill: int) -> None:
         if len(points) == 0:

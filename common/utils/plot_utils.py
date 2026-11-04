@@ -350,7 +350,8 @@ def _draw_label(img: np.ndarray, label: str) -> np.ndarray:
 
 
 def _framed_tile(img: np.ndarray, label: str, tile_color: Optional[tuple[int, int, int]] = None) -> np.ndarray:
-    """img with its label and yellow border drawn on it, plus a tile_color border when given."""
+    """A copy of img with its label and yellow border drawn on it, plus a tile_color border when given."""
+    img = img.copy()
     _draw_label(img, label)
     cv2.rectangle(img, (0, 0), (img.shape[1] - 1, img.shape[0] - 1), _TILE_BORDER_COLOR, _TILE_BORDER_THICKNESS)
     if tile_color is not None:
@@ -401,6 +402,13 @@ def save_tile(tile: tuple, out_path: Path) -> None:
     """(label, image) tile as a single-tile mosaic, saved to out_path."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
     make_mosaic([tile], N_cols=1).save(out_path)
+
+
+def centered_crop(image: np.ndarray, center: np.ndarray, size: int) -> np.ndarray:
+    """size x size window of image around (row, col) center, shifted inward to stay whole at image borders."""
+    row0 = int(np.clip(center[0] - size // 2, 0, image.shape[0] - size))
+    col0 = int(np.clip(center[1] - size // 2, 0, image.shape[1] - size))
+    return image[row0:row0 + size, col0:col0 + size]
 
 
 def letterboxed(image: np.ndarray, width: int, height: int) -> np.ndarray:

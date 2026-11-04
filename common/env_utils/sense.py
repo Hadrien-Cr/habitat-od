@@ -339,6 +339,25 @@ def keep_valid_instances(instances: Instances) -> Instances:
     return instances[keep_idx]
 
 
+def _is_visible(info: dict) -> bool:
+    return not (info["filtered_low_area"] or info["filtered_low_visibility"])
+
+
+def visible_object_ids(obs: dict) -> set:
+    """Object ids of obs' bbsgt detections that pass the area and visibility filters, whatever their class."""
+    return {info["object_id"] for info in obs["bbsgt"]["instances"].infos if _is_visible(info)}
+
+
+def target_instances(obs: dict, object_ids: set) -> Instances:
+    """obs' bbsgt detections of object_ids that pass the area and visibility filters, as single-class (class 0) predictions
+    scored 1.0 -- ground-truth stand-ins for Detector.predict_target's output."""
+    instances = obs["bbsgt"]["instances"]
+    instances = instances[[index for index, info in enumerate(instances.infos) if info["object_id"] in object_ids and _is_visible(info)]]
+    instances.pred_classes = torch.zeros(len(instances), dtype=torch.long)
+    instances.pred_masks = instances.pred_masks.reshape(len(instances), *instances.image_size)
+    return instances
+
+
 def ground_truth_instances(obs: dict, vocabulary: list, classes: list) -> Instances:
     """obs' valid ground-truth instances of classes, their class ids remapped from the vocabulary's to classes'."""
     instances = bbs_instances_as_gt(keep_valid_instances(obs["bbsgt"]["instances"]))

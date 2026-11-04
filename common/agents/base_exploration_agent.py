@@ -1,13 +1,15 @@
 """Shared depth-observed world model for every exploration agent (FrontierExplorationAgent, HybridFrontierAgent,
 SearchAgent): an EstimatedMap built incrementally from the agent's own depth and pose, with DiscretePlanner-based
 planning on top -- all three plan entirely from this belief map, HybridFrontierAgent via a goal_map of its own
-object viewpoints/frontiers."""
+object viewpoints/frontiers. Agents only ever see poses relative to their episode start pose (start_frame_state), as
+habitat's episodic GPS + compass sensors give them: the map's origin is the start position, its axes the start heading."""
 from typing import List, Optional, Tuple
 
 import cv2
 import habitat_sim
 import matplotlib
 import numpy as np
+import quaternion
 from habitat.tasks.nav.nav import TopDownMap  # type: ignore
 
 from common.agents.abstract_agent import Agent
@@ -30,6 +32,8 @@ _FRONTIER_PIXEL_ALPHA = 0.5
 _VISITED_COLOR = (0, 0, 255)
 _CURRENT_POSITION_COLOR = (0, 255, 0)  # BGR -- green, the agent's current position on the map
 _GOAL_SCORE_COLORMAP = matplotlib.colormaps["cool"]  # cyan (low) -> magenta (high), by goal_score_image() value
+_STUCK_WINDOW_STEPS = 25
+_STUCK_RADIUS_M = 0.1
 
 class ProfileTimer:
     functions_names: List[str]
@@ -73,6 +77,8 @@ class BaseExplorationAgent(Agent):
         self.rng = rng
         self.planner = planner
         self.floor_height = 0.0
+        self._start_position = np.zeros(3)
+        self._start_rotation_inverse = quaternion.one
         self.estimated_map: Optional[EstimatedMap] = None
         self.trajectory: List[Tuple[np.ndarray, float]] = []
         self._spin_action = None
@@ -81,9 +87,12 @@ class BaseExplorationAgent(Agent):
         self._initial_spin_steps = int(round(360.0 / turn_angle_deg))
         self._initial_spin_steps_left = self._initial_spin_steps
 
-    def reset(self, position: np.ndarray, floor_height: float) -> None:
-        self.floor_height = floor_height
-        self.estimated_map = EstimatedMap(self.map_config, position)
+    def reset(self, start_state: habitat_sim.AgentState, floor_height: float) -> None:
+        """start_state's pose becomes the origin of every pose the agent sees (start_frame_state); floor_height is a world y."""
+        self._start_position = np.array(start_state.position)
+        self._start_rotation_inverse = start_state.rotation.inverse()
+        self.floor_height = floor_height - self._start_position[1]
+        self.estimated_map = EstimatedMap(self.map_config, np.zeros(3))
         if self.planner is not None:
             self.planner.reset()
         self.trajectory = []
@@ -91,6 +100,20 @@ class BaseExplorationAgent(Agent):
         self._closest_goal_map = None
         self._short_term_goal = None
         self._initial_spin_steps_left = self._initial_spin_steps
+
+    def start_frame_points(self, points: np.ndarray) -> np.ndarray:
+        """(N, 3) world points in the start frame."""
+        return quaternion.rotate_vectors(self._start_rotation_inverse, np.asarray(points) - self._start_position)
+
+    def start_frame_state(self, agent_state: habitat_sim.AgentState) -> habitat_sim.AgentState:
+        """agent_state, sensor poses included, relative to the start pose -- the only pose act() may use."""
+        def relative(pose):
+            return habitat_sim.SixDOFPose(
+                position=self.start_frame_points(np.asarray(pose.position)[None])[0], rotation=self._start_rotation_inverse * pose.rotation,
+            )
+        sensor_states = {uuid: relative(pose) for uuid, pose in agent_state.sensor_states.items()}
+        state = relative(agent_state)
+        return habitat_sim.AgentState(position=state.position, rotation=state.rotation, sensor_states=sensor_states)
 
     def initial_spin(self) -> Optional[str]:
         """spin()'s action for the episode's first full 360deg turn, None once that turn is complete -- lets each
@@ -129,6 +152,14 @@ class BaseExplorationAgent(Agent):
         size = self.estimated_map.map_pixels_size
         o = normalize_angle(90.0 - np.degrees(heading))
         return np.array([col * self.estimated_map.meters_per_pixel, row * self.estimated_map.meters_per_pixel, o, 0, size, 0, size], dtype=float)
+
+    def is_stuck(self) -> bool:
+        """True once the last _STUCK_WINDOW_STEPS trajectory positions all lie within _STUCK_RADIUS_M of each other --
+        no net translation, even while the heading keeps oscillating between turns. Every agent's act() stops then."""
+        if len(self.trajectory) < _STUCK_WINDOW_STEPS:
+            return False
+        recent = np.stack([position for position, _ in self.trajectory[-_STUCK_WINDOW_STEPS:]])
+        return bool(np.all(np.linalg.norm(recent - recent[0], axis=1) < _STUCK_RADIUS_M))
 
     @staticmethod
     def action_name(action: DiscreteNavigationAction) -> str:

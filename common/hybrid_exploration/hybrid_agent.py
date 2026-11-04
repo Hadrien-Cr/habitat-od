@@ -57,7 +57,7 @@ class HybridFrontierAgent(BaseExplorationAgent):
         planner = DiscretePlanner(
             turn_angle=config.planner_config.turn_angle_deg,
             collision_threshold=config.planner_config.collision_threshold,
-            step_size=config.planner_config.step_size,
+            step_size=config.planner_config.step_size_m / config.map_config.resolution_m,
             obs_dilation_selem_radius=config.planner_config.obs_dilation_selem_radius,
             map_size_cm=int(config.map_config.map_size_m * 100),
             map_resolution=int(config.map_config.resolution_m * 100),
@@ -90,7 +90,7 @@ class HybridFrontierAgent(BaseExplorationAgent):
     def act(self, agent_state: habitat_sim.AgentState, depth: np.ndarray, collided: bool = False) -> str:
         """The next action towards the nearest current goal (every unseen viewpoint, or every frontier if none),
         turning to face an object once within reach of its viewpoint; "stop" once the last max_successive_collisions
-        steps all collided."""
+        steps all collided or once stuck."""
         assert self.estimated_map is not None and self.planner is not None, "Call reset() first"
 
         self._successive_collisions = self._successive_collisions + 1 if collided else 0
@@ -98,6 +98,8 @@ class HybridFrontierAgent(BaseExplorationAgent):
             return "stop"
         
         position, heading = self.observe(agent_state, depth, self.camera)
+        if self.is_stuck():
+            return "stop"
         self._mark_inspected(position, heading)
         spin_action = self.initial_spin()
 

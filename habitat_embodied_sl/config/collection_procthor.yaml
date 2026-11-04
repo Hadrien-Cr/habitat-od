@@ -5,7 +5,7 @@ seed: 0
 object_params:
   env_name: "ProcTHOR-hab"
   vocab_name: "PROCTHOR100"
-  min_area_fraction: 0.0002
+  min_area_fraction: 2e-4
   filter_low_visibility: True
   min_mesh_visibility_fraction: 0.2
   filter_classes: []

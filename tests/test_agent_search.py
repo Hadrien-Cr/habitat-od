@@ -26,18 +26,8 @@ _TESTDUMP_DIR = Path(os.path.dirname(__file__)) / "testdump" / "test_agent_searc
 _EXPLORATION_STEPS = 1000
 _GIF_FPS = 10
 _COLLISION_DIST_M = 0.15  # matches common/env_utils/sensors.py::AgentCollisionSensor
-_STUCK_WINDOW_STEPS = 25
-_STUCK_RADIUS_M = 0.1
 _TARGET_OBJECT = "pillow"
 
-
-def _is_stuck(trajectory: list, window: int, radius_m: float) -> bool:
-    """True once the agent's last window positions all lie within radius_m of each other -- no net
-    translation, even while its heading keeps oscillating between turns."""
-    if len(trajectory) < window:
-        return False
-    recent = np.stack([position for position, _ in trajectory[-window:]])
-    return bool(np.all(np.linalg.norm(recent - recent[0], axis=1) < radius_m))
 
 
 def test_exploration_gif() -> None:
@@ -84,7 +74,7 @@ def test_exploration_gif() -> None:
         target_embedding = get_clip_embeddings([_TARGET_OBJECT], text_encoder=text_encoder)[:, 0]
 
         floor_height = _START[1] - _navmesh_floor_offset(sim, np.array(_START))
-        agent.reset(np.array(_START), floor_height=floor_height, target_embedding=target_embedding)
+        agent.reset(sim.get_agent(0).get_state(), floor_height=floor_height, target_embedding=target_embedding)
 
         ground_truth = GroundTruthMapTracker(sim.pathfinder, np.array(_START), fov_deg=_MAP_CONFIG.fov_deg, visibility_dist_m=_MAP_CONFIG.visibility_dist_m)
         ground_truth.set_object_footprints(_ground_truth_meshes(sim))
@@ -112,17 +102,15 @@ def test_exploration_gif() -> None:
                 mosaic.save(images_dir / f"snapshot_gif_{step:03d}.png")
 
             if action == "stop":
-                found_target = True
-                break
-            stuck = _is_stuck(agent.trajectory, _STUCK_WINDOW_STEPS, _STUCK_RADIUS_M)
-            if stuck:
+                stuck = agent.is_stuck()
+                found_target = not stuck
                 break
             obs = sim.step(action)
 
             new_state = sim.get_agent(0).get_state()
             collided = bool(np.linalg.norm(new_state.position - state.position) < _COLLISION_DIST_M and np.allclose(new_state.rotation, state.rotation))
 
-        assert not stuck, f"agent got stuck (no net progress over the last {_STUCK_WINDOW_STEPS} steps) before stopping at {_TARGET_OBJECT}"
+        assert not stuck, f"agent got stuck (no net progress) before stopping at {_TARGET_OBJECT}"
         assert found_target, f"agent reached {_EXPLORATION_STEPS} steps without stopping at {_TARGET_OBJECT}"
         assert agent.estimated_map.coverage() > 0.0, "agent wrong marked any cell as explored"
     finally:

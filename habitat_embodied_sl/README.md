@@ -21,7 +21,8 @@ come from, out of it; they belong with the code that builds them (`common/env_ut
 - (1.1) **Observe.** Every sensor (rgb, depth, semantic) renders at `--input-image-size` (1024) square. The step's rgb, its
   depth resized to `--lift-image-size` (512) square by nearest neighbour, and the depth-sensor pose become a `Frame`,
   stored in the `ImageMemory` under a frame id. Every depth-based step (lifting, raytracing) runs at
-  that lift resolution; detection runs on the full-resolution rgb.
+  that lift resolution; detection runs on the full-resolution rgb. Where no geometry renders (through windows,
+  outdoors), the rgb is cleared to light blue (`SKY_RGB`, `common/env_utils/env_base.py`), not black.
 - (1.2) **Detect** (`Detector.predict`) on the rgb, which Detic resizes to a `--input-image-size` shortest edge and SAM to
   its own 1024 long side:
   - (1.2.1) Detic's CenterNet2 proposals are refined through every cascade stage's class-agnostic box regression.
@@ -55,13 +56,19 @@ come from, out of it; they belong with the code that builds them (`common/env_ut
   - (1.4.6) **Merge overlapping objects:** a pair merges when overlap ratio > 0.5, embedding similarity > 0.5 and their
     sum > 1.2. Pairs merge greedily, highest sum first.
 - (1.5) **Steer.** Every fused object is passed to `agent.update_objects` as an `ObjectBelief` of its points, with
-  confidence min(detections, 5) / 5. Then `agent.act` picks the action: belief-map-only, via a shared `DiscretePlanner`
-  FMM pass over a goal map of every unseen object viewpoint (or, once none remain, every frontier cell) -- no
-  ground-truth navmesh pathfinding. The step's labelled detector-prediction tile
+  confidence min(detections, 5) / 5. The agent's belief map (`EstimatedMap`, 0.1 m cells) marks as obstacles every
+  depth point between 0.2 m (`MapConfig.max_climb_m`, habitat-sim's step height) and 0.88 m (`obstacle_height_m`) above
+  the floor. Downward rays with no depth hit also count, at their floor-plane crossing within `visibility_dist_m`
+  (`missing_floor_points`, e.g. the drop past a terrace edge). Then `agent.act` picks the action: belief-map-only, via
+  a shared `DiscretePlanner` FMM pass over a goal map of every unseen object viewpoint (or, once none remain, every frontier cell; frontier
+  fragments under 0.5 m, `MapConfig.min_frontier_size_m`, are dropped) -- no ground-truth navmesh pathfinding. Of the
+  agent's 8 headings, it heads for the one whose single 0.25 m move (`DiscretePlannerConfig.step_size_m`) stays on
+  traversable cells (obstacles dilated by a 3-cell disk, `DiscretePlannerConfig.obs_dilation_selem_radius`) and ends
+  closest to the goal on that FMM distance (the smallest turn on ties). The step's labelled detector-prediction tile
   (`segmentation_tile`) is kept and, once exploration ends, saved both individually
   (`datadump/<run_name>/<scene>/prediction_frames/step_<step>.png`) and as one `predictions_mosaic.png`
   (`save_exploration_visuals`, which also writes that scene's final `decision.png`/`object.png`). Each step also saves a
-  3-tile (observation, belief map, ground truth) snapshot to
+  3-tile (observation, belief map cropped to the 256 x 256 cells around the agent, ground truth) snapshot to
   `datadump/<run_name>/<scene>/images/exploration_snapshots/snapshot_<step>.png`, assembled into `exploration.webp`
   (lossless animated WebP, not GIF -- GIF's 256-color palette cap crowds out or merges rare colors like the belief
   map's green explored tint) once exploration ends.
@@ -71,9 +78,10 @@ come from, out of it; they belong with the code that builds them (`common/env_ut
   box face projected at the mask's mean depth),
   and remapped to the kept classes. They don't affect the map; they are kept RLE-encoded, with their object id and
   visibility fraction, for recovery (5.3).
-- (1.7) **Stop** when the agent returns `stop`, its last 3 steps all collided (`HybridConfig.max_successive_collisions`),
-  it gets stuck (no net translation over the last 15 steps, logged as a warning) or `collection.steps_per_scene` (500)
-  runs out.
+- (1.7) **Stop** when the agent returns `stop`: when its last 3 steps all collided (`HybridConfig.max_successive_collisions`)
+  or it gets stuck (no net translation over the last 25 steps, positions within 0.1 m; `BaseExplorationAgent.is_stuck`,
+  logged as a warning), or the planner finds no heading that gets closer to the goal -- or when
+  `collection.steps_per_scene` (500) runs out.
 
 ### 2. Resolve (`ConceptGraphMemory.resolve`)
 

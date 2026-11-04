@@ -120,11 +120,17 @@ class Detector:
                 frame_views[frame_id].append((object_id, rgb, mask_box(mask)))
         view_embeddings = defaultdict(dict)
         for frame_id, object_boxes in frame_views.items():
-            features, _, transform = self._backbone(object_boxes[0][1])
-            boxes = Boxes(torch.as_tensor(transform.apply_box(np.array([box for _, _, box in object_boxes])), dtype=torch.float32, device=self._device))
-            for (object_id, _, _), embedding in zip(object_boxes, self._region_embeddings(features, boxes).cpu()):
+            embeddings = self.box_embeddings(object_boxes[0][1], np.array([box for _, _, box in object_boxes]))
+            for (object_id, _, _), embedding in zip(object_boxes, embeddings):
                 view_embeddings[object_id][frame_id] = embedding
         return view_embeddings
+
+    @torch.no_grad()
+    def box_embeddings(self, rgb: np.ndarray, boxes: np.ndarray) -> torch.Tensor:
+        """(N, D) region embeddings, on CPU, of rgb's (N, 4) image-space xyxy boxes, from one backbone pass over rgb."""
+        features, _, transform = self._backbone(rgb)
+        boxes = Boxes(torch.as_tensor(transform.apply_box(boxes), dtype=torch.float32, device=self._device))
+        return self._region_embeddings(features, boxes).cpu()
 
     def predict(self, rgb: np.ndarray) -> Instances:
         """rgb: HxWx3 uint8 array, RGB order. Returns detectron2 Instances (pred_boxes/pred_classes, all 0/scores, the

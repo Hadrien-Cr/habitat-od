@@ -4,6 +4,7 @@ and goal is a fine-grained HSSD instance string (e.g. "table, Metal 25\" 2 Tier 
 main category (the text before the first comma) against third_party/IMPRINT/dataset/main_cat_split.json."""
 import gzip
 import json
+from functools import lru_cache
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List
@@ -16,17 +17,10 @@ MAIN_CAT_SPLIT_PATH = IMPRINT_ROOT / "dataset" / "main_cat_split.json"
 
 
 @dataclass(frozen=True)
-class ViewPoint:
-    position: List[float]
-    rotation: List[float]
-
-
-@dataclass(frozen=True)
 class SceneGoal:
-    object_id: int
+    object_handle: str  # the placed instance's habitat-sim handle; IMPRINT's object_id is not the sim's runtime id
     position: List[float]
     object_category: str
-    view_points: List[ViewPoint]
 
 
 @dataclass(frozen=True)
@@ -58,10 +52,9 @@ def load_scene_episodes(scene_id: str) -> SceneEpisodes:
     goals_by_category = {
         category: [
             SceneGoal(
-                object_id=goal["object_id"],
+                object_handle=goal["object_name"],
                 position=goal["position"],
                 object_category=goal["object_category"],
-                view_points=[ViewPoint(vp["agent_state"]["position"], vp["agent_state"]["rotation"]) for vp in goal["view_points"]],
             )
             for goal in goals
         ]
@@ -80,6 +73,7 @@ def main_category(object_category: str) -> str:
     return object_category.split(",", 1)[0].strip()
 
 
+@lru_cache(maxsize=None)
 def rarity_tiers() -> Dict[str, str]:
     """{main category: rarity tier ("easy"/"medium"/"hard")} of every valid main category in main_cat_split.json."""
     valid = json.loads(MAIN_CAT_SPLIT_PATH.read_text())["valid"]

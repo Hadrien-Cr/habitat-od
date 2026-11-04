@@ -21,7 +21,6 @@ from common.utils.projection_utils import DepthCamera, nearest_resized, object_p
 class GoalScoreConfig:
     lift_image_size: int = 512
     score_decay: float = 0.9
-    goal_radius_px: int = 3
 
 
 def _masked_points(
@@ -50,14 +49,11 @@ class GoalScoreMap:
         self.goal_score *= self.config.score_decay
 
     def goal_mask(self, goal_score_thresh: float) -> np.ndarray:
-        """uint8 goal_score.shape mask: a small fixed disk around best_goal_world once a detection has ever
-        cleared goal_score_thresh, so the navigation target stays stable instead of flickering with every
-        step's decayed/re-detected goal_score (the target object doesn't move once actually found)."""
         mask = np.zeros_like(self.goal_score, dtype=np.uint8)
         if self.best_goal_world is None or self.best_goal_score < goal_score_thresh:
             return mask
         row, col = self.exploration.to_pixel(self.best_goal_world)
-        cv2.circle(mask, (int(col), int(row)), self.config.goal_radius_px, 1, -1)
+        mask[row, col] = 1
         return mask
 
     def update(self, depth: np.ndarray, sensor_state: habitat_sim.SixDOFPose, mask: torch.Tensor, score: float, camera: DepthCamera) -> None:
