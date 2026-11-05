@@ -44,7 +44,7 @@ from detectron2.structures import Instances
 from habitat.config.default_structured_configs import ObjectDetectorGTSensorConfig
 from common.hybrid_exploration.exploration_map import MapConfig
 from common.hybrid_exploration.frontier_exp_agent import DiscretePlannerConfig, FrontierExplorationAgent, FrontierExplorationConfig
-from common.env_utils.object_annotations import objects_world_mesh
+from common.env_utils.object_annotations import scene_world_mesh
 from common.env_utils.object_detector_sensors import ObjectDetectorGTSensor
 from common.env_utils.sense import bbs_instances_as_gt, keep_valid_instances
 from common.env_utils.vocab_constants import make_colors
@@ -128,14 +128,6 @@ def _random_agent_state(sim, rng, island_index: int = -1) -> habitat_sim.AgentSt
     yaw = rng.uniform(0, 2 * np.pi)
     state.rotation = np.quaternion(np.cos(yaw / 2), 0.0, np.sin(yaw / 2), 0.0)
     return state
-
-
-def _export_scene_mesh(sim: habitat_sim.Simulator, out_path: str) -> None:
-    """Merges every placed rigid object's world mesh into one .glb - habitat-sim can't export an assembled scene."""
-    rom = sim.get_rigid_object_manager()
-    mesh = objects_world_mesh(rom.get_object_by_handle(handle) for handle in rom.get_object_handles())
-    if not mesh.is_empty:
-        mesh.export(out_path)
 
 
 def _frame_gt_instances(sensor: ObjectDetectorGTSensor, obs: dict, classes_keep: set) -> Instances:
@@ -225,7 +217,9 @@ def run_viewer(args: argparse.Namespace, out_name: str, fused, frame_map: Callab
 
         mesh_st = time.time()
         mesh_path = os.path.splitext(out_path)[0] + ".glb"
-        _export_scene_mesh(viewer.sim, mesh_path)
+        scene_mesh = scene_world_mesh(viewer.sim)
+        if not scene_mesh.is_empty:
+            scene_mesh.export(mesh_path)
         print(f"saved merged scene mesh to {mesh_path} in {time.time() - mesh_st:.3f}s")
 
         # backprojection
@@ -291,7 +285,7 @@ def exploration_frames(viewer: _Viewer, num_steps: int) -> Iterator[Tuple[dict, 
     obs = viewer.sim.get_sensor_observations()
     for _ in range(num_steps):
         yield obs, sim_agent.get_state()
-        action = viewer.explorer.act(sim_agent.get_state(), obs["depth"])
+        action, _ = viewer.explorer.act(sim_agent.get_state(), obs["depth"])
         viewer.map_tiles.append(viewer.explorer.map_tile())
         if action == "stop":
             return

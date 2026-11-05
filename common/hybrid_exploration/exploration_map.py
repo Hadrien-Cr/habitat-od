@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
-from common.hybrid_exploration.frontiers import detect_frontier_waypoints, reveal_fog_of_war, without_small_frontiers
+from common.hybrid_exploration.frontiers import detect_frontier_waypoints, large_component_mask, reveal_fog_of_war, without_small_frontiers
 from common.utils.projection_utils import DepthCamera, object_points, project_batch_masks
 from common.utils.pose_utils import sensor_pose_matrix
 
@@ -21,6 +21,8 @@ class MapConfig:
     visibility_dist_m: float = 3.0
     area_thresh_m: float = 3.0
     min_frontier_size_m: float = 0.5  # shorter frontier fragments are dropped (without_small_frontiers)
+    min_missing_floor_cluster_m: float = 0.5  # smaller missing_floor_points clusters are dropped -- a single bad
+    # depth pixel (e.g. a hole in the scanned mesh) otherwise floor-projects into an isolated, often-arbitrary obstacle cell
     obstacle_height_m: float = 0.88  # matches common/config/hssd-hab/default.yaml's agent height
     max_climb_m: float = 0.2  # matches habitat-sim's NavMeshSettings.agent_max_climb: lower steps/sills are traversable
     min_frontier_dist_m: float = 0.5  # frontier cells this close to the agent are excluded -- reveal_fog_of_war's
@@ -100,14 +102,21 @@ class EstimatedMap:
 
     def missing_floor_points(self, depth: np.ndarray, pose: np.ndarray, camera: DepthCamera, floor_height: float) -> np.ndarray:
         """Floor-plane crossings, within visibility_dist_m, of the downward rays whose depth hit no geometry (clipped to
-        min_depth) -- e.g. the void past a terrace edge, which would otherwise stay free and keep yielding frontiers."""
+        min_depth) -- e.g. the void past a terrace edge, which would otherwise stay free and keep yielding frontiers.
+        Crossings whose top-down cluster covers fewer than min_missing_floor_cluster_m cells are dropped: a real void
+        spans many such rays, while a single bad depth pixel (e.g. a hole in the scanned mesh) yields just one,
+        floor-projected to an effectively arbitrary nearby point."""
         missing = torch.as_tensor(np.asarray(depth).squeeze() <= camera.min_depth)
         unit_depth_points = project_batch_masks(torch.ones(missing.shape), pose, missing, hfov=camera.hfov, min_depth=0.0, max_depth=2.0).numpy()
         camera_center = pose[:3, 3]
         rays = unit_depth_points - camera_center
         rays = rays[rays[:, 1] < 0]
         crossings = camera_center + rays * ((floor_height - camera_center[1]) / rays[:, 1])[:, None]
-        return crossings[np.linalg.norm(crossings[:, [0, 2]] - camera_center[[0, 2]], axis=1) <= self.config.visibility_dist_m]
+        crossings = crossings[np.linalg.norm(crossings[:, [0, 2]] - camera_center[[0, 2]], axis=1) <= self.config.visibility_dist_m]
+        if len(crossings) == 0:
+            return crossings
+        min_cluster_px = self.pixels(self.config.min_missing_floor_cluster_m)
+        return crossings[large_component_mask(self.to_pixels(crossings), self.obstacles.shape, min_cluster_px)]
 
     def _mark(self, grid: np.ndarray, points: np.ndarray, fill: int) -> None:
         if len(points) == 0:

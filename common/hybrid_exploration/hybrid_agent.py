@@ -5,6 +5,7 @@ import cv2
 import habitat_sim
 import numpy as np
 
+from common.agents.abstract_agent import StopReason
 from common.agents.base_exploration_agent import BaseExplorationAgent
 from common.hybrid_exploration.discrete_planner import DiscretePlanner
 from common.hybrid_exploration.exploration_map import EstimatedMap, MapConfig
@@ -87,7 +88,7 @@ class HybridFrontierAgent(BaseExplorationAgent):
     def seen(self, object_id: int) -> np.ndarray:
         return self.seen_sectors.setdefault(object_id, np.zeros(self.config.n_sectors, dtype=bool))
 
-    def act(self, agent_state: habitat_sim.AgentState, depth: np.ndarray, collided: bool = False) -> str:
+    def act(self, agent_state: habitat_sim.AgentState, depth: np.ndarray, collided: bool = False) -> Tuple[str, Optional[StopReason]]:
         """The next action towards the nearest current goal (every unseen viewpoint, or every frontier if none),
         turning to face an object once within reach of its viewpoint; "stop" once the last max_successive_collisions
         steps all collided or once stuck."""
@@ -95,35 +96,35 @@ class HybridFrontierAgent(BaseExplorationAgent):
 
         self._successive_collisions = self._successive_collisions + 1 if collided else 0
         if self._successive_collisions >= self.config.max_successive_collisions:
-            return "stop"
-        
+            return "stop", StopReason.COLLISION
+
         position, heading = self.observe(agent_state, depth, self.camera)
         if self.is_stuck():
-            return "stop"
+            return "stop", StopReason.STUCK
         self._mark_inspected(position, heading)
         spin_action = self.initial_spin()
 
         if spin_action is not None:
-            return spin_action
-        
-        viewpoints = self._object_viewpoints(position[1])            
+            return spin_action, None
+
+        viewpoints = self._object_viewpoints(position[1])
 
         arrived = self._arrived_viewpoint(position, viewpoints)
 
         if arrived is not None:
             action = self._turn_towards(position, heading, arrived.look_at)
             assert isinstance(action, str), f"Viewpoint already reached, but _arrived_viewpoint returned it as in reach, {arrived} {position} {heading}"
-            return action
+            return action, None
 
         goal_map = self._build_goal_map(viewpoints)
         self._goal_map = goal_map  # for visualization/debugging
-        
+
         frontier_map = self.estimated_map.frontier_map()
-        
+
         if not frontier_map.any() and not goal_map.any():
-            return "stop" 
-        
-        action, self._closest_goal_map, self._short_term_goal, _ = self.planner.plan(
+            return "stop", StopReason.EXPLORATION_EXHAUSTED
+
+        action, self._closest_goal_map, self._short_term_goal, _, no_feasible_plan = self.planner.plan(
             obstacle_map=self.estimated_map.obstacles,
             goal_map=goal_map,
             frontier_map=frontier_map,
@@ -132,7 +133,8 @@ class HybridFrontierAgent(BaseExplorationAgent):
             use_dilation_for_stg=False,
             current_timestep=len(self.trajectory) - 1,
         )
-        return self.action_name(action)
+        action_name = self.action_name(action)
+        return action_name, self.plan_stop_reason(action_name, no_feasible_plan)
 
     def _arrived_viewpoint(self, position: np.ndarray, viewpoints: List[Candidate]) -> Optional[Candidate]:
         """The viewpoint the agent is within reach of, preferring the one it last arrived at for drift tolerance."""

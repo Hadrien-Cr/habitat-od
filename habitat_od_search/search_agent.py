@@ -14,6 +14,7 @@ import trimesh
 from detectron2.structures import Instances
 from scipy.spatial import cKDTree
 
+from common.agents.abstract_agent import StopReason
 from common.agents.base_exploration_agent import BaseExplorationAgent, DiscretePlanner, EstimatedMap
 from common.hybrid_exploration.exploration_map import MapConfig
 from common.hybrid_exploration.frontier_exp_agent import DiscretePlannerConfig
@@ -89,6 +90,7 @@ class SearchAgent(BaseExplorationAgent):
         self.camera = camera
         self.config = config
         self.target_embedding = None
+        self.target_label = None
         self.goal_score_map = None
         self._goal_map = None
         self.step_count = 0
@@ -97,12 +99,13 @@ class SearchAgent(BaseExplorationAgent):
         self._detection_style = SegmentationStyle(classes=[target_name], colors=[_DETECTION_COLOR])
 
 
-    def reset(self, start_state: habitat_sim.AgentState, floor_height: float, target_embedding: torch.Tensor) -> None:
+    def reset(self, start_state: habitat_sim.AgentState, floor_height: float, target_embedding: torch.Tensor, target_label: str) -> None:
         super().reset(start_state, floor_height)
         assert self.estimated_map is not None, "BaseExplorationAgent.reset() must be called first"
         assert self.planner is not None, "Call reset() first"
 
         self.target_embedding = target_embedding
+        self.target_label = target_label
         self.goal_score_map = GoalScoreMap(self.config.goal_score_config, self.estimated_map)
         self._goal_map = None
         self.step_count = 0
@@ -110,9 +113,9 @@ class SearchAgent(BaseExplorationAgent):
         self.last_rgb = None
 
     def act(
-        self, agent_state: habitat_sim.AgentState, rgb: np.ndarray, depth: np.ndarray, collided: bool = False,
+        self, agent_state: habitat_sim.AgentState, rgb: np.ndarray, depth: np.ndarray,
         gt_instances: Optional[Instances] = None, oracle_action: Optional[str] = None,
-    ) -> str:
+    ) -> Tuple[str, Optional[StopReason]]:
         assert self.estimated_map is not None, "Call reset() first"
         assert self.target_embedding is not None, "Call reset() first"
         assert self.goal_score_map is not None, "Call reset() first"
@@ -128,7 +131,7 @@ class SearchAgent(BaseExplorationAgent):
             instances, best_score = gt_instances, 1.0 if len(gt_instances) else 0.0
         else:
             instances, best_score = self.detector.predict_target(rgb[:, :, :3], self.target_embedding)
-        
+
         self.last_instances = instances
         self.last_rgb = rgb[:, :, :3]
 
@@ -139,37 +142,39 @@ class SearchAgent(BaseExplorationAgent):
                 depth, agent_state.sensor_states["depth"], instances.pred_masks[best_idx], best_score, self.camera,
             )
 
-        if self.step_count >= self.config.max_steps or self.is_stuck():
-            return "stop"
+        if self.step_count >= self.config.max_steps:
+            return "stop", StopReason.MAX_STEPS
+        if self.is_stuck():
+            return "stop", StopReason.STUCK
 
         if self.config.use_oracle_path:
             assert oracle_action is not None, "use_oracle_path needs act()'s oracle_action"
-            return oracle_action
+            return oracle_action, StopReason.ORACLE_STOP if oracle_action == "stop" else None
 
-        
         spin_action = self.initial_spin()
         if spin_action is not None:
-            return spin_action
+            return spin_action, None
 
         goal_map = self.goal_score_map.goal_mask(self.config.goal_score_thresh)
         self._goal_map = goal_map  # for visualization/debugging
-        
+
         frontier_map = self.estimated_map.frontier_map()
-        
+
         if not frontier_map.any() and not goal_map.any():
-            return "stop" 
-        
-        action, self._closest_goal_map, self._short_term_goal, _ = self.planner.plan(
+            return "stop", StopReason.EXPLORATION_EXHAUSTED
+
+        action, self._closest_goal_map, self._short_term_goal, _, no_feasible_plan = self.planner.plan(
             obstacle_map=self.estimated_map.obstacles,
             goal_map=goal_map,
             frontier_map=frontier_map,
             sensor_pose=self.sensor_pose(position, heading),
             found_goal=np.any(goal_map),
             use_dilation_for_stg=False,
-            current_timestep=self.step_count,
+            current_timestep=self.step_count - 1,
         )
 
-        return self.action_name(action)
+        action_name = self.action_name(action)
+        return action_name, self.plan_stop_reason(action_name, no_feasible_plan)
 
     def map_image(self) -> np.ndarray:
         image = super().map_image()
@@ -184,7 +189,7 @@ class SearchAgent(BaseExplorationAgent):
     def detections_tile(self) -> Tuple[str, np.ndarray]:
         """(label, RGB) tile of the last act() rgb frame with predict_target's detections (boxes/masks/scores)
         drawn on it -- so the goal_score_map updates driving navigation stay visible, not just their effect."""
-        label = "observation"
+        label = f"observation\n{self.target_label}"
         if self.last_rgb is None or self.last_instances is None or len(self.last_instances) == 0:
             rgb = np.zeros((1, 1, 3), dtype=np.uint8) if self.last_rgb is None else self.last_rgb
             return label, rgb

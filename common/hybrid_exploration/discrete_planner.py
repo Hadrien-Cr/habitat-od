@@ -172,7 +172,7 @@ class DiscretePlanner:
         found_goal: bool,
         use_dilation_for_stg: bool = False,
         current_timestep: Optional[int] = None,
-    ) -> Tuple[DiscreteNavigationAction, np.ndarray, Tuple[int, int], np.ndarray]:
+    ) -> Tuple[DiscreteNavigationAction, np.ndarray, Tuple[int, int], np.ndarray, bool]:
         """Plan a low-level action.
 
         Args:
@@ -190,6 +190,8 @@ class DiscretePlanner:
             closest_goal_map: (M, M) binary array denoting closest goal location in the goal map in geodesic distance
             stg: short-term goal position (x, y) in map
             dilated_obstacles: (M, M) binary array denoting dilated obstacles
+            no_feasible_plan: no heading got closer to the goal, short of it, even after retrying with a smaller
+             obstacle dilation radius -- action is STOP regardless of found_goal
         """
         if use_dilation_for_stg:
             raise ValueError("use_dilation_for_stg=True is disabled for now; pass False")
@@ -234,27 +236,35 @@ class DiscretePlanner:
         ):
             self._check_collision()
 
-        # Extracts a local waypoint
-        (
-            short_term_goal,
-            closest_goal_map,
-            replan,
-            stop,
-            closest_goal_pt,
-            dilated_obstacles,
-        ) = self._get_short_term_goal(
-            obstacle_map=obstacle_map,
-            goal_map=np.copy(goal_map),
-            start=start,
-            planning_window=planning_window,
-            frontier_map=frontier_map,
-            heading_deg=start_o,
-        )
+        # Extracts a local waypoint, retrying once with a smaller obstacle dilation radius (clearing the collision
+        # history first) if no heading gets closer to the goal -- a doorway/furniture gap narrower than
+        # 2 * obs_dilation_selem_radius can otherwise look permanently blocked
+        assert self.curr_obs_dilation_selem_radius is not None, "Call reset() first"
+        for retried in (False, True):
+            (
+                short_term_goal,
+                closest_goal_map,
+                replan,
+                stop,
+                closest_goal_pt,
+                dilated_obstacles,
+            ) = self._get_short_term_goal(
+                obstacle_map=obstacle_map,
+                goal_map=goal_map,
+                start=start,
+                planning_window=planning_window,
+                frontier_map=frontier_map,
+                heading_deg=start_o,
+            )
+            no_feasible_plan = replan and not stop
+            if not no_feasible_plan or retried or self.curr_obs_dilation_selem_radius <= self.min_obs_dilation_selem_radius:
+                break
+            self.collision_map *= 0
+            self.curr_obs_dilation_selem_radius -= 1
+            self.obs_dilation_selem = skimage.morphology.disk(self.curr_obs_dilation_selem_radius)
 
-        # if returned 'replan', retry with a smaller obstacle dilation radius
-        if replan and not stop:
-            # raise ValueError("replan is not supported")
-            return DiscreteNavigationAction.STOP, closest_goal_map, short_term_goal, dilated_obstacles
+        if no_feasible_plan:
+            return DiscreteNavigationAction.STOP, closest_goal_map, short_term_goal, dilated_obstacles, no_feasible_plan
 
         # Normalize agent angle
         angle_agent = normalize_angle(start_o)
@@ -281,7 +291,7 @@ class DiscretePlanner:
         )
 
         self.last_action = action
-        return action, closest_goal_map, short_term_goal, dilated_obstacles
+        return action, closest_goal_map, short_term_goal, dilated_obstacles, no_feasible_plan
 
     def plan_debug_line(
         self,
@@ -399,7 +409,8 @@ class DiscretePlanner:
 
         # important: if no traversible dilated goal, fall back to frontier map
         if not np.any(dilated_goal_map * traversible):
-            dilated_goal_map = add_boundary(frontier_map, value=0) * traversible
+            # keep closest-goal selection in sync with what's actually being pathed toward
+            goal_map = dilated_goal_map = add_boundary(frontier_map, value=0) * traversible
 
             if not np.any(dilated_goal_map):
                 raise ValueError("No traversible dilated goal map or frontier map available for planning")
@@ -419,10 +430,8 @@ class DiscretePlanner:
             traversible, goal_map, start, dilated_goal_map=dilated_goal_map
         )
 
-        self.timestep += 1
-
         state = np.array([start[0] - x1 + 1, start[1] - y1 + 1])
-        (stg_x, stg_y), replan, stop = self._heading_step_goal(traversible, state, heading_deg)
+        (stg_x, stg_y), replan, stop, heading_points = self._heading_step_goal(traversible, state, heading_deg)
         short_term_goal = (stg_x + x1 - 1, stg_y + y1 - 1)
 
         if self.debug:
@@ -438,6 +447,7 @@ class DiscretePlanner:
                 goal_map=goal_map,
                 frontier_map=frontier_map,
                 start=start,
+                heading_points=heading_points,
             )
 
         self.plan_debug_line(start, short_term_goal, closest_goal_pt, stop)
@@ -451,25 +461,32 @@ class DiscretePlanner:
             dilated_obstacles,
         )
     
-    def _heading_step_goal(self, traversible: np.ndarray, state: np.ndarray, heading_deg: float) -> Tuple[Tuple[float, float], bool, bool]:
+    def _heading_step_goal(
+        self, traversible: np.ndarray, state: np.ndarray, heading_deg: float
+    ) -> Tuple[Tuple[float, float], bool, bool, List[Tuple[Tuple[float, float], bool]]]:
         """(the landing point of one step_size forward move along the reachable heading -- the current one turned by a whole
         number of turn_angle -- whose straight path stays on traversible cells and ends closest to the goal on fmm_distance,
         ties kept by the smallest turn; replan, when no such move gets closer than the agent's cell; stop, on the goal).
-        state is the agent's cell in the padded traversible/fmm_distance arrays."""
+        state is the agent's cell in the padded traversible/fmm_distance arrays. heading_points is each tested heading's
+        landing cell (in the same unpadded frame as start/short_term_goal) and whether its straight path was traversible,
+        for debug_mosaic_save."""
         assert self.fmm_distance is not None
         current = self.fmm_distance[tuple(state)]
         n_headings = int(round(360.0 / self.turn_angle))
         fractions = np.linspace(0.0, 1.0, 2 * int(np.ceil(self.step_size)) + 1)[1:]
         best_goal, best_distance = None, current - 0.0001
+        heading_points: List[Tuple[Tuple[float, float], bool]] = []
         for turn in sorted(range(1 - n_headings // 2, n_headings // 2 + 1), key=abs):
             angle = np.radians(heading_deg + turn * self.turn_angle)
             path = state + np.outer(fractions, [np.sin(angle), np.cos(angle)]) * self.step_size
             cells = np.round(path).astype(int)
             on_traversible = np.all((cells >= 0) & (cells < traversible.shape)) and traversible[cells[:, 0], cells[:, 1]].all()
+            if self.debug:
+                heading_points.append(((cells[-1, 0] - 1, cells[-1, 1] - 1), on_traversible))
             if on_traversible and self.fmm_distance[tuple(cells[-1])] < best_distance:
                 best_goal, best_distance = path[-1], self.fmm_distance[tuple(cells[-1])]
         goal = state if best_goal is None else best_goal
-        return (float(goal[0]), float(goal[1])), best_goal is None, current < self.goal_tolerance
+        return (float(goal[0]), float(goal[1])), best_goal is None, current < self.goal_tolerance, heading_points
 
     def debug_mosaic_save(
         self,
@@ -484,6 +501,7 @@ class DiscretePlanner:
         goal_map: np.ndarray,
         frontier_map: np.ndarray,
         start: np.ndarray,
+        heading_points: List[Tuple[Tuple[float, float], bool]],
     ) -> None:
 
         # save obstacle map, goal map, fmm_distance, closest_goal_pt, stg
@@ -493,10 +511,13 @@ class DiscretePlanner:
         img_goal_map = img_traversible_map.copy()
         img_goal_map[goal_map[x1:x2, y1:y2] == 1] = [0, 255, 0]
         img_fmm_distance = cv2.cvtColor((fmm_distance[x1:x2, y1:y2] / np.max(fmm_distance[x1:x2, y1:y2]) * 255).astype(np.uint8), cv2.COLOR_GRAY2BGR)
-        
+
         img_short_term_goal_pt = img_traversible_map.copy()
+        for (point_x, point_y), on_traversible in heading_points:
+            color = (0, 255, 0) if on_traversible else (255, 0, 0)
+            cv2.circle(img_short_term_goal_pt, (round(point_y) - y1, round(point_x) - x1), 1, color, -1) # type: ignore
         cv2.circle(img_short_term_goal_pt, (round(short_term_goal[1]) - y1, round(short_term_goal[0]) - x1), 2, (0, 0, 255), -1) # type: ignore
-        
+
         img_dilated_goal_map = img_traversible_map.copy()
         img_dilated_goal_map[dilated_goal_map[x1:x2, y1:y2] == 1] = [255, 0, 0]
         img_dilated_traversible_goal_map = img_traversible_map.copy()

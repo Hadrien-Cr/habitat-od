@@ -1,7 +1,8 @@
 """Evaluates habitat_od_search's SearchAgent on IMPRINT's HSSD-rare ObjectNav episodes (--config, see
 habitat_od_search/config/hssd_rare_eval.yaml). For each scene in `scenes` (every saved hssd_rare_eps scene when
 empty), one ExplorationEnv is built; each of its episodes whose start navmesh island covers at least
-min_island_area_m2 (smaller ones, e.g. a balcony cut off from the house, are skipped) resets the env to the episode's
+min_island_area_m2 (smaller ones, e.g. a balcony cut off from the house, are skipped), and whose episode_id matches
+cfg.episode_id when given (every episode otherwise), resets the env to the episode's
 own start pose and runs a fresh SearchAgent, targeting the CLIP text embedding of the episode's main category (the text before the first
 comma of its fine-grained object_category), until it stops (also once stuck, BaseExplorationAgent.is_stuck) or
 runs out of agent.max_steps -- for at most max_episodes episodes in all (every one when null). Each episode's success, SPL,
@@ -10,10 +11,11 @@ habitat_od_search/logs/<run_name>/metrics.jsonl as soon as it ends, and the per-
 breakdown tables are printed and saved to summary.md there. With agent.use_gt_detections, the agent uses the goal
 objects' ground-truth detections (target_instances, scored 1.0) instead of Detic's; with agent.use_oracle_path, it
 follows habitat-sim's greedy geodesic shortest path to the nearest goal's reach_view_point (the navigable point within
-agent.reach_m of its mesh footprint closest to its center) instead of planning. Success is a stop within 1 m of a goal object's mesh footprint. With save_visuals, each step's 3-tile (detections,
+agent.reach_m of its mesh footprint closest to its center) instead of planning. Success is a stop within 1 m of a goal object's mesh footprint. With save_visuals, each step's 4-tile (detections, depth,
 belief map cropped to the 256 x 256 cells around the agent, ground truth with the episode's goal object footprints) snapshot is saved to images/<run_index>_ep<episode_id>_<scene_id>/ (run_index counting every episode run so far,
 across scenes) and assembled into episode.webp, its last one also copied next to that folder as
-images/<run_index>_ep<episode_id>_<scene_id>_last_snapshot.png.
+images/<run_index>_ep<episode_id>_<scene_id>_last_snapshot.png. With save_mesh, each scene's ground-truth mesh (stage
++ every placed object, ceiling stripped) is written once to meshes/<scene_id>.glb.
 
 Usage:
   export HABITAT_DATA=$HOME/habitat_data/data BASE_DIR=$(pwd) PYTHONNOUSERSITE=1
@@ -25,6 +27,7 @@ import argparse
 import itertools
 import json
 import shutil
+import zlib
 from dataclasses import asdict
 from pathlib import Path
 from typing import Iterator, List, Optional, Set, Tuple
@@ -37,7 +40,7 @@ from omegaconf import DictConfig, OmegaConf
 from tqdm import tqdm
 
 from common.env_utils.env_base import ExplorationEnv, build_env, sensor_geometry
-from common.env_utils.object_annotations import get_all_objects
+from common.env_utils.object_annotations import get_all_objects, scene_world_mesh
 from common.env_utils.sense import target_instances, visible_object_ids
 from common.hybrid_exploration.exploration_map import MapConfig
 from common.hybrid_exploration.frontier_exp_agent import DiscretePlannerConfig, exploration_snapshot
@@ -61,7 +64,7 @@ def search_agent_config(agent_cfg: DictConfig, fov_deg: float, turn_angle_deg: f
         goal_score_thresh=agent_cfg.goal_score_thresh,
         max_steps=agent_cfg.max_steps,
         confidence_thresh=agent_cfg.confidence_thresh,
-        planner_config=DiscretePlannerConfig(turn_angle_deg),
+        planner_config=DiscretePlannerConfig(turn_angle_deg, debug=agent_cfg.get("planner_debug", False)),
         reach_m=agent_cfg.reach_m,
         use_gt_detections=agent_cfg.use_gt_detections,
         use_oracle_path=agent_cfg.use_oracle_path,
@@ -69,7 +72,7 @@ def search_agent_config(agent_cfg: DictConfig, fov_deg: float, turn_angle_deg: f
 
 
 def save_snapshot(obs: dict, agent: SearchAgent, ground_truth: GroundTruthMapTracker, trace: EpisodeTrace, images_dir: Path) -> None:
-    """Reveals the agent's current view on ground_truth, then saves the step's 3-tile exploration_snapshot -- the
+    """Reveals the agent's current view on ground_truth, then saves the step's 4-tile exploration_snapshot -- the
     ground-truth tile from the agent's world poses, its belief map in the agent's own start frame."""
     position, heading = trace.world_trajectory[-1]
     ground_truth.reveal(position, heading)
@@ -98,8 +101,12 @@ def run_episode(env: ExplorationEnv, agent: SearchAgent, episode: NavigationEpis
     """Runs agent on episode until it stops or gets stuck, saving per-step snapshots to images_dir if given."""
     obs = env.reset(episode=episode)
     start_state = env.get_agent_state()
-    target = main_category(episode.info["object_category"])
-    agent.reset(start_state, start_state.position[1] - env.navmesh_floor_offset(), Vocabulary(f"search_{target}", (target,)).clip_embeddings()[:, 0])
+    category = episode.info["object_category"]
+    target = main_category(category)
+    agent.reset(
+        start_state, start_state.position[1] - env.navmesh_floor_offset(),
+        Vocabulary(f"search_{target}", (target,)).clip_embeddings()[:, 0], category,
+    )
     goal_handles = {goal.object_handle for goal in goals}
     goal_ids = {obj.object_id for obj in get_all_objects(env.get_sim()) if obj.handle in goal_handles}
     trace = EpisodeTrace()
@@ -116,11 +123,12 @@ def run_episode(env: ExplorationEnv, agent: SearchAgent, episode: NavigationEpis
         state = env.get_agent_state()
         trace.world_trajectory.append((np.array(state.position), float(TopDownMap.get_polar_angle(state))))
         oracle_action = oracle_step(oracle, env.get_pathfinder(), np.array(state.position), oracle_view_points) if agent.config.use_oracle_path else None
-        action = agent.act(state, obs["rgb"], obs["depth"], gt_instances=target_instances(obs, goal_ids), oracle_action=oracle_action)
+        action, stop_reason = agent.act(state, obs["rgb"], obs["depth"], gt_instances=target_instances(obs, goal_ids), oracle_action=oracle_action)
         trace.goal_seen |= bool(goal_ids & visible_object_ids(obs))
         if images_dir is not None:
             save_snapshot(obs, agent, ground_truth, trace, images_dir)
         if action == "stop":
+            trace.stop_reason = stop_reason.value if stop_reason else None
             break
         obs, _, _, _ = env.step(action)
     trace.stuck = agent.is_stuck()
@@ -130,22 +138,33 @@ def run_episode(env: ExplorationEnv, agent: SearchAgent, episode: NavigationEpis
     return episode_result(agent, episode, goals, [mesh for _, _, mesh in meshes], trace)
 
 
+def episode_rng(cfg_seed: int, scene_id: str, episode_id: str) -> np.random.Generator:
+    """Generator seeded from cfg_seed, scene_id and episode_id alone -- so an episode's own randomness (BaseExplorationAgent.spin's
+    initial turn direction) is the same whether it runs as part of a full scene or rerun by itself, unlike a single
+    rng shared and advanced across a scene's episodes in order."""
+    return np.random.default_rng(zlib.crc32(f"{cfg_seed}_{scene_id}_{episode_id}".encode()))
+
+
 def evaluate_scene(scene_id: str, cfg: DictConfig, detector: Detector, run_dir: Path, run_indices: Iterator[int]) -> Iterator[EpisodeResult]:
     """EpisodeResult of every HSSD-rare episode of scene_id, yielded as each one ends; run_indices numbers them across scenes."""
     scene_episodes = load_scene_episodes(scene_id)
     env, habitat_cfg = build_env(scene_id, cfg.seed, cfg.agent.max_steps, cfg.object_params, cfg.agent.input_image_size)
+    if cfg.save_mesh:
+        (run_dir / "meshes").mkdir(parents=True, exist_ok=True)
+        scene_world_mesh(env.get_sim()).export(str(run_dir / "meshes" / f"{scene_id}.glb"))
     fov_deg, camera = sensor_geometry(habitat_cfg)
     config = search_agent_config(cfg.agent, fov_deg, habitat_cfg.habitat.simulator.turn_angle)
-    rng = np.random.default_rng(cfg.seed)
     pathfinder = env.get_pathfinder()
     episodes = [
         episode for episode in scene_episodes.episodes
         if pathfinder.island_area(pathfinder.get_island(np.array(episode.start_position))) >= cfg.min_island_area_m2
+        and episode.episode_id == cfg.get("episode_id", episode.episode_id)
     ]
     try:
         for episode in tqdm(episodes, desc=f"search {scene_id}", ncols=80):
             category = episode.info["object_category"]
             run_name = f"{next(run_indices):03d}_ep{episode.episode_id}_{scene_id}"
+            rng = episode_rng(cfg.seed, scene_id, episode.episode_id)
             agent = SearchAgent(detector, camera, config, rng, str(run_dir), run_name, main_category(category))
             images_dir = run_dir / "images" / run_name if cfg.save_visuals else None
             yield run_episode(env, agent, episode, scene_episodes.goals_by_category[f"{scene_id}_{category}"], images_dir)

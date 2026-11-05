@@ -343,9 +343,17 @@ def _padded_row(tiles: list[np.ndarray], width: int) -> np.ndarray:
     return np.hstack(tiles + [np.zeros_like(tiles[0])] * (width - len(tiles)))
 
 
+_LABEL_FONT_SCALE = 1.1
+_LABEL_LINE_HEIGHT = 44
+
+
 def _draw_label(img: np.ndarray, label: str) -> np.ndarray:
-    cv2.rectangle(img, (0, 0), (img.shape[1] - 1, 32), (0, 0, 0), -1)
-    cv2.putText(img, label, (5, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2, cv2.LINE_AA)
+    """label's lines (split on "\\n"), stacked in a black bar at img's top."""
+    lines = label.split("\n")
+    cv2.rectangle(img, (0, 0), (img.shape[1] - 1, _LABEL_LINE_HEIGHT * len(lines)), (0, 0, 0), -1)
+    for row, line in enumerate(lines):
+        y = _LABEL_LINE_HEIGHT * row + 32
+        cv2.putText(img, line, (5, y), cv2.FONT_HERSHEY_SIMPLEX, _LABEL_FONT_SCALE, (255, 255, 255), 2, cv2.LINE_AA)
     return img
 
 
@@ -409,6 +417,12 @@ def centered_crop(image: np.ndarray, center: np.ndarray, size: int) -> np.ndarra
     row0 = int(np.clip(center[0] - size // 2, 0, image.shape[0] - size))
     col0 = int(np.clip(center[1] - size // 2, 0, image.shape[1] - size))
     return image[row0:row0 + size, col0:col0 + size]
+
+
+def depth_image(depth: np.ndarray, min_depth: float, max_depth: float) -> np.ndarray:
+    """depth (meters, any shape) as a BGR grayscale image: min_depth black, max_depth white, clipped outside that range."""
+    normalized = np.clip((np.asarray(depth).squeeze() - min_depth) / (max_depth - min_depth), 0.0, 1.0)
+    return cv2.cvtColor((normalized * 255).astype(np.uint8), cv2.COLOR_GRAY2BGR)
 
 
 def letterboxed(image: np.ndarray, width: int, height: int) -> np.ndarray:

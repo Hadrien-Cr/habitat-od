@@ -1,8 +1,10 @@
 """Uniformly random policy over a fixed action set."""
+from typing import Optional, Tuple
+
 import habitat_sim
 import numpy as np
 
-from common.agents.abstract_agent import Agent
+from common.agents.abstract_agent import Agent, StopReason
 
 
 class RandomAgent(Agent):
@@ -10,5 +12,5 @@ class RandomAgent(Agent):
         self.rng = rng
         self.actions = actions
 
-    def act(self, agent_state: habitat_sim.AgentState) -> str:
-        return self.rng.choice(self.actions)
+    def act(self, agent_state: habitat_sim.AgentState) -> Tuple[str, Optional[StopReason]]:
+        return self.rng.choice(self.actions), None

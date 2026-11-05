@@ -81,3 +81,22 @@ unzip mp3d_habitat.zip -d mp3d_habitat
 cp mp3d_habitat/mp3d $HABITAT_DATA/scene_datasets/ -r 
 wget --no-check-certificate https://dl.fbaipublicfiles.com/habitat/mp3d/config_v1/mp3d.scene_dataset_config.json -P $HABITAT_DATA/scene_datasets/mp3d/
 ```
+
+```bash
+# Download SUN RGB-D (2D/3D box eval, no simulator): images/depth under $HABITAT_DATA/sunrgbd/SUNRGBD,
+# plus the v2 global metadata .mat files (2D+3D box ground truth, per-image Rtilt/K calibration) --
+# read directly with scipy.io.loadmat, no MATLAB extraction step needed. See notebooks/sunrgbd_visualization.ipynb.
+mkdir -p $HABITAT_DATA/sunrgbd
+wget -c https://rgbd.cs.princeton.edu/data/SUNRGBD.zip -P $HABITAT_DATA/sunrgbd
+unzip -q $HABITAT_DATA/sunrgbd/SUNRGBD.zip -d $HABITAT_DATA/sunrgbd && rm $HABITAT_DATA/sunrgbd/SUNRGBD.zip
+wget -c https://rgbd.cs.princeton.edu/data/SUNRGBDMeta2DBB_v2.mat -P $HABITAT_DATA/sunrgbd
+wget -c https://rgbd.cs.princeton.edu/data/SUNRGBDMeta3DBB_v2.mat -P $HABITAT_DATA/sunrgbd
+```
+
+```bash
+# Download NYU Depth V2 (2D segmentation/instance eval, no simulator): the labeled subset
+# (1449 RGB-D pairs with dense class/instance labels) as a single .mat file --
+# read directly with scipy.io.loadmat, no MATLAB extraction step needed. See notebooks/nyu_depth_v2_visualization.ipynb.
+mkdir -p $HABITAT_DATA/nyu_depth_v2
+wget -c https://horatio.cs.nyu.edu/mit/silberman/nyu_depth_v2/nyu_depth_v2_labeled.mat -P $HABITAT_DATA/nyu_depth_v2
+```

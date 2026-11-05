@@ -9,11 +9,25 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List
 
+import numpy as np
 from habitat.tasks.nav.nav import NavigationEpisode, NavigationGoal  # type: ignore
+
+from common.utils.pose_utils import get_yaw, quaternion_from_rpy
 
 IMPRINT_ROOT = Path(__file__).resolve().parents[1] / "third_party" / "IMPRINT"
 HSSD_RARE_EPISODES_DIR = IMPRINT_ROOT / "dataset" / "hssd_rare_eps"
 MAIN_CAT_SPLIT_PATH = IMPRINT_ROOT / "dataset" / "main_cat_split.json"
+_YAW_SNAP_RAD = np.pi / 4
+
+
+def _snapped_start_rotation(start_rotation: List[float]) -> List[float]:
+    """start_rotation's (x, y, z, w) quaternion, its yaw snapped to the nearest 45 degrees -- so every episode
+    starts facing one of 8 axis-aligned headings instead of the dataset's arbitrary one (e.g. a near-grazing
+    angle onto a wall/doorframe, which renders more missing-depth edge pixels)."""
+    x, y, z, w = start_rotation
+    snapped_yaw = round(get_yaw(w, x, y, z) / _YAW_SNAP_RAD) * _YAW_SNAP_RAD
+    quat = quaternion_from_rpy(0, 0, snapped_yaw)
+    return [quat.x, quat.y, quat.z, quat.w]
 
 
 @dataclass(frozen=True)
@@ -31,9 +45,10 @@ class SceneEpisodes:
 
 
 def load_scene_episodes(scene_id: str) -> SceneEpisodes:
-    """Reads <scene_id>.json.gz, building habitat-lab NavigationEpisodes with their real
-    start_position/start_rotation (so ExplorationEnv.reset(episode=...) places the agent exactly where
-    HSSD-rare intends) and the goals_by_category entries each episode's object_category indexes into."""
+    """Reads <scene_id>.json.gz, building habitat-lab NavigationEpisodes with their real start_position (so
+    ExplorationEnv.reset(episode=...) places the agent exactly where HSSD-rare intends) and start_rotation's yaw
+    snapped to the nearest 45 degrees (_snapped_start_rotation), and the goals_by_category entries each
+    episode's object_category indexes into."""
     path = HSSD_RARE_EPISODES_DIR / f"{scene_id}.json.gz"
     with gzip.open(path) as f:
         data = json.load(f)
@@ -43,7 +58,7 @@ def load_scene_episodes(scene_id: str) -> SceneEpisodes:
             episode_id=str(episode["episode_id"]),
             scene_id=scene_id,
             start_position=episode["start_position"],
-            start_rotation=episode["start_rotation"],
+            start_rotation=_snapped_start_rotation(episode["start_rotation"]),
             goals=[NavigationGoal(position=goal["position"]) for goal in data["goals_by_category"][f"{scene_id}_{episode['object_category']}"]],
             info={"object_category": episode["object_category"], **episode["info"]},
         )

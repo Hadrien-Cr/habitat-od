@@ -12,7 +12,7 @@ import numpy as np
 import quaternion
 from habitat.tasks.nav.nav import TopDownMap  # type: ignore
 
-from common.agents.abstract_agent import Agent
+from common.agents.abstract_agent import Agent, StopReason
 from common.hybrid_exploration.discrete_planner import DiscreteNavigationAction, DiscretePlanner
 from common.hybrid_exploration.exploration_map import EstimatedMap, MapConfig
 from common.hybrid_exploration.plotting import draw_in_view
@@ -164,6 +164,13 @@ class BaseExplorationAgent(Agent):
     @staticmethod
     def action_name(action: DiscreteNavigationAction) -> str:
         return _ACTION_NAMES[action]
+
+    @staticmethod
+    def plan_stop_reason(action_name: str, no_feasible_plan: bool) -> Optional[StopReason]:
+        """The StopReason for a DiscretePlanner.plan() result, when action_name is "stop" (None otherwise)."""
+        if action_name != "stop":
+            return None
+        return StopReason.NO_FEASIBLE_PLAN if no_feasible_plan else StopReason.GOAL_REACHED
 
     def spin(self) -> str:
         if self._spin_action is None:

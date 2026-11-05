@@ -7,11 +7,12 @@ import numpy as np
 from PIL import Image
 from pathlib import Path
 
+from common.agents.abstract_agent import StopReason
 from common.agents.base_exploration_agent import BaseExplorationAgent
 from common.hybrid_exploration.discrete_planner import DiscretePlanner
 from common.hybrid_exploration.exploration_map import EstimatedMap, MapConfig
 from common.hybrid_exploration.hybrid_agent import HybridFrontierAgent
-from common.utils.plot_utils import centered_crop, letterboxed, make_mosaic, rows_mosaic
+from common.utils.plot_utils import centered_crop, depth_image, letterboxed, make_mosaic, rows_mosaic
 from common.utils.projection_utils import DepthCamera
 
 
@@ -61,26 +62,26 @@ class FrontierExplorationAgent(BaseExplorationAgent):
         super().reset(start_state, floor_height)
         self._successive_collisions = 0
 
-    def act(self, agent_state: habitat_sim.AgentState, depth: np.ndarray, collided: bool = False) -> str:
+    def act(self, agent_state: habitat_sim.AgentState, depth: np.ndarray, collided: bool = False) -> Tuple[str, Optional[StopReason]]:
         assert self.estimated_map is not None, "Call reset() first"
         assert self.planner is not None, "Call reset() first"
 
         self._successive_collisions = self._successive_collisions + 1 if collided else 0
         if self._successive_collisions >= self.config.max_successive_collisions:
-            return "stop"
+            return "stop", StopReason.COLLISION
         agent_state = self.start_frame_state(agent_state)
         position, heading = self.observe(agent_state, depth, self.camera)
         if self.is_stuck():
-            return "stop"
+            return "stop", StopReason.STUCK
         spin_action = self.initial_spin()
         if spin_action is not None:
-            return spin_action
+            return spin_action, None
         frontier_map = self.estimated_map.frontier_map()
-        
+
         if not frontier_map.any():
-            return "stop"
-        
-        action, self._closest_goal_map, self._short_term_goal, _ = self.planner.plan(
+            return "stop", StopReason.EXPLORATION_EXHAUSTED
+
+        action, self._closest_goal_map, self._short_term_goal, _, no_feasible_plan = self.planner.plan(
             obstacle_map=self.estimated_map.obstacles,
             goal_map=np.zeros_like(frontier_map, dtype=np.uint8),  # no goal map for vanilla frontier exploration
             frontier_map=frontier_map,
@@ -89,7 +90,8 @@ class FrontierExplorationAgent(BaseExplorationAgent):
             use_dilation_for_stg=False,
             current_timestep=len(self.trajectory) - 1,
         )
-        return self.action_name(action)
+        action_name = self.action_name(action)
+        return action_name, self.plan_stop_reason(action_name, no_feasible_plan)
 
 
 _SNAPSHOT_TILE_SIZE = 1024
@@ -99,20 +101,23 @@ _BELIEF_CROP_CELLS = 256
 def exploration_snapshot(
     obs: dict, agent, ground_truth, trajectory_px: list,
 ) -> Optional[Image.Image]:
-    """3-tile mosaic, every tile upscaled to _SNAPSHOT_TILE_SIZE: first-person rgb (or, when agent defines
+    """4-tile mosaic, every tile upscaled to _SNAPSHOT_TILE_SIZE: first-person rgb (or, when agent defines
     detections_tile() -- e.g. SearchAgent's Detic predictions -- that same frame with its detections drawn on
-    it), the agent's own belief map cropped to _BELIEF_CROP_CELLS around the agent, the ground-truth comparison map."""
+    it), the depth sensor's reading (camera.min_depth black to camera.max_depth white), the agent's own belief map
+    cropped to _BELIEF_CROP_CELLS around the agent, the ground-truth comparison map."""
     size = (_SNAPSHOT_TILE_SIZE, _SNAPSHOT_TILE_SIZE)
     if hasattr(agent, "detections_tile"):
         observation_label, first_person = agent.detections_tile()
     else:
         observation_label, first_person = "observation", obs["rgb"][:, :, :3]
     first_person = letterboxed(np.ascontiguousarray(first_person), *size)
+    depth_map = letterboxed(depth_image(obs["depth"], agent.camera.min_depth, agent.camera.max_depth), *size)
     agent_pixel = agent.estimated_map.to_pixel(agent.trajectory[-1][0])
     belief_map = cv2.resize(centered_crop(agent.map_image(), agent_pixel, _BELIEF_CROP_CELLS)[:, :, ::-1], size, interpolation=cv2.INTER_NEAREST)
     gt_map = letterboxed(ground_truth.image(trajectory_px)[:, :, ::-1], *size)
     return rows_mosaic([[
         (observation_label, np.ascontiguousarray(first_person)),
+        ("depth", np.ascontiguousarray(depth_map)),
         ("belief map", np.ascontiguousarray(belief_map)),
         ("ground truth", np.ascontiguousarray(gt_map)),
     ]])

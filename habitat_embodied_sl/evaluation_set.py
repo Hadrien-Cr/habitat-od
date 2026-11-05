@@ -64,7 +64,7 @@ def explored_frames(scene: str, cfg: DictConfig, classes: list, image_size: int)
         ground_truth = ground_truth_instances(obs, vocabulary, classes)
         if len(ground_truth):
             frames.append((step, obs["rgb"][:, :, :3], ground_truth))
-        action = agent.act(env.get_agent_state(), obs["depth"])
+        action, _ = agent.act(env.get_agent_state(), obs["depth"])
         if len(frames) >= evaluation.downsampling * evaluation.frames_per_scene or action == "stop":
             break
         obs, _, _, _ = env.step(action)

@@ -44,6 +44,7 @@ dependencies:
     - ipykernel
     - hydra-core
     - scipy
+    - h5py
     - opencv-python
     - pybullet
     - pytest

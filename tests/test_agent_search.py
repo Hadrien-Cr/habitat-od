@@ -25,14 +25,13 @@ from habitat.tasks.nav.nav import TopDownMap
 _TESTDUMP_DIR = Path(os.path.dirname(__file__)) / "testdump" / "test_agent_search"
 _EXPLORATION_STEPS = 1000
 _GIF_FPS = 10
-_COLLISION_DIST_M = 0.15  # matches common/env_utils/sensors.py::AgentCollisionSensor
 _TARGET_OBJECT = "pillow"
 
 
 
 def test_exploration_gif() -> None:
     """Runs SearchAgent for _EXPLORATION_STEPS in dummy_scene.py's synthetic flat, saving a
-    3-tile (observation, belief map, ground truth) snapshot per step and assembling them into exploration.webp."""
+    4-tile (observation, depth, belief map, ground truth) snapshot per step and assembling them into exploration.webp."""
     from dummy_scene import _DEPTH_CAMERA, _MAP_CONFIG, _START, _TURN_ANGLE_DEG, _dummy_sim, _ground_truth_meshes, _navmesh_floor_offset
 
     shutil.rmtree(_TESTDUMP_DIR, ignore_errors=True)
@@ -74,14 +73,13 @@ def test_exploration_gif() -> None:
         target_embedding = get_clip_embeddings([_TARGET_OBJECT], text_encoder=text_encoder)[:, 0]
 
         floor_height = _START[1] - _navmesh_floor_offset(sim, np.array(_START))
-        agent.reset(sim.get_agent(0).get_state(), floor_height=floor_height, target_embedding=target_embedding)
+        agent.reset(sim.get_agent(0).get_state(), floor_height=floor_height, target_embedding=target_embedding, target_label=_TARGET_OBJECT)
 
         ground_truth = GroundTruthMapTracker(sim.pathfinder, np.array(_START), fov_deg=_MAP_CONFIG.fov_deg, visibility_dist_m=_MAP_CONFIG.visibility_dist_m)
         ground_truth.set_object_footprints(_ground_truth_meshes(sim))
         trajectory_px: list = []
 
         obs = sim.get_sensor_observations()
-        collided = False
         found_target = False
         stuck = False
 
@@ -94,7 +92,7 @@ def test_exploration_gif() -> None:
             ground_truth.reveal(np.array(state.position), heading)
 
             act_start = time.perf_counter()
-            action = agent.act(state, obs["rgb"], obs["depth"], collided)
+            action, _ = agent.act(state, obs["rgb"], obs["depth"])
             profile_timer.update("act", time.perf_counter() - act_start)
 
             mosaic = exploration_snapshot(obs, agent, ground_truth, trajectory_px)
@@ -106,9 +104,6 @@ def test_exploration_gif() -> None:
                 found_target = not stuck
                 break
             obs = sim.step(action)
-
-            new_state = sim.get_agent(0).get_state()
-            collided = bool(np.linalg.norm(new_state.position - state.position) < _COLLISION_DIST_M and np.allclose(new_state.rotation, state.rotation))
 
         assert not stuck, f"agent got stuck (no net progress) before stopping at {_TARGET_OBJECT}"
         assert found_target, f"agent reached {_EXPLORATION_STEPS} steps without stopping at {_TARGET_OBJECT}"

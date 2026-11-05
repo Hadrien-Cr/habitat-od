@@ -62,6 +62,37 @@ def objects_world_mesh(objects) -> trimesh.Trimesh:
     return trimesh.util.concatenate([mesh for mesh in meshes if mesh is not None])
 
 
+def strip_ceiling(scene: trimesh.Scene) -> trimesh.Scene:
+    """scene with every node whose name contains "ceiling" (and its child geometry) removed, in place --
+    ProcTHOR-hab stages bundle a ceiling mesh per room ("Ceiling#room|N|c"), HSSD-HAB stages sometimes bundle a
+    patch of one ("geometry_ceiling.NNN"); other scanned datasets (Gibson, MP3D) have none."""
+    ceiling_nodes = [node for node in scene.graph.nodes if "ceiling" in node.lower()]
+    to_remove = {child for parent in ceiling_nodes for child in [parent, *scene.graph.transforms.children.get(parent, [])]}
+    for node in to_remove:
+        if node in scene.graph.nodes:
+            scene.graph.transforms.remove_node(node)
+    return scene
+
+
+def stage_world_mesh(sim: habitat_sim.Simulator) -> Optional[trimesh.Trimesh]:
+    """The stage's (the scene's static architectural shell) render mesh in world coordinates, ceiling stripped
+    (strip_ceiling), or None without a render asset on disk."""
+    stage = sim.get_stage_initialization_template()
+    if not stage.render_asset_fullpath or not os.path.exists(stage.render_asset_fullpath):
+        return None
+    loaded = trimesh.load(stage.render_asset_fullpath, process=False)
+    mesh = strip_ceiling(loaded).to_geometry() if isinstance(loaded, trimesh.Scene) else loaded
+    mesh.apply_scale(np.array(stage.scale))
+    mesh.apply_translation(np.array(stage.origin))
+    return mesh
+
+
+def scene_world_mesh(sim: habitat_sim.Simulator) -> trimesh.Trimesh:
+    """One mesh merging the stage and every placed object's world mesh -- the scene as currently assembled."""
+    meshes = [stage_world_mesh(sim), *(object_world_mesh(obj) for obj in get_all_objects(sim))]
+    return trimesh.util.concatenate([mesh for mesh in meshes if mesh is not None])
+
+
 def object_shortname_from_handle(object_handle: str) -> str:
     """Strips the :_xxxx suffix habitat_sim appends to an object handle to distinguish
     multiple instances of the same placed object in the scene."""

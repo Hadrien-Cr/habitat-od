@@ -32,6 +32,8 @@ from PIL import Image
 
 from habitat_sim.utils.common import colorize_ids
 
+from common.env_utils.object_annotations import strip_ceiling
+
 HABITAT_DATA = os.environ.get("HABITAT_DATA")
 _HSSD_CONFIG = f"{HABITAT_DATA}/scene_datasets/hssd-hab/hssd-hab.scene_dataset_config.json" if HABITAT_DATA else None
 _GIBSON_CONFIG = f"{HABITAT_DATA}/scene_datasets/gibson_semantic/gibson_semantic.scene_dataset_config.json" if HABITAT_DATA else None
@@ -173,12 +175,7 @@ def _strip_ceiling_dataset_config(procthor_config: str, scene_id: str, out_dir: 
     stage_glb = _find_one(f"{ai2_root}/assets/stages/ProcTHOR/**/{scene_id}.glb")
     scene_instance_path = _find_one(f"{ai2_root}/configs/scenes/ProcTHOR/**/{scene_id}.scene_instance.json")
 
-    stage = trimesh.load(stage_glb, process=False)
-    ceiling_nodes = [n for n in stage.graph.nodes if n.startswith("Ceiling")]
-    to_remove = [n for cn in ceiling_nodes for n in [cn, *stage.graph.transforms.children.get(cn, [])]]
-    for n in to_remove:
-        if n in stage.graph.nodes:
-            stage.graph.transforms.remove_node(n)
+    stage = strip_ceiling(trimesh.load(stage_glb, process=False))
 
     os.makedirs(out_dir, exist_ok=True)
     new_scene_id = f"{scene_id}-noceil"

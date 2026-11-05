@@ -3,6 +3,8 @@ run_name: hssd_rare_eval
 seed: 0
 # Saves a 3-tile (detections, belief map, ground truth) snapshot per step and an episode.webp per episode.
 save_visuals: False
+# Saves each scene's ground-truth mesh (stage + every placed object, ceiling stripped) once as meshes/<scene_id>.glb.
+save_mesh: False
 
 # Empty: every scene with a saved third_party/IMPRINT/dataset/hssd_rare_eps/<scene_id>.json.gz (see
 # habitat_od_search/hssd_rare_dataset.py::available_scenes).

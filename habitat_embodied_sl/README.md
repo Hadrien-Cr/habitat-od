@@ -59,7 +59,9 @@ come from, out of it; they belong with the code that builds them (`common/env_ut
   confidence min(detections, 5) / 5. The agent's belief map (`EstimatedMap`, 0.1 m cells) marks as obstacles every
   depth point between 0.2 m (`MapConfig.max_climb_m`, habitat-sim's step height) and 0.88 m (`obstacle_height_m`) above
   the floor. Downward rays with no depth hit also count, at their floor-plane crossing within `visibility_dist_m`
-  (`missing_floor_points`, e.g. the drop past a terrace edge). Then `agent.act` picks the action: belief-map-only, via
+  (`missing_floor_points`, e.g. the drop past a terrace edge), dropping crossings whose own top-down cluster covers
+  fewer than `min_missing_floor_cluster_m` (0.5 m) cells -- a real void spans many such rays, unlike the single
+  isolated cell one bad depth pixel (e.g. a hole in the scanned mesh) yields. Then `agent.act` picks the action: belief-map-only, via
   a shared `DiscretePlanner` FMM pass over a goal map of every unseen object viewpoint (or, once none remain, every frontier cell; frontier
   fragments under 0.5 m, `MapConfig.min_frontier_size_m`, are dropped) -- no ground-truth navmesh pathfinding. Of the
   agent's 8 headings, it heads for the one whose single 0.25 m move (`DiscretePlannerConfig.step_size_m`) stays on
@@ -68,7 +70,7 @@ come from, out of it; they belong with the code that builds them (`common/env_ut
   (`segmentation_tile`) is kept and, once exploration ends, saved both individually
   (`datadump/<run_name>/<scene>/prediction_frames/step_<step>.png`) and as one `predictions_mosaic.png`
   (`save_exploration_visuals`, which also writes that scene's final `decision.png`/`object.png`). Each step also saves a
-  3-tile (observation, belief map cropped to the 256 x 256 cells around the agent, ground truth) snapshot to
+  4-tile (observation, depth, belief map cropped to the 256 x 256 cells around the agent, ground truth) snapshot to
   `datadump/<run_name>/<scene>/images/exploration_snapshots/snapshot_<step>.png`, assembled into `exploration.webp`
   (lossless animated WebP, not GIF -- GIF's 256-color palette cap crowds out or merges rare colors like the belief
   map's green explored tint) once exploration ends.

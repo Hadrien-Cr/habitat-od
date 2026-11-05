@@ -37,6 +37,7 @@ class EpisodeTrace:
     """What habitat_od_search/main.py accumulates while running an episode, beyond the agent's own state."""
     goal_seen: bool = False
     stuck: bool = False
+    stop_reason: Optional[str] = None  # the StopReason agent.act() returned alongside its last "stop" action
     world_trajectory: List[Tuple[np.ndarray, float]] = field(default_factory=list)  # (world position, heading) at every act()
 
 
@@ -50,6 +51,7 @@ class EpisodeResult:
     spl: float
     steps: int
     stuck: bool
+    stop_reason: Optional[str]
     path_length: float
     geodesic_distance: float
     distance_to_goal: float
@@ -108,7 +110,7 @@ def episode_result(agent: SearchAgent, episode: NavigationEpisode, goals: List[S
         scene_id=episode.scene_id, episode_id=episode.episode_id, object_category=category,
         rarity_tier=rarity_tiers()[main_category(category)], success=success,
         spl=float(success) * geodesic_distance / max(path_length, geodesic_distance), steps=len(positions), stuck=trace.stuck,
-        path_length=path_length, geodesic_distance=geodesic_distance,
+        stop_reason=trace.stop_reason, path_length=path_length, geodesic_distance=geodesic_distance,
         distance_to_goal=distance_to_goal,
         failure_category=classify_failure(success, agent, goals, trace.goal_seen).value,
     )

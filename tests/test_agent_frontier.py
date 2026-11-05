@@ -29,7 +29,7 @@ _COLLISION_DIST_M = 0.15  # matches common/env_utils/sensors.py::AgentCollisionS
 
 def test_exploration_gif() -> None:
     """Runs FrontierExplorationAgent for _EXPLORATION_STEPS in dummy_scene.py's synthetic flat, saving a
-    3-tile (observation, belief map, ground truth) snapshot per step and assembling them into exploration.webp."""
+    4-tile (observation, depth, belief map, ground truth) snapshot per step and assembling them into exploration.webp."""
     from dummy_scene import _DEPTH_CAMERA, _MAP_CONFIG, _START, _TURN_ANGLE_DEG, _dummy_sim, _ground_truth_meshes, _navmesh_floor_offset
 
     shutil.rmtree(_TESTDUMP_DIR, ignore_errors=True)
@@ -72,7 +72,7 @@ def test_exploration_gif() -> None:
             ground_truth.reveal(np.array(state.position), heading)
 
             act_start = time.perf_counter()
-            action = agent.act(state, obs["depth"], collided)
+            action, _ = agent.act(state, obs["depth"], collided)
             profile_timer.update("act", time.perf_counter() - act_start)
 
             mosaic = exploration_snapshot(obs, agent, ground_truth, trajectory_px)

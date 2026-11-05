@@ -85,14 +85,21 @@ def detect_frontier_waypoints(
     return np.stack([rows[far_enough], cols[far_enough]], axis=1).astype(float)
 
 
+def large_component_mask(pixels: np.ndarray, shape: tuple, min_size_px: int) -> np.ndarray:
+    """Boolean mask, aligned with pixels, of those whose 8-connected component (painted onto a shape grid) covers
+    at least min_size_px cells -- drops slivers such as unexplored space beside a door frame, or a single
+    spurious cell from one bad depth pixel, while keeping any fragment large enough to be real."""
+    pixel_cells = pixels.astype(int)
+    mask = np.zeros(shape, np.uint8)
+    mask[pixel_cells[:, 0], pixel_cells[:, 1]] = 1
+    _, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    return stats[labels[pixel_cells[:, 0], pixel_cells[:, 1]], cv2.CC_STAT_AREA] >= min_size_px
+
+
 def without_small_frontiers(frontier_pixels: np.ndarray, shape: tuple, min_size_px: int) -> np.ndarray:
     """frontier_pixels minus every 8-connected frontier fragment of fewer than min_size_px cells -- e.g. a sliver of
     unexplored space beside a door frame, which vanishes as soon as the agent turns towards it."""
-    pixels = frontier_pixels.astype(int)
-    mask = np.zeros(shape, np.uint8)
-    mask[pixels[:, 0], pixels[:, 1]] = 1
-    _, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    return frontier_pixels[stats[labels[pixels[:, 0], pixels[:, 1]], cv2.CC_STAT_AREA] >= min_size_px]
+    return frontier_pixels[large_component_mask(frontier_pixels, shape, min_size_px)]
 
 
 def _fill_small_unexplored(full_map: np.ndarray, explored_mask: np.ndarray, area_thresh: int) -> np.ndarray:
