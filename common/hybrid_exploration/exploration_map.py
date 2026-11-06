@@ -2,14 +2,21 @@
 incrementally from depth (no ground-truth navmesh). Cells start free (unknown is traversable until a depth
 point marks it an obstacle, matching facebookresearch/home-robot's DiscretePlanner convention) and
 accumulate forever; `explored` tracks what's actually been observed, for frontier detection only -- it never
-gates what FMMPlanner can plan through."""
+gates what FMMPlanner can plan through. Also carries goal_score, a per-cell running max of a single-target
+search's own detection score (SearchAgent's "is the target here" belief, modeled on home-robot's
+Categorical2DSemanticMapState, narrowed to the one caller-chosen target class Detector.predict_target scores
+per frame)."""
 from dataclasses import dataclass
 
+import habitat_sim
 import numpy as np
 import torch
 
 from common.hybrid_exploration.frontiers import detect_frontier_waypoints, large_component_mask, reveal_fog_of_war, without_small_frontiers
-from common.utils.projection_utils import DepthCamera, object_points, project_batch_masks
+from common.utils.concept_graph import ConceptGraphConfig
+from common.utils.projection_utils import (
+    DepthCamera, downsample_points, foreground_points, main_cluster_mask, nearest_resized, object_points, project_batch_masks,
+)
 from common.utils.pose_utils import sensor_pose_matrix
 
 
@@ -29,12 +36,51 @@ class MapConfig:
     # FOV cone has its apex at the agent's own position, which (before it has moved anywhere) is itself explored
     # but surrounded by unexplored space on most sides, so it would otherwise qualify as a "frontier" and make
     # DiscretePlanner's closest-goal collapse to the agent's current position (distance 0, no real target)
+    lift_image_size: int = 512  # goal-mask depth/mask resize before mark_goal's own back-projection
+    score_decay: float = 0.9  # mark_goal's running per-cell score, aged by this factor each step within in_view
+    # concept-graphs' own per-detection denoising (ConceptGraphConfig), reused by mark_goal to drop a mask's
+    # floor/background bleed-through before it reaches goal_score: voxel-downsample, then main_cluster_mask's
+    # largest DBSCAN cluster (detection_dbscan_eps/min_points) plus any smaller one attached within dbscan_eps,
+    # up to detection_max_attached_fraction of it. Defaults mirror ConceptGraphConfig's own, so the two stay in sync.
+    downsample_voxel_size: float = ConceptGraphConfig.downsample_voxel_size
+    detection_dbscan_eps: float = ConceptGraphConfig.detection_dbscan_eps
+    detection_dbscan_min_points: int = ConceptGraphConfig.detection_dbscan_min_points
+    dbscan_eps: float = ConceptGraphConfig.dbscan_eps
+    detection_max_attached_fraction: float = ConceptGraphConfig.detection_max_attached_fraction
 
 # white unexplored, light gray explored, dark gray obstacles (habitat_od_search/evaluator.py's old
 # _obstacle_map scheme) -- BGR, matching common/utils/plot_utils.py's own convention
 _BELIEF_IMAGE_UNEXPLORED = (255, 255, 255)
 _BELIEF_IMAGE_EXPLORED = (225, 225, 225)
 _BELIEF_IMAGE_OBSTACLE = (90, 90, 90)
+
+
+def _denoised_points(points: np.ndarray, camera_center: np.ndarray, floor_height: float, config: MapConfig) -> np.ndarray:
+    """points without the floor or the wall behind them, then concept-graphs' own per-detection denoising
+    (main_cluster_mask on the voxel-downsampled rest) -- the same cleanup test_denoise.py exercises, dropping a
+    porous mask's floor/background bleed-through before it ever reaches goal_score."""
+    foreground = foreground_points(points, floor_height, camera_center)
+    if len(foreground) == 0:
+        return foreground
+    downsampled = downsample_points(foreground, config.downsample_voxel_size)
+    kept = main_cluster_mask(
+        downsampled, config.detection_dbscan_eps, config.detection_dbscan_min_points, config.dbscan_eps, config.detection_max_attached_fraction,
+    )
+    return downsampled[kept]
+
+
+def _goal_mask_points(
+    depth: np.ndarray, sensor_state: habitat_sim.SixDOFPose, mask: torch.Tensor, camera: DepthCamera, floor_height: float, config: MapConfig,
+) -> np.ndarray:
+    """World points of mask's in-range depth pixels, depth and mask resized to lift_image_size together (the
+    resolution lifting runs at elsewhere, habitat_embodied_sl/main.py::observe_frame), denoised."""
+    lift_shape = (config.lift_image_size, config.lift_image_size)
+    resized_depth = nearest_resized(np.asarray(depth).squeeze(), lift_shape).numpy()
+    resized_mask = nearest_resized(mask[None, None].float(), lift_shape)[0, 0].bool()
+    pose = sensor_pose_matrix(sensor_state)
+    points = object_points(resized_depth, pose, resized_mask, camera)
+    return _denoised_points(points, pose[:3, 3], floor_height, config)
+
 
 class EstimatedMap:
     def __init__(self, config: MapConfig, position: np.ndarray):
@@ -47,6 +93,7 @@ class EstimatedMap:
         self.in_view = np.zeros((self.map_pixels_size, self.map_pixels_size), dtype=np.uint8)
         self.frontier_pixels = np.empty((0, 2))
         self._frontier_obstacles = self.obstacles.copy()
+        self.goal_score = np.zeros((self.map_pixels_size, self.map_pixels_size), dtype=np.float32)
 
     def pixels(self, meters: float) -> int:
         return int(meters / self.meters_per_pixel)
@@ -59,10 +106,14 @@ class EstimatedMap:
     def to_pixel(self, position: np.ndarray) -> np.ndarray:
         return self.to_pixels(np.asarray(position)[None])[0]
 
+    def to_world_xz(self, pixels: np.ndarray) -> np.ndarray:
+        """World (x, z) of (row, col) pixels' own cell centers."""
+        offsets = (pixels.astype(float) + 0.5) * self.meters_per_pixel
+        return offsets[:, ::-1] + self.origin_world[[0, 2]]
+
     def to_world(self, pixels: np.ndarray, height: float) -> np.ndarray:
         """World points of (row, col) pixels, at height."""
-        offsets = (pixels.astype(float) + 0.5) * self.meters_per_pixel
-        xz = offsets[:, ::-1] + self.origin_world[[0, 2]]
+        xz = self.to_world_xz(pixels)
         return np.stack([xz[:, 0], np.full(len(xz), height), xz[:, 1]], axis=1)
 
     def free(self) -> np.ndarray:
@@ -124,6 +175,42 @@ class EstimatedMap:
         pixels = self.to_pixels(points)
         in_bounds = (pixels[:, 0] >= 0) & (pixels[:, 0] < grid.shape[0]) & (pixels[:, 1] >= 0) & (pixels[:, 1] < grid.shape[1])
         grid[pixels[in_bounds, 0], pixels[in_bounds, 1]] = fill
+
+    def decay_goal_score(self) -> None:
+        """Ages down goal_score only within the agent's current field of view -- cells outside it keep their
+        last score, since no new (dis)confirming observation of them has happened this step."""
+        self.goal_score[self.in_view > 0] *= self.config.score_decay
+
+    def goal_mask(self, goal_score_thresh: float) -> np.ndarray:
+        """Every cell tied at goal_score's current peak, once that peak clears goal_score_thresh -- not a single
+        frozen point, so DiscretePlanner can pick whichever of them is actually reachable."""
+        best_score = float(self.goal_score.max())
+        if best_score < goal_score_thresh:
+            return np.zeros_like(self.goal_score, dtype=np.uint8)
+        return (self.goal_score == best_score).astype(np.uint8)
+
+    def believed_goal_positions(self, goal_score_thresh: float) -> np.ndarray:
+        """World (N, 2) (x, z) of every cell goal_mask() currently selects -- the believed goal's horizontal
+        footprint, for evaluator.py's TP/FP classification."""
+        return self.to_world_xz(np.argwhere(self.goal_mask(goal_score_thresh)))
+
+    def mark_goal(self, depth: np.ndarray, sensor_state: habitat_sim.SixDOFPose, mask: torch.Tensor, score: float, camera: DepthCamera, floor_height: float) -> None:
+        """Back-projects mask's in-range depth pixels to world points, denoised, and scatters score onto their
+        top-down cells, kept as each cell's running max (decay_goal_score() already ages stale high scores down)."""
+        if score <= 0.0:
+            return
+        points = _goal_mask_points(depth, sensor_state, mask, camera, floor_height, self.config)
+        if len(points) == 0:
+            return
+        self._mark_goal(points, score)
+
+    def _mark_goal(self, points: np.ndarray, score: float) -> None:
+        """Scatters points onto goal_score's top-down cells, kept as each cell's running max."""
+        grid = self.goal_score
+        pixels = self.to_pixels(points)
+        in_bounds = (pixels[:, 0] >= 0) & (pixels[:, 0] < grid.shape[0]) & (pixels[:, 1] >= 0) & (pixels[:, 1] < grid.shape[1])
+        rows, cols = pixels[in_bounds, 0], pixels[in_bounds, 1]
+        grid[rows, cols] = np.maximum(grid[rows, cols], score)
 
     def coverage(self) -> float:
         return float((self.explored > 0).sum() / self.explored.size)

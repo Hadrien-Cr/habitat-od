@@ -18,7 +18,7 @@ from common.utils.plot_utils import save_gif
 from common.utils.pose_utils import quaternion_from_rpy
 from common.vision.detic import Vocabulary, get_clip_embeddings, build_text_encoder # type: ignore
 from common.vision.detector import Detector
-from habitat_od_search.search_agent import SearchAgent, SearchAgentConfig, GoalScoreConfig, DiscretePlannerConfig
+from habitat_od_search.search_agent import SearchAgent, SearchAgentConfig, DiscretePlannerConfig
 from habitat.tasks.nav.nav import TopDownMap
 
 
@@ -31,7 +31,7 @@ _TARGET_OBJECT = "pillow"
 
 def test_exploration_gif() -> None:
     """Runs SearchAgent for _EXPLORATION_STEPS in dummy_scene.py's synthetic flat, saving a
-    4-tile (observation, depth, belief map, ground truth) snapshot per step and assembling them into exploration.webp."""
+    3-tile (observation, belief map, ground truth) snapshot per step and assembling them into exploration.webp."""
     from dummy_scene import _DEPTH_CAMERA, _MAP_CONFIG, _START, _TURN_ANGLE_DEG, _dummy_sim, _ground_truth_meshes, _navmesh_floor_offset
 
     shutil.rmtree(_TESTDUMP_DIR, ignore_errors=True)
@@ -51,7 +51,6 @@ def test_exploration_gif() -> None:
         config = SearchAgentConfig(
             map_config=_MAP_CONFIG,
             planner_config=DiscretePlannerConfig(turn_angle_deg=_TURN_ANGLE_DEG, debug=True),
-            goal_score_config=GoalScoreConfig(score_decay=0.9, lift_image_size=512),
             confidence_thresh=0.5,
             goal_score_thresh=0.5,
             max_steps=_EXPLORATION_STEPS,

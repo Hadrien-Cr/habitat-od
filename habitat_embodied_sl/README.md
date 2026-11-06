@@ -70,7 +70,7 @@ come from, out of it; they belong with the code that builds them (`common/env_ut
   (`segmentation_tile`) is kept and, once exploration ends, saved both individually
   (`datadump/<run_name>/<scene>/prediction_frames/step_<step>.png`) and as one `predictions_mosaic.png`
   (`save_exploration_visuals`, which also writes that scene's final `decision.png`/`object.png`). Each step also saves a
-  4-tile (observation, depth, belief map cropped to the 256 x 256 cells around the agent, ground truth) snapshot to
+  3-tile (observation, belief map cropped to the 256 x 256 cells around the agent, ground truth) snapshot to
   `datadump/<run_name>/<scene>/images/exploration_snapshots/snapshot_<step>.png`, assembled into `exploration.webp`
   (lossless animated WebP, not GIF -- GIF's 256-color palette cap crowds out or merges rare colors like the belief
   map's green explored tint) once exploration ends.

@@ -419,12 +419,6 @@ def centered_crop(image: np.ndarray, center: np.ndarray, size: int) -> np.ndarra
     return image[row0:row0 + size, col0:col0 + size]
 
 
-def depth_image(depth: np.ndarray, min_depth: float, max_depth: float) -> np.ndarray:
-    """depth (meters, any shape) as a BGR grayscale image: min_depth black, max_depth white, clipped outside that range."""
-    normalized = np.clip((np.asarray(depth).squeeze() - min_depth) / (max_depth - min_depth), 0.0, 1.0)
-    return cv2.cvtColor((normalized * 255).astype(np.uint8), cv2.COLOR_GRAY2BGR)
-
-
 def letterboxed(image: np.ndarray, width: int, height: int) -> np.ndarray:
     """image scaled to fit within (width, height) without distorting its aspect ratio, centered on black bars."""
     scale = min(width / image.shape[1], height / image.shape[0])

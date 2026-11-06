@@ -4,7 +4,7 @@ Runs common/hybrid_exploration's HybridFrontierAgent in exhaustive mode in dummy
 oracle detector: each visible object's points come from its semantic mask and depth.
 Into tests/testdump/test_agent_hybrid/ (emptied when the test starts) go every step's class-agnostic predictions
 drawn on its rgb as one tile of predictions_mosaic.png and individually as prediction_frames/step_<step>.png, and
-every step's 4-tile (observation, depth, belief map, ground truth) snapshot to
+every step's 3-tile (observation, belief map, ground truth) snapshot to
 images/test_exploration_gif/snapshot_<step>.png and assembled into exploration.webp. Walls, floor and ceiling are flat-shaded.
 The run asserts it never got stuck (no net translation, BaseExplorationAgent.is_stuck).
 
@@ -129,7 +129,7 @@ def _start_agent(sim: habitat_sim.Simulator, config: HybridConfig, camera) -> Hy
 
 def _explore_and_fuse(sim: habitat_sim.Simulator, config: HybridConfig, detector: Detector, images_dir: Path) -> tuple:
     """(agent, concept graph fused from every step's predictions and frames, every step's predictions, whether the
-    agent got stuck) of one HybridFrontierAgent run steered by oracle beliefs, saving a 4-tile (observation, depth,
+    agent got stuck) of one HybridFrontierAgent run steered by oracle beliefs, saving a 3-tile (observation,
     belief map, ground truth) snapshot per step to images_dir/snapshot_<step>.png."""
     sim_agent, agent = sim.get_agent(0), _start_agent(sim, config, _DEPTH_CAMERA)
     ground_truth = GroundTruthMapTracker(sim.pathfinder, np.array(_START), fov_deg=_MAP_CONFIG.fov_deg, visibility_dist_m=_MAP_CONFIG.visibility_dist_m)

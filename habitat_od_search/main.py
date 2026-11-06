@@ -9,9 +9,8 @@ runs out of agent.max_steps -- for at most max_episodes episodes in all (every o
 distance-to-goal and failure category (habitat_od_search/evaluator.py) is appended to
 habitat_od_search/logs/<run_name>/metrics.jsonl as soon as it ends, and the per-rarity-tier summary and failure
 breakdown tables are printed and saved to summary.md there. With agent.use_gt_detections, the agent uses the goal
-objects' ground-truth detections (target_instances, scored 1.0) instead of Detic's; with agent.use_oracle_path, it
-follows habitat-sim's greedy geodesic shortest path to the nearest goal's reach_view_point (the navigable point within
-agent.reach_m of its mesh footprint closest to its center) instead of planning. Success is a stop within 1 m of a goal object's mesh footprint. With save_visuals, each step's 4-tile (detections, depth,
+objects' ground-truth detections (target_instances, scored 1.0) instead of Detic's.
+Success is a stop within 1 m of a goal object's mesh footprint. With save_visuals, each step's 3-tile (detections,
 belief map cropped to the 256 x 256 cells around the agent, ground truth with the episode's goal object footprints) snapshot is saved to images/<run_index>_ep<episode_id>_<scene_id>/ (run_index counting every episode run so far,
 across scenes) and assembled into episode.webp, its last one also copied next to that folder as
 images/<run_index>_ep<episode_id>_<scene_id>_last_snapshot.png. With save_mesh, each scene's ground-truth mesh (stage
@@ -32,7 +31,6 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Iterator, List, Optional, Set, Tuple
 
-import habitat_sim
 import numpy as np
 import trimesh
 from habitat.tasks.nav.nav import NavigationEpisode, TopDownMap  # type: ignore
@@ -43,36 +41,40 @@ from common.env_utils.env_base import ExplorationEnv, build_env, sensor_geometry
 from common.env_utils.object_annotations import get_all_objects, scene_world_mesh
 from common.env_utils.sense import target_instances, visible_object_ids
 from common.hybrid_exploration.exploration_map import MapConfig
-from common.hybrid_exploration.frontier_exp_agent import DiscretePlannerConfig, exploration_snapshot
+from common.hybrid_exploration.frontier_exp_agent import DiscretePlannerConfig, exploration_snapshot, obs_dilation_cells
 from common.hybrid_exploration.ground_truth_map import GroundTruthMapTracker
-from common.hybrid_exploration.semantic_map import GoalScoreConfig
 from common.utils.plot_utils import save_gif
 from common.vision.detic import Vocabulary
 from common.vision.detector import Detector
-from habitat_od_search.evaluator import EpisodeResult, EpisodeTrace, closest_view_point, episode_result, failure_table, summary_table
+from habitat_od_search.evaluator import EpisodeResult, EpisodeTrace, episode_result, failure_table, summary_table
 from habitat_od_search.hssd_rare_dataset import SceneGoal, available_scenes, load_scene_episodes, main_category
-from habitat_od_search.search_agent import SearchAgent, SearchAgentConfig, reach_view_point
+from habitat_od_search.search_agent import SearchAgent, SearchAgentConfig
 
 _RUNS_ROOT = Path("habitat_od_search") / "logs"
 _GIF_FPS = 10
 
 
-def search_agent_config(agent_cfg: DictConfig, fov_deg: float, turn_angle_deg: float) -> SearchAgentConfig:
+def search_agent_config(agent_cfg: DictConfig, fov_deg: float, turn_angle_deg: float, agent_radius_m: float) -> SearchAgentConfig:
     return SearchAgentConfig(
-        map_config=MapConfig(fov_deg, resolution_m=agent_cfg.resolution_m, visibility_dist_m=agent_cfg.visibility_dist_m),
-        goal_score_config=GoalScoreConfig(lift_image_size=agent_cfg.lift_image_size, score_decay=agent_cfg.score_decay),
+        map_config=MapConfig(
+            fov_deg, resolution_m=agent_cfg.resolution_m, visibility_dist_m=agent_cfg.visibility_dist_m,
+            lift_image_size=agent_cfg.lift_image_size, score_decay=agent_cfg.score_decay,
+        ),
         goal_score_thresh=agent_cfg.goal_score_thresh,
         max_steps=agent_cfg.max_steps,
         confidence_thresh=agent_cfg.confidence_thresh,
-        planner_config=DiscretePlannerConfig(turn_angle_deg, debug=agent_cfg.get("planner_debug", False)),
+        planner_config=DiscretePlannerConfig(
+            turn_angle_deg,
+            obs_dilation_selem_radius=obs_dilation_cells(agent_radius_m, agent_cfg.resolution_m),
+            debug=agent_cfg.get("planner_debug", False),
+        ),
         reach_m=agent_cfg.reach_m,
         use_gt_detections=agent_cfg.use_gt_detections,
-        use_oracle_path=agent_cfg.use_oracle_path,
     )
 
 
 def save_snapshot(obs: dict, agent: SearchAgent, ground_truth: GroundTruthMapTracker, trace: EpisodeTrace, images_dir: Path) -> None:
-    """Reveals the agent's current view on ground_truth, then saves the step's 4-tile exploration_snapshot -- the
+    """Reveals the agent's current view on ground_truth, then saves the step's 3-tile exploration_snapshot -- the
     ground-truth tile from the agent's world poses, its belief map in the agent's own start frame."""
     position, heading = trace.world_trajectory[-1]
     ground_truth.reveal(position, heading)
@@ -83,21 +85,16 @@ def save_snapshot(obs: dict, agent: SearchAgent, ground_truth: GroundTruthMapTra
 
 
 def goal_meshes(env: ExplorationEnv, goal_ids: Set[int]) -> List[Tuple[int, int, trimesh.Trimesh]]:
-    """env.get_gt_meshes of the goal objects alone, for GroundTruthMapTracker.set_object_footprints, reach_view_point and episode_result."""
+    """env.get_gt_meshes of the goal objects alone, for GroundTruthMapTracker.set_object_footprints and episode_result."""
     annotation = env.get_object_annotation()
     goal_classes = [annotation.classes[annotation.obj_id_to_class_id[object_id]] for object_id in goal_ids]
     return [mesh for mesh in env.get_gt_meshes(goal_classes) if mesh[0] in goal_ids]
 
 
-def oracle_step(oracle: habitat_sim.GreedyGeodesicFollower, pathfinder: habitat_sim.PathFinder, position: np.ndarray, view_points: np.ndarray) -> str:
-    """oracle's greedy step toward the one of view_points nearest position, "stop" once no step gets it closer."""
-    try:
-        return oracle.next_action_along(closest_view_point(pathfinder, position, view_points))
-    except habitat_sim.errors.GreedyFollowerError:
-        return "stop"
-
-
-def run_episode(env: ExplorationEnv, agent: SearchAgent, episode: NavigationEpisode, goals: List[SceneGoal], images_dir: Optional[Path]) -> EpisodeResult:
+def run_episode(
+    env: ExplorationEnv, agent: SearchAgent, episode: NavigationEpisode, goals: List[SceneGoal], images_dir: Optional[Path],
+    navmesh_bounds: Tuple[np.ndarray, np.ndarray],
+) -> EpisodeResult:
     """Runs agent on episode until it stops or gets stuck, saving per-step snapshots to images_dir if given."""
     obs = env.reset(episode=episode)
     start_state = env.get_agent_state()
@@ -105,16 +102,12 @@ def run_episode(env: ExplorationEnv, agent: SearchAgent, episode: NavigationEpis
     target = main_category(category)
     agent.reset(
         start_state, start_state.position[1] - env.navmesh_floor_offset(),
-        Vocabulary(f"search_{target}", (target,)).clip_embeddings()[:, 0], category,
+        Vocabulary(f"search_{target}", (target,)).clip_embeddings()[:, 0], category, navmesh_bounds,
     )
     goal_handles = {goal.object_handle for goal in goals}
     goal_ids = {obj.object_id for obj in get_all_objects(env.get_sim()) if obj.handle in goal_handles}
     trace = EpisodeTrace()
     meshes = goal_meshes(env, goal_ids)
-    oracle_view_points = np.array([reach_view_point(env.get_pathfinder(), mesh, start_state.position[1], agent.config.reach_m) for _, _, mesh in meshes])
-    oracle = habitat_sim.GreedyGeodesicFollower(
-        env.get_pathfinder(), env.get_sim().agents[0], stop_key="stop", forward_key="move_forward", left_key="turn_left", right_key="turn_right",
-    )
     ground_truth = env.gt_map_tracker(agent.map_config.fov_deg, agent.map_config.visibility_dist_m)
     if images_dir is not None:
         images_dir.mkdir(parents=True, exist_ok=True)
@@ -122,8 +115,7 @@ def run_episode(env: ExplorationEnv, agent: SearchAgent, episode: NavigationEpis
     for _ in range(agent.config.max_steps):
         state = env.get_agent_state()
         trace.world_trajectory.append((np.array(state.position), float(TopDownMap.get_polar_angle(state))))
-        oracle_action = oracle_step(oracle, env.get_pathfinder(), np.array(state.position), oracle_view_points) if agent.config.use_oracle_path else None
-        action, stop_reason = agent.act(state, obs["rgb"], obs["depth"], gt_instances=target_instances(obs, goal_ids), oracle_action=oracle_action)
+        action, stop_reason = agent.act(state, obs["rgb"], obs["depth"], gt_instances=target_instances(obs, goal_ids))
         trace.goal_seen |= bool(goal_ids & visible_object_ids(obs))
         if images_dir is not None:
             save_snapshot(obs, agent, ground_truth, trace, images_dir)
@@ -153,8 +145,9 @@ def evaluate_scene(scene_id: str, cfg: DictConfig, detector: Detector, run_dir: 
         (run_dir / "meshes").mkdir(parents=True, exist_ok=True)
         scene_world_mesh(env.get_sim()).export(str(run_dir / "meshes" / f"{scene_id}.glb"))
     fov_deg, camera = sensor_geometry(habitat_cfg)
-    config = search_agent_config(cfg.agent, fov_deg, habitat_cfg.habitat.simulator.turn_angle)
+    config = search_agent_config(cfg.agent, fov_deg, habitat_cfg.habitat.simulator.turn_angle, habitat_cfg.habitat.simulator.agents.main_agent.radius)
     pathfinder = env.get_pathfinder()
+    navmesh_bounds = pathfinder.get_bounds()
     episodes = [
         episode for episode in scene_episodes.episodes
         if pathfinder.island_area(pathfinder.get_island(np.array(episode.start_position))) >= cfg.min_island_area_m2
@@ -167,7 +160,7 @@ def evaluate_scene(scene_id: str, cfg: DictConfig, detector: Detector, run_dir: 
             rng = episode_rng(cfg.seed, scene_id, episode.episode_id)
             agent = SearchAgent(detector, camera, config, rng, str(run_dir), run_name, main_category(category))
             images_dir = run_dir / "images" / run_name if cfg.save_visuals else None
-            yield run_episode(env, agent, episode, scene_episodes.goals_by_category[f"{scene_id}_{category}"], images_dir)
+            yield run_episode(env, agent, episode, scene_episodes.goals_by_category[f"{scene_id}_{category}"], images_dir, navmesh_bounds)
     finally:
         env.close()
 

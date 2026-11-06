@@ -28,18 +28,29 @@ used only for scoring, unless an ablation flag (below) is turned on.
    scenes (`null` runs every one).
 2. **Reset:** the agent gets the episode's start pose. From then on it sees only poses relative to that start
    (`start_frame_state`), as habitat's episodic GPS + compass give them. The target embedding is the CLIP text
-   embedding of the main category.
+   embedding of the main category. Its belief map (`EstimatedMap`, fixed at `map_size_m`, 48 m) is centered on the
+   scene's own navmesh extent (`pathfinder.get_bounds()`, computed once per scene) rather than the agent's start
+   position, whenever that extent fits within `map_size_m` -- so a long episode doesn't run the agent past the
+   map's fixed edge; otherwise (or for the other two agents, which don't pass navmesh bounds) it's centered on the
+   agent's own start position, as before.
 3. **Per step (`SearchAgent.act`):**
    - Update the belief map from depth: obstacles are depth points 0.2–0.88 m above the floor, plus the
      floor-plane crossings of no-hit downward rays (dropping any crossing whose own cluster covers fewer than
      `min_missing_floor_cluster_m`, 0.5 m, cells -- e.g. a single bad depth pixel from a hole in the scanned
-     mesh). Then age the goal-score map by `score_decay` (0.9).
+     mesh). Then age the goal-score map by `score_decay` (0.9), within the agent's current field of view only --
+     cells outside it keep their last score, since no new observation of them happened this step.
    - **Detect:** run `Detector.predict_target`, Detic's single-class zero-shot inference against the target
      embedding (classifier reset to [target, background]), with SAM masks when `--sam-checkpoint` is given.
      Boxes are kept above `--score-thresh` (0.4) and suppressed at `--nms-thresh` (0.5).
    - **Fuse:** if the best detection scores at least `goal_score_thresh` (0.5), back-project its mask (at
-     `lift_image_size`, 512) into the `GoalScoreMap`, which keeps a running max per cell. The best-scoring
-     detection so far sets the believed goal position (`best_goal_world`).
+     `lift_image_size`, 512) into world points, drop the floor and the wall behind them, then run
+     concept-graphs' own per-detection denoising (voxel-downsample at `downsample_voxel_size`, 0.025 m, then
+     `main_cluster_mask`'s largest DBSCAN cluster -- `detection_dbscan_eps`/`detection_dbscan_min_points`,
+     0.05 m/5 -- plus any smaller one attached within `dbscan_eps`, 0.1 m, up to
+     `detection_max_attached_fraction`, 0.15, of it) before scattering the score onto the estimated map's own
+     `goal_score` grid (`EstimatedMap.mark_goal`), kept as each cell's running max (and the 3D point that set
+     it). The believed goal (`goal_mask()`) is every cell currently tied at that grid's own peak score, not a
+     single frozen point -- so the planner can pick whichever of them is actually reachable.
    - **Stop** at `max_steps` (2000 in `eval_200_*`; the default config uses 500) or when stuck (no net
      translation over 25 steps, `BaseExplorationAgent.is_stuck`).
    - **Act:** start with a full 360° spin. Then the `DiscretePlanner` (cells of `resolution_m`, 0.05 m in
@@ -47,20 +58,18 @@ used only for scoring, unless an ablation flag (below) is turned on.
      towards the frontiers otherwise. It stops within 0.75 × `reach_m` of the goal, or when there is neither a
      goal nor a frontier left. With `agent.planner_debug` (off by default), each step also writes a
      `snapshot_planner_<timestep>.png` mosaic (traversable/goal/FMM-distance/frontier cells around the agent) to
-     the episode's own `images/<run_index>_ep<episode_id>_<scene_id>/`, alongside its `snapshot_gif_*.png`.
+     the episode's own `images/<run_index>_ep<episode_id>_<scene_id>/planner/`, alongside its own
+     `images/<run_index>_ep<episode_id>_<scene_id>/snapshot_gif_*.png`.
    - Every agent's `act` (`common/agents/abstract_agent.py::Agent`) returns `(action, StopReason)`, the reason
      only set when `action` is `"stop"`: `stuck`, `collision` (the last `max_successive_collisions` steps all
      collided; `FrontierExplorationAgent`/`HybridFrontierAgent` only), `exploration_exhausted` (no goal and no
-     frontier left), `max_steps`, `oracle_stop` (`use_oracle_path`'s oracle itself stopped), or one of
+     frontier left), `max_steps`, or one of
      `DiscretePlanner`'s own two stop cases -- `goal_reached` (within its goal tolerance of a found goal) or
      `no_feasible_plan` (no heading gets closer to the goal, short of it; `DiscretePlanner.last_stop_reason`).
      It is kept on the episode's `EpisodeTrace`/`EpisodeResult` as `stop_reason`.
 4. **Ablations:**
    - `agent.use_gt_detections`: the agent uses the goal objects' ground-truth `bbsgt` instances (area/visibility
      filtered, scored 1.0, `sense.py::target_instances`) instead of Detic's detections. This isolates recognition.
-   - `agent.use_oracle_path`: the agent follows habitat-sim's `GreedyGeodesicFollower` to the nearest goal's
-     `reach_view_point` (the navigable point within `reach_m` of the goal's mesh footprint, closest to its center).
-     This isolates navigation.
 
 ## Metrics (`evaluator.py`)
 
@@ -87,7 +96,7 @@ used only for scoring, unless an ablation flag (below) is turned on.
 |---|---|
 | `metrics.jsonl` | one `EpisodeResult` per line, appended as each episode ends: scene, episode, category, rarity tier, success, SPL, steps, stuck, stop reason, path length, geodesic distance, dtg, failure category |
 | `summary.md` | success / SPL / dtg / episode count per rarity tier and overall, followed by the share of each failure category; also printed |
-| `images/<run_index>_ep<episode_id>_<scene_id>/` | with `save_visuals`: one 4-tile snapshot per step (Detic detections, depth, the belief map cropped to 256 × 256 cells around the agent, ground truth with the goal footprints) and `episode.webp` |
+| `images/<run_index>_ep<episode_id>_<scene_id>/` | with `save_visuals`: one 3-tile snapshot per step (Detic detections, the belief map cropped to 256 × 256 cells around the agent, ground truth with the goal footprints) and `episode.webp` |
 | `images/<run_index>_ep<episode_id>_<scene_id>_last_snapshot.png` | the episode's last snapshot |
 | `meshes/<scene_id>.glb` | with `save_mesh`: the scene's ground-truth mesh (stage + every placed object, ceiling stripped), written once per scene |
 

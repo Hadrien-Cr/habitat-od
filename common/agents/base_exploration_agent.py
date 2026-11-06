@@ -34,6 +34,7 @@ _CURRENT_POSITION_COLOR = (0, 255, 0)  # BGR -- green, the agent's current posit
 _GOAL_SCORE_COLORMAP = matplotlib.colormaps["cool"]  # cyan (low) -> magenta (high), by goal_score_image() value
 _STUCK_WINDOW_STEPS = 25
 _STUCK_RADIUS_M = 0.1
+_MAP_FIT_MARGIN = 0.9  # fraction of map_size_m the navmesh's own extent must fit within to be used as the map's center
 
 class ProfileTimer:
     functions_names: List[str]
@@ -87,12 +88,18 @@ class BaseExplorationAgent(Agent):
         self._initial_spin_steps = int(round(360.0 / turn_angle_deg))
         self._initial_spin_steps_left = self._initial_spin_steps
 
-    def reset(self, start_state: habitat_sim.AgentState, floor_height: float) -> None:
-        """start_state's pose becomes the origin of every pose the agent sees (start_frame_state); floor_height is a world y."""
+    def reset(
+        self, start_state: habitat_sim.AgentState, floor_height: float, navmesh_bounds: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+    ) -> None:
+        """start_state's pose becomes the origin of every pose the agent sees (start_frame_state); floor_height is a
+        world y. navmesh_bounds (a scene's full pathfinder.get_bounds(), world-frame) centers EstimatedMap on the
+        navmesh's own horizontal extent instead of the agent, when that extent fits within map_size_m -- so a long
+        episode doesn't run the agent past the map's fixed edge; otherwise (or without navmesh_bounds) the map is
+        centered on the agent's own start position, as before."""
         self._start_position = np.array(start_state.position)
         self._start_rotation_inverse = start_state.rotation.inverse()
         self.floor_height = floor_height - self._start_position[1]
-        self.estimated_map = EstimatedMap(self.map_config, np.zeros(3))
+        self.estimated_map = EstimatedMap(self.map_config, self._map_center(navmesh_bounds))
         if self.planner is not None:
             self.planner.reset()
         self.trajectory = []
@@ -100,6 +107,19 @@ class BaseExplorationAgent(Agent):
         self._closest_goal_map = None
         self._short_term_goal = None
         self._initial_spin_steps_left = self._initial_spin_steps
+
+    def _map_center(self, navmesh_bounds: Optional[Tuple[np.ndarray, np.ndarray]]) -> np.ndarray:
+        """The navmesh's own horizontal center, in start frame, if its full extent fits within _MAP_FIT_MARGIN of
+        map_size_m; np.zeros(3) (the agent's own start position) otherwise, or without navmesh_bounds."""
+        if navmesh_bounds is None:
+            return np.zeros(3)
+        lower, upper = navmesh_bounds
+        corners = np.array([[x, 0.0, z] for x in (lower[0], upper[0]) for z in (lower[2], upper[2])])
+        corners_start_frame = self.start_frame_points(corners)
+        extent = corners_start_frame.max(axis=0) - corners_start_frame.min(axis=0)
+        if extent[0] > _MAP_FIT_MARGIN * self.map_config.map_size_m or extent[2] > _MAP_FIT_MARGIN * self.map_config.map_size_m:
+            return np.zeros(3)
+        return (corners_start_frame.max(axis=0) + corners_start_frame.min(axis=0)) / 2
 
     def start_frame_points(self, points: np.ndarray) -> np.ndarray:
         """(N, 3) world points in the start frame."""
@@ -166,10 +186,12 @@ class BaseExplorationAgent(Agent):
         return _ACTION_NAMES[action]
 
     @staticmethod
-    def plan_stop_reason(action_name: str, no_feasible_plan: bool) -> Optional[StopReason]:
+    def plan_stop_reason(action_name: str, no_feasible_plan: bool, no_frontier: bool) -> Optional[StopReason]:
         """The StopReason for a DiscretePlanner.plan() result, when action_name is "stop" (None otherwise)."""
         if action_name != "stop":
             return None
+        if no_frontier:
+            return StopReason.EXPLORATION_EXHAUSTED
         return StopReason.NO_FEASIBLE_PLAN if no_feasible_plan else StopReason.GOAL_REACHED
 
     def spin(self) -> str:
@@ -179,7 +201,7 @@ class BaseExplorationAgent(Agent):
 
     def map_image(self) -> np.ndarray:
         """BGR top-down map: the belief map (EstimatedMap.belief_image), the current field of view tinted yellow,
-        a blue goal-score heatmap when the agent defines goal_score_image() (e.g. SearchAgent's GoalScoreMap --
+        a blue goal-score heatmap when the agent defines goal_score_image() (e.g. SearchAgent's EstimatedMap.goal_score --
         drawn where each cell's value is > 0, colored by that value), the trajectory so far in
         red, every current frontier cell (EstimatedMap.frontier_pixels, not just the one picked as goal) as a
         half-transparent orange dot, and the planner's actual target this step -- plan()'s own

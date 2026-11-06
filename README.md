@@ -49,9 +49,8 @@ Steps, thresholds, metrics and outputs are described in `habitat_od_search/READM
   (`hssd_rare_dataset.py`). Each step, the agent scores its rgb against the CLIP text embedding of the episode's
   target category, fuses the best detection into a goal-score map over its own depth-built map, and then either
   heads to the believed goal or explores frontiers. The run is configured by `--config` (default
-  `habitat_od_search/config/hssd_rare_eval.yaml`). There are two ablations: `agent.use_gt_detections` swaps in
-  ground-truth goal detections, and `agent.use_oracle_path` follows the navmesh shortest path to the goal.
-  Per-episode success, SPL, distance to goal and failure category (`evaluator.py`: exploration failure, FN/FP
+  `habitat_od_search/config/hssd_rare_eval.yaml`). `agent.use_gt_detections` is an ablation that swaps in
+  ground-truth goal detections. Per-episode success, SPL, distance to goal and failure category (`evaluator.py`: exploration failure, FN/FP
   recognition failure, TP early stop) are appended to `habitat_od_search/logs/<run_name>/metrics.jsonl`. When
   the run ends, per-rarity-tier summary and failure tables go to `summary.md`. With `save_visuals`, it also
   writes per-step snapshots and an `episode.webp` per episode.

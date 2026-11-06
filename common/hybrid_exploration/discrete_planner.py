@@ -172,7 +172,7 @@ class DiscretePlanner:
         found_goal: bool,
         use_dilation_for_stg: bool = False,
         current_timestep: Optional[int] = None,
-    ) -> Tuple[DiscreteNavigationAction, np.ndarray, Tuple[int, int], np.ndarray, bool]:
+    ) -> Tuple[DiscreteNavigationAction, np.ndarray, Tuple[int, int], np.ndarray, bool, bool]:
         """Plan a low-level action.
 
         Args:
@@ -191,7 +191,9 @@ class DiscretePlanner:
             stg: short-term goal position (x, y) in map
             dilated_obstacles: (M, M) binary array denoting dilated obstacles
             no_feasible_plan: no heading got closer to the goal, short of it, even after retrying with a smaller
-             obstacle dilation radius -- action is STOP regardless of found_goal
+             obstacle dilation radius and, if a goal was found, falling back to the frontier -- action is STOP
+            no_frontier: no_feasible_plan, and there's no frontier left either -- caller should treat this as
+             exploration exhausted, not as a failed plan
         """
         if use_dilation_for_stg:
             raise ValueError("use_dilation_for_stg=True is disabled for now; pass False")
@@ -263,8 +265,31 @@ class DiscretePlanner:
             self.curr_obs_dilation_selem_radius -= 1
             self.obs_dilation_selem = skimage.morphology.disk(self.curr_obs_dilation_selem_radius)
 
+        # still no feasible plan to the goal: fall back to the frontier once, in case the goal's own route is a
+        # dead end but another, unexplored direction isn't -- a reached stg here means "at the frontier", not
+        # "at the goal", so found_goal no longer applies for the rest of this call
+        if no_feasible_plan and found_goal and frontier_map.any():
+            (
+                short_term_goal,
+                closest_goal_map,
+                replan,
+                stop,
+                closest_goal_pt,
+                dilated_obstacles,
+            ) = self._get_short_term_goal(
+                obstacle_map=obstacle_map,
+                goal_map=np.zeros_like(goal_map),
+                start=start,
+                planning_window=planning_window,
+                frontier_map=frontier_map,
+                heading_deg=start_o,
+            )
+            no_feasible_plan = replan and not stop
+            found_goal = False
+
         if no_feasible_plan:
-            return DiscreteNavigationAction.STOP, closest_goal_map, short_term_goal, dilated_obstacles, no_feasible_plan
+            no_frontier = not frontier_map.any()
+            return DiscreteNavigationAction.STOP, closest_goal_map, short_term_goal, dilated_obstacles, no_feasible_plan, no_frontier
 
         # Normalize agent angle
         angle_agent = normalize_angle(start_o)
@@ -291,7 +316,7 @@ class DiscretePlanner:
         )
 
         self.last_action = action
-        return action, closest_goal_map, short_term_goal, dilated_obstacles, no_feasible_plan
+        return action, closest_goal_map, short_term_goal, dilated_obstacles, no_feasible_plan, False
 
     def plan_debug_line(
         self,
@@ -412,9 +437,17 @@ class DiscretePlanner:
             # keep closest-goal selection in sync with what's actually being pathed toward
             goal_map = dilated_goal_map = add_boundary(frontier_map, value=0) * traversible
 
+            # neither the goal nor the frontier has any traversible cell at all -- nowhere to plan toward
             if not np.any(dilated_goal_map):
-                raise ValueError("No traversible dilated goal map or frontier map available for planning")
-            
+                return (
+                    (float(start[0]), float(start[1])),
+                    np.zeros(obstacle_map.shape, dtype=np.uint8),
+                    True,
+                    False,
+                    (int(start[0]), int(start[1])),
+                    dilated_obstacles,
+                )
+
 
         # Set multi goal to the dilated goal map
         self.fmm_distance = fmm_planner.set_multi_goal(
@@ -536,7 +569,9 @@ class DiscretePlanner:
                 ("img_frontier_map", _debug_crop(img_frontier_map, map_center)),
             ],
         )
-        mosaic.save(Path(os.path.join(self.vis_dir, f"snapshot_planner_{self.timestep}.png"))) # type: ignore
+        planner_dir = os.path.join(self.vis_dir, "planner")
+        os.makedirs(planner_dir, exist_ok=True)
+        mosaic.save(Path(os.path.join(planner_dir, f"snapshot_planner_{self.timestep}.png"))) # type: ignore
 
     def get_closest_traversible_goal(
         self, traversible, goal_map, start, dilated_goal_map=None

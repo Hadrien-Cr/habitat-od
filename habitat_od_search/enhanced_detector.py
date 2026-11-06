@@ -1,19 +1,19 @@
 """Enhanced-detector baseline for habitat_od_search: the search target's embedding becomes an ensemble of Detic region
 embeddings of example views of the target object, instead of the CLIP text embedding of its category. One run handles
-one target object in one scene (--scene; --category, by default the scene's rarest_single_category), writing to
+one target object in one scene (--scene; --category, by default the scene's easiest_single_category), writing to
 habitat_od_search/logs/enhanced_detector/<scene_id>/<category>/:
 
-- Query views: every object but the target's is removed and the navmesh recomputed over the cleared floor; the camera
+- GT views: every object but the target's is removed and the navmesh recomputed over the cleared floor; the camera
   is aimed at the target's center from navigable viewpoints ringed around it (_N_AZIMUTHS bearings, _STANDOFF_M beyond
   its footprint, the agent lifted by each of _CAMERA_LIFTS_M, the camera then turned by each of _YAW_OFFSETS_DEG so the
   target also lands off-center, where the wide field of view stretches it as in exploration frames). Up to _N_VIEWS
   views where it passes the ground-truth area/visibility filters, spread over that order, are kept: a crop each in
-  query_crops/, the Detic region embedding of its ground-truth box (Detector.box_embeddings) in query_features.npz, and
-  target_views.png / target_frames.png mosaics of the crops and of the boxed frames.
-- Collected boxes: the scene is rebuilt with every object, and _N_RANDOM_POSES random poses are drawn around
+  gt_crops/, the Detic region embedding of its ground-truth box (Detector.box_embeddings) in gt_features.npz, and
+  a gt_views.png mosaic of the crops.
+- Collected boxes: the scene is rebuilt with every object, and _N_POSES_PER_ANCHOR random poses are drawn around each of
   _N_ANCHORS anchors: object_anchors (every object of the target's class, or _N_ANCHORS k-means centroids of them when
   there are more), filled up by covering_anchors (farthest-point picks among random navigable points) when fewer --
-  a random anchor, a random navigable point within _POSE_RADIUS_M of it, facing it up to +-_YAW_JITTER_DEG off. Every
+  a random navigable point within _POSE_RADIUS_M of the anchor, facing it up to +-_YAW_JITTER_DEG off. Every
   class-agnostic Detector.predict box of every pose's rgb is kept: its crop in collected_crops/pose<pose>_box<index>.png,
   its own region embedding in collected_features.npz.
 - Web images: the scraping section pastes IMPRINT's web-image scraper (on Bing); save_scraped_views downloads
@@ -21,10 +21,14 @@ habitat_od_search/logs/enhanced_detector/<scene_id>/<category>/:
   against the main category's text embedding (Detector.predict_target; the whole image without any): its crop in
   scraped_crops/, its region embedding in scraped_features.npz, and scraped_views.png / scraped_frames.png mosaics of
   the crops and of the boxed images.
-- Matching: query_matches.png ranks the collected region embeddings, as their crops, for every simulator view, every web
-  image, the views' and the web images' mean ensemble (normalized mean embedding; first tile, the mean crop) and max
-  ensemble (each collected box's highest similarity to any of them; first tile, the pixel-wise max crop), and Detic's
-  own text embedding of the full category string (Vocabulary.clip_embeddings; first tile blank), _TOP_K per row.
+- Matching: query_matches.png ranks the collected region embeddings, as their crops, for the gt views' mean and max
+  ensemble (normalized mean embedding; first tile, the mean crop; and each collected box's highest similarity to any
+  of them; first tile, the pixel-wise max crop), every web image, the web images' own mean and max ensemble, and
+  Detic's own text embedding of the full category string (Vocabulary.clip_embeddings; first tile blank), _TOP_K per
+  row.
+  save_threshold_matches saves one query_matches_thresh<threshold>.png per _SIMILARITY_THRESHOLDS value instead: every
+  row lists every collected box at or above that threshold (as Detector.predict_target would flag it), ranked by
+  similarity and capped at _MAX_COLS - 1 per row.
 
 Every crop is the max(w, h) square centered on its box (shifted inward at the frame's borders, never padded or
 stretched), resized to _CROP_SIZE x _CROP_SIZE; crops are for display only, every embedding comes from the box itself.
@@ -68,8 +72,8 @@ from habitat_od_search.main import goal_meshes
 _CONFIG_PATH = Path("habitat_od_search/config/hssd_rare_eval.yaml")
 _DETIC_CONFIG = "third_party/Detic/configs/Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.yaml"
 _DETIC_WEIGHTS = "third_party/Detic/models/Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.pth"
-_N_RANDOM_POSES = 100
-_N_ANCHORS = 5
+_N_POSES_PER_ANCHOR = 50
+_N_ANCHORS = 3
 _N_COVER_CANDIDATES = 500
 _POSE_RADIUS_M = 3.0
 _YAW_JITTER_DEG = 45.0
@@ -82,7 +86,8 @@ _N_VIEWS = 8
 _CROP_SIZE = 512
 _FRAME_SIZE = 1024
 _TOP_K = 5
-_RARITY_ORDER = ("hard", "medium", "easy")
+_SIMILARITY_THRESHOLDS = (0.5, 0.6, 0.7, 0.8, 0.9)
+_MAX_COLS = 32
 _N_SCRAPED = 8
 _UP = np.array([0.0, 1.0, 0.0])
 _RIGHT = np.array([1.0, 0.0, 0.0])
@@ -98,19 +103,21 @@ class Target:
     goal_handles: Set[str]
 
 
-def rarest_single_category(scene_episodes: SceneEpisodes) -> str:
-    """The first object_category, in episode order, of the rarest tier among scene_episodes' single-goal-instance ones."""
+def easiest_single_category(scene_episodes: SceneEpisodes) -> str:
+    """The first object_category, in episode order, of the "easy" (i.e. common) rarity tier among scene_episodes'
+    single-goal-instance ones."""
     singles = [
         episode.info["object_category"] for episode in scene_episodes.episodes
         if len(scene_episodes.goals_by_category[f"{scene_episodes.scene_id}_{episode.info['object_category']}"]) == 1
+        and rarity_tiers()[main_category(episode.info["object_category"])] == "easy"
     ]
-    return min(singles, key=lambda category: _RARITY_ORDER.index(rarity_tiers()[main_category(category)]))
+    return singles[0]
 
 
 def load_target(scene_id: str, category: Optional[str]) -> Target:
-    """scene_id's Target for category, its rarest_single_category when None."""
+    """scene_id's Target for category, its easiest_single_category when None."""
     scene_episodes = load_scene_episodes(scene_id)
-    category = category or rarest_single_category(scene_episodes)
+    category = category or easiest_single_category(scene_episodes)
     episode = next(episode for episode in scene_episodes.episodes if episode.info["object_category"] == category)
     return Target(scene_id, category, episode, {goal.object_handle for goal in scene_episodes.goals_by_category[f"{scene_id}_{category}"]})
 
@@ -182,10 +189,10 @@ def save_features(path: Path, named_features: List[Tuple[str, np.ndarray]]) -> N
     np.savez(path, names=np.array([name for name, _ in named_features]), features=np.stack([feature for _, feature in named_features]))
 
 
-def save_query_views(cfg: DictConfig, target: Target, detector: Detector, scene_dir: Path) -> None:
+def save_gt_views(cfg: DictConfig, target: Target, detector: Detector, scene_dir: Path) -> None:
     """Removes every object but target's from its scene, then saves each goal object's spread goal_views to scene_dir:
-    one object_crop each in query_crops/, its box's detector region embedding in query_features.npz, and every goal's
-    crops' and boxed frames' mosaics as target_views.png and target_frames.png."""
+    one object_crop each in gt_crops/, its box's detector region embedding in gt_features.npz, and every goal's
+    crops' mosaic as gt_views.png."""
     env, habitat_cfg = build_env(target.scene_id, cfg.seed, cfg.agent.max_steps, cfg.object_params, cfg.agent.input_image_size)
     env.reset(episode=target.episode)
     handles = {obj.object_id: obj.handle for obj in get_all_objects(env.get_sim()) if obj.handle in target.goal_handles}
@@ -195,9 +202,9 @@ def save_query_views(cfg: DictConfig, target: Target, detector: Detector, scene_
     recompute_navmesh(env.get_sim(), agent_cfg.radius, agent_cfg.height)
     floor_y = env.get_agent_state().position[1]
     camera_height = agent_cfg.sim_sensors.rgb_sensor.position[1]
-    crops_dir = scene_dir / "query_crops"
+    crops_dir = scene_dir / "gt_crops"
     crops_dir.mkdir(parents=True, exist_ok=True)
-    named_features, crops, frames = [], [], []
+    named_features, crops = [], []
     for goal_id, _, mesh in meshes:
         views = goal_views(env, goal_id, mesh, floor_y, camera_height)
         assert views, f"{handles[goal_id]} is visible from none of its camera poses"
@@ -205,12 +212,10 @@ def save_query_views(cfg: DictConfig, target: Target, detector: Detector, scene_
         for index, (label, rgb, box) in enumerate(spread):
             name = f"{handles[goal_id]}_view{index:02d}"
             crops.append((label, object_crop(rgb, box)))
-            frames.append((label, cv2.rectangle(rgb.copy(), tuple(box[:2]), tuple(box[2:]), _BOX_COLOR, 6)))
             Image.fromarray(crops[-1][1]).save(crops_dir / f"{name}.png")
             named_features.append((name, detector.box_embeddings(rgb, np.array([box]))[0].numpy()))
-    save_features(scene_dir / "query_features.npz", named_features)
-    make_mosaic(crops).save(scene_dir / "target_views.png")
-    make_mosaic(frames).save(scene_dir / "target_frames.png")
+    save_features(scene_dir / "gt_features.npz", named_features)
+    make_mosaic(crops).save(scene_dir / "gt_views.png")
     env.close()
 
 
@@ -247,9 +252,9 @@ def covering_anchors(pathfinder: habitat_sim.PathFinder, anchors: np.ndarray, st
 
 
 def random_poses(pathfinder: habitat_sim.PathFinder, anchors: np.ndarray, rng: np.random.Generator) -> List[habitat_sim.AgentState]:
-    """_N_RANDOM_POSES agent states, each at a random navigable point within _POSE_RADIUS_M of a random anchor, facing it
-    up to _YAW_JITTER_DEG off -- fewer when habitat-sim finds no such point for some."""
-    positions = [(np.array(pathfinder.get_random_navigable_point_near(anchor, _POSE_RADIUS_M)), anchor) for anchor in anchors[rng.integers(len(anchors), size=_N_RANDOM_POSES)]]
+    """_N_POSES_PER_ANCHOR agent states per anchor, each at a random navigable point within _POSE_RADIUS_M of it, facing
+    it up to _YAW_JITTER_DEG off -- fewer when habitat-sim finds no such point for some."""
+    positions = [(np.array(pathfinder.get_random_navigable_point_near(anchor, _POSE_RADIUS_M)), anchor) for anchor in anchors for _ in range(_N_POSES_PER_ANCHOR)]
     return [
         habitat_sim.AgentState(position=position, rotation=quat_from_angle_axis(yaw_to_face(position, anchor) + np.deg2rad(rng.uniform(-_YAW_JITTER_DEG, _YAW_JITTER_DEG)), _UP))
         for position, anchor in positions
@@ -268,8 +273,9 @@ def save_collected_crops(cfg: DictConfig, target: Target, detector: Detector, sc
     pathfinder.seed(cfg.seed)
     rng = np.random.default_rng(cfg.seed)
     anchors = covering_anchors(pathfinder, object_anchors(env, target, rng), np.array(env.get_agent_state().position), rng)
+    poses = random_poses(pathfinder, anchors, rng)
     named_features = []
-    for pose, state in enumerate(random_poses(pathfinder, anchors, rng)):
+    for pose, state in enumerate(tqdm(poses, desc="collecting boxes")):
         obs, _, _, _ = env.teleport(state)
         named_features += save_box_crops(detector, np.ascontiguousarray(obs["rgb"][:, :, :3]), crops_dir, pose)
     save_features(scene_dir / "collected_features.npz", named_features)
@@ -292,25 +298,33 @@ def ensemble_rows(name: str, queries: List[Tuple[str, np.ndarray]], query_embedd
     return tiles, np.vstack([mean_embedding / np.linalg.norm(mean_embedding) @ collected_embeddings.T, (query_embeddings @ collected_embeddings.T).max(axis=0)])
 
 
-def save_query_matches(scene_dir: Path, category: str) -> None:
-    """Saves scene_dir/query_matches.png: every simulator query crop, then every scraped web image's crop, then the
-    simulator views' and the web images' mean and max ensembles, then category's text, next to the crops of its _TOP_K
-    most similar collected region embeddings."""
-    queries, query_embeddings = load_named_features(scene_dir / "query_features.npz", scene_dir / "query_crops")
-    scraped, scraped_embeddings = load_named_features(scene_dir / "scraped_features.npz", scene_dir / "scraped_crops")
+def query_rows(scene_dir: Path, category: str) -> Tuple[List[Tuple[str, np.ndarray]], np.ndarray, List[Tuple[str, np.ndarray]]]:
+    """Every query (gt views' mean/max ensembles, scraped web crops and their mean/max ensembles, category's text) as
+    (name, crop) tiles, their (Q, M) similarities to collected_features.npz's region embeddings, and those embeddings'
+    own (name, crop) tiles."""
+    gt, gt_embeddings = load_named_features(scene_dir / "gt_features.npz", scene_dir / "gt_crops")
+    web_scraped, web_scraped_embeddings = load_named_features(scene_dir / "scraped_features.npz", scene_dir / "scraped_crops")
     collected, collected_embeddings = load_named_features(scene_dir / "collected_features.npz", scene_dir / "collected_crops")
+
     text_embedding = Vocabulary(f"enhanced_{category}", (category,)).clip_embeddings()[:, 0].numpy()
-    view_tiles, view_similarities = ensemble_rows("views", queries, query_embeddings, collected_embeddings)
-    web_tiles, web_similarities = ensemble_rows("web", scraped, scraped_embeddings, collected_embeddings)
-    queries += [(f"web {name}", crop) for name, crop in scraped] + view_tiles + web_tiles
+    gt_tiles, gt_similarities = ensemble_rows("gt", gt, gt_embeddings, collected_embeddings)
+    web_tiles, web_similarities = ensemble_rows("web", web_scraped, web_scraped_embeddings, collected_embeddings)
+    queries = gt_tiles + [(f"web {name}", crop) for name, crop in web_scraped] + web_tiles
     queries.append((f"text query: {category}", np.zeros((_CROP_SIZE, _CROP_SIZE, 3), dtype=np.uint8)))
+
     similarities = np.vstack([
-        query_embeddings @ collected_embeddings.T,
-        scraped_embeddings @ collected_embeddings.T,
-        view_similarities,
+        gt_similarities,
+        web_scraped_embeddings @ collected_embeddings.T,
         web_similarities,
         text_embedding / np.linalg.norm(text_embedding) @ collected_embeddings.T,
     ])
+    return queries, similarities, collected
+
+
+def save_query_matches(scene_dir: Path, category: str) -> None:
+    """Saves scene_dir/query_matches.png: every query tile next to the crops of its _TOP_K most similar collected
+    region embeddings."""
+    queries, similarities, collected = query_rows(scene_dir, category)
     top = np.argsort(-similarities, axis=1)[:, :_TOP_K]
     tiles = [
         tile
@@ -318,6 +332,23 @@ def save_query_matches(scene_dir: Path, category: str) -> None:
         for tile in [(query_name, query_crop)] + [(f"{collected[index][0]} sim {row[index]:.3f}", collected[index][1]) for index in indices]
     ]
     make_mosaic(tiles, N_cols=1 + _TOP_K).save(scene_dir / "query_matches.png")
+
+
+def save_threshold_matches(scene_dir: Path, category: str) -> None:
+    """For each of _SIMILARITY_THRESHOLDS, saves scene_dir/query_matches_thresh<threshold>.png: every query tile next
+    to the crops of every collected region embedding whose similarity to it is >= threshold (as predict_target would
+    flag it), ranked by similarity and capped at _MAX_COLS - 1 per row."""
+    queries, similarities, collected = query_rows(scene_dir, category)
+    row_cap = _MAX_COLS - 1
+    for threshold in _SIMILARITY_THRESHOLDS:
+        row_sizes, tiles = [], []
+        for (query_name, query_crop), row in zip(queries, similarities):
+            indices = np.argsort(-row)[:row_cap]
+            indices = indices[row[indices] >= threshold]
+            row_sizes.append(1 + len(indices))
+            tiles.append((query_name, query_crop))
+            tiles += [(f"{collected[index][0]} sim {row[index]:.3f}", collected[index][1]) for index in indices]
+        make_mosaic(tiles, N_cols=_MAX_COLS, row_sizes=row_sizes).save(scene_dir / f"query_matches_thresh{threshold:.1f}.png")
 
 
 # Pasted from third_party/IMPRINT/static_baselines/utils/scrape_img.py (save_dir default dropped, icrawler imported above,
@@ -410,14 +441,15 @@ def main(args: argparse.Namespace) -> None:
     target = load_target(args.scene, args.category)
     scene_dir = _OUT_DIR / target.scene_id / target.category
     detector = Detector(_DETIC_CONFIG, _DETIC_WEIGHTS, Vocabulary("enhanced_unused", ("object",)), None, input_size=cfg.agent.input_image_size)
-    save_query_views(cfg, target, detector, scene_dir)
+    save_gt_views(cfg, target, detector, scene_dir)
     save_collected_crops(cfg, target, detector, scene_dir)
     save_scraped_views(scene_dir, detector, target.category)
     save_query_matches(scene_dir, target.category)
+    save_threshold_matches(scene_dir, target.category)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--scene", required=True, help="HSSD-rare scene id.")
-    parser.add_argument("--category", default=None, help="Fine-grained object_category to target; the scene's rarest_single_category by default.")
+    parser.add_argument("--category", default=None, help="Fine-grained object_category to target; the scene's easiest_single_category by default.")
     main(parser.parse_args())

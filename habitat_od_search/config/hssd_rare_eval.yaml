@@ -32,5 +32,3 @@ agent:
   reach_m: 1.0
   # Ground-truth detections of the episode's goal objects (scored 1.0) instead of Detic's.
   use_gt_detections: False
-  # Follow the navmesh shortest path to the nearest goal view point instead of planning (a navigation upper bound).
-  use_oracle_path: False

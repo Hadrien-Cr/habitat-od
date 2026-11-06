@@ -75,8 +75,8 @@ class HybridFrontierAgent(BaseExplorationAgent):
         self._goal_map: Optional[np.ndarray] = None
         self._successive_collisions = 0
 
-    def reset(self, position: np.ndarray, floor_height: float) -> None:
-        super().reset(position, floor_height)
+    def reset(self, position: np.ndarray, floor_height: float, navmesh_bounds: Optional[Tuple[np.ndarray, np.ndarray]] = None) -> None:
+        super().reset(habitat_sim.AgentState(position=position), floor_height, navmesh_bounds)
         self.objects = {}
         self.seen_sectors = {}
         self._goal_map = None
@@ -121,10 +121,7 @@ class HybridFrontierAgent(BaseExplorationAgent):
 
         frontier_map = self.estimated_map.frontier_map()
 
-        if not frontier_map.any() and not goal_map.any():
-            return "stop", StopReason.EXPLORATION_EXHAUSTED
-
-        action, self._closest_goal_map, self._short_term_goal, _, no_feasible_plan = self.planner.plan(
+        action, self._closest_goal_map, self._short_term_goal, _, no_feasible_plan, no_frontier = self.planner.plan(
             obstacle_map=self.estimated_map.obstacles,
             goal_map=goal_map,
             frontier_map=frontier_map,
@@ -134,7 +131,7 @@ class HybridFrontierAgent(BaseExplorationAgent):
             current_timestep=len(self.trajectory) - 1,
         )
         action_name = self.action_name(action)
-        return action_name, self.plan_stop_reason(action_name, no_feasible_plan)
+        return action_name, self.plan_stop_reason(action_name, no_feasible_plan, no_frontier)
 
     def _arrived_viewpoint(self, position: np.ndarray, viewpoints: List[Candidate]) -> Optional[Candidate]:
         """The viewpoint the agent is within reach of, preferring the one it last arrived at for drift tolerance."""

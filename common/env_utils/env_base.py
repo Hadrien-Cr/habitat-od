@@ -31,7 +31,7 @@ from common.env_utils.object_annotations import ObjectAnnotation, get_all_object
 from common.env_utils.object_detector_sensors import ObjectDetectorGTSensor  # noqa: F401 - registers "ObjectDetectorGTSensor"
 from common.env_utils.sensors import AgentCollisionSensor, AgentPositionSensor, ColoredTDMapSensor  # noqa: F401 - registers agent_collision_sensor/position_sensor/colored_tdmap_sensor
 from common.hybrid_exploration.exploration_map import MapConfig
-from common.hybrid_exploration.frontier_exp_agent import DiscretePlannerConfig, FrontierExplorationAgent, FrontierExplorationConfig
+from common.hybrid_exploration.frontier_exp_agent import DiscretePlannerConfig, FrontierExplorationAgent, FrontierExplorationConfig, obs_dilation_cells
 from common.hybrid_exploration.hybrid_agent import HybridConfig, HybridFrontierAgent
 from common.utils.plot_utils import plot_semantic_2d_map
 from common.utils.pose_utils import quaternion_from_rpy
@@ -462,10 +462,15 @@ def build_agent(
         return RandomAgent(rng, [action for action in env.get_legal_actions() if action != "stop"])
     simulator_cfg = habitat_cfg.habitat.simulator
     fov, camera = sensor_geometry(habitat_cfg)
+    agent_radius_m = simulator_cfg.agents.main_agent.radius
     if agent_name == "fbe":
-        config = FrontierExplorationConfig(MapConfig(fov, visibility_dist_m=visibility_dist_m), DiscretePlannerConfig(simulator_cfg.turn_angle))
+        map_config = MapConfig(fov, visibility_dist_m=visibility_dist_m)
+        planner_config = DiscretePlannerConfig(simulator_cfg.turn_angle, obs_dilation_selem_radius=obs_dilation_cells(agent_radius_m, map_config.resolution_m))
+        config = FrontierExplorationConfig(map_config, planner_config)
         return FrontierExplorationAgent(config, camera, rng, dump_location, exp_name)
     if agent_name == "hybrid":
-        config = HybridConfig(MapConfig(fov), simulator_cfg.turn_angle, planner_config=DiscretePlannerConfig(simulator_cfg.turn_angle))
+        map_config = MapConfig(fov)
+        planner_config = DiscretePlannerConfig(simulator_cfg.turn_angle, obs_dilation_selem_radius=obs_dilation_cells(agent_radius_m, map_config.resolution_m))
+        config = HybridConfig(map_config, simulator_cfg.turn_angle, planner_config=planner_config)
         return HybridFrontierAgent(config, camera, rng, dump_location, exp_name)
     raise ValueError(f"Unknown agent {agent_name!r}")

@@ -14,7 +14,6 @@ class StopReason(str, Enum):
     GOAL_REACHED = "goal_reached"  # DiscretePlanner's own stop, within goal_tolerance of a found goal
     NO_FEASIBLE_PLAN = "no_feasible_plan"  # DiscretePlanner's own stop: no heading gets closer to the goal, short of it
     MAX_STEPS = "max_steps"  # SearchAgent's own step budget ran out
-    ORACLE_STOP = "oracle_stop"  # SearchAgent's use_oracle_path ablation: the oracle itself stopped
 
 
 class Agent(ABC):

@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Optional, Tuple
 
-import habitat_sim
 import numpy as np
 import trimesh
 from habitat.tasks.nav.nav import NavigationEpisode  # type: ignore
@@ -62,38 +61,27 @@ def goal_positions(goals: List[SceneGoal]) -> np.ndarray:
     return np.array([goal.position for goal in goals])
 
 
-def _view_point_path(pathfinder: habitat_sim.PathFinder, position: np.ndarray, view_points: np.ndarray) -> Optional[habitat_sim.MultiGoalShortestPath]:
-    """Shortest navmesh path from position to the nearest of view_points, None if none is reachable."""
-    path = habitat_sim.MultiGoalShortestPath()
-    path.requested_start = position
-    path.requested_ends = view_points
-    return path if pathfinder.find_path(path) else None
-
-
 def distance_to_footprints(position: np.ndarray, meshes: List[trimesh.Trimesh]) -> float:
     """Horizontal distance from position to the nearest of meshes' top-down footprints."""
     return min(float(cKDTree(mesh_footprint(mesh)).query(position[[0, 2]])[0]) for mesh in meshes)
 
 
-def closest_view_point(pathfinder: habitat_sim.PathFinder, position: np.ndarray, view_points: np.ndarray) -> np.ndarray:
-    """The one of view_points nearest to position along the navmesh -- the oracle path's target."""
-    path = _view_point_path(pathfinder, position, view_points)
-    assert path is not None, "no goal view point is reachable from position"
-    return np.array(path.points[-1])
-
-
 def _believed_goal_correct(agent: SearchAgent, goals: List[SceneGoal]) -> bool:
-    """Whether GoalScoreMap's best_goal_world (what the agent locked onto) is actually near a real goal."""
-    assert agent.goal_score_map is not None, "Call reset() first"
-    best_goal = agent.goal_score_map.best_goal_world
-    return best_goal is not None and bool(np.any(np.linalg.norm(agent.start_frame_points(goal_positions(goals)) - best_goal, axis=1) <= _BELIEVED_GOAL_MATCH_M))
+    """Whether any cell the estimated map currently believes is the goal (goal_mask()'s own footprint) is
+    actually horizontally near a real one."""
+    assert agent.estimated_map is not None, "Call reset() first"
+    believed = agent.estimated_map.believed_goal_positions(agent.config.goal_score_thresh)
+    if len(believed) == 0:
+        return False
+    goals_start_frame_xz = agent.start_frame_points(goal_positions(goals))[:, [0, 2]]
+    return bool(np.any(np.linalg.norm(goals_start_frame_xz[:, None] - believed[None], axis=2) <= _BELIEVED_GOAL_MATCH_M))
 
 
 def classify_failure(success: bool, agent: SearchAgent, goals: List[SceneGoal], goal_seen: bool) -> FailureCategory:
-    assert agent.goal_score_map is not None, "Call reset() first"
+    assert agent.estimated_map is not None, "Call reset() first"
     if success:
         return FailureCategory.SUCCESS
-    if agent.goal_score_map.best_goal_score < agent.config.goal_score_thresh:
+    if agent.estimated_map.goal_score.max() < agent.config.goal_score_thresh:
         return FailureCategory.FN_RECOGNITION_FAILURE if goal_seen else FailureCategory.EXPLORATION_FAILURE
     return FailureCategory.TP_EARLY_STOP if _believed_goal_correct(agent, goals) else FailureCategory.FP_RECOGNITION_FAILURE
 

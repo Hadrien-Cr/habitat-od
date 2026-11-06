@@ -3,8 +3,8 @@ and habitat_embodied_sl/README.md). In each collection.scenes scene, common/hybr
 explores in exhaustive mode for up to collection.steps_per_scene steps (or until it gets stuck -- no net translation
 over BaseExplorationAgent.is_stuck's window, which stops it, logged as a warning) while a Detector (Detic's proposals scored by
 objectness alone, SAM masks) segments every frame; its masks and region embeddings are fused into a concept-graphs
-ConceptGraphMemory (common/utils/concept_graph.py) whose objects are the agent's beliefs. Each step's 4-tile
-(observation, depth, belief map, ground truth) snapshot is saved to datasets/<run_name>/<scene>/images/exploration_snapshots/
+ConceptGraphMemory (common/utils/concept_graph.py) whose objects are the agent's beliefs. Each step's 3-tile
+(observation, belief map, ground truth) snapshot is saved to datasets/<run_name>/<scene>/images/exploration_snapshots/
 and assembled into exploration.webp there. The map is then resolved, its
 foreground objects kept and classified (ConceptGraphMemory.classify), and up to collection.k_retrieval diverse views of
 each retrieved (common/utils/retrieval.py). Those views make three object-view train sets under
@@ -114,7 +114,7 @@ class SceneMapper:
 
 def explore(env: ExplorationEnv, mapper: SceneMapper, obs: dict, steps: int, style: SegmentationStyle, ground_truth, images_dir: Path) -> Tuple[list, bool]:
     """Has mapper observe every frame from obs on until its agent stops (also after too many successive collisions),
-    gets stuck or steps run out, saving a 4-tile (observation, depth, belief map, ground truth) snapshot per step to
+    gets stuck or steps run out, saving a 3-tile (observation, belief map, ground truth) snapshot per step to
     images_dir/snapshot_<step>.png and returning (each step's labelled detector-prediction tile (segmentation_tile),
     whether the agent got stuck)."""
     collided = False
@@ -141,7 +141,7 @@ def explore(env: ExplorationEnv, mapper: SceneMapper, obs: dict, steps: int, sty
 
 def map_scene(scene: str, cfg: DictConfig, detector: Detector, style: SegmentationStyle, args: argparse.Namespace) -> Tuple[SceneMapper, GroundTruthObjects]:
     """(SceneMapper of the scene's exploration, the scene's annotated objects of detector's classes), saving every
-    step's detector predictions (save_exploration_visuals) and every step's 4-tile snapshot assembled into
+    step's detector predictions (save_exploration_visuals) and every step's 3-tile snapshot assembled into
     exploration.webp (save_gif) to datasets/<run_name>/<scene>/."""
     env, habitat_cfg = build_env(scene, cfg.seed, cfg.collection.steps_per_scene, cfg.object_params, args.input_image_size)
     agent = build_agent("hybrid", np.random.default_rng(cfg.seed), env, habitat_cfg)
