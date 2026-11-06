@@ -107,7 +107,7 @@ class SearchAgent(BaseExplorationAgent):
         assert self.planner is not None, "Call reset() first"
 
         self.step_count += 1
-        agent_state = self.start_frame_state(agent_state)
+        agent_state = self.ref_frame_state(agent_state)
         position, heading = self.observe(agent_state, depth, self.camera)
         self.estimated_map.decay_goal_score()
 

@@ -424,10 +424,9 @@ def save_maps(
     save_resolved_wireframes(resolved, style.classes, style.colors, out_dir / "semantic_wireframes.glb")
     cv2.imwrite(
         str(out_dir / "estimated_topdown.png"),
-        estimated_semantic_topdown(resolved, agent.estimated_map, style.classes, style.colors)[:, :, ::-1],
+        estimated_semantic_topdown(resolved, agent, style.classes, style.colors)[:, :, ::-1],
     )
-    start_position, _ = agent.trajectory[0]
-    ground_truth = GroundTruthMapTracker(pathfinder, start_position, fov_deg=0.0, visibility_dist_m=0.0, resolution=agent.estimated_map.map_pixels_size)
+    ground_truth = GroundTruthMapTracker(pathfinder, agent.ref_state[0], fov_deg=0.0, visibility_dist_m=0.0, resolution=agent.estimated_map.map_pixels_size)
     cv2.imwrite(
         str(out_dir / "ground_truth_topdown.png"),
         gt_semantic_topdown(meshes, ground_truth.navigable, ground_truth.to_pixels, ground_truth.meters_per_pixel, style.classes, style.colors)[:, :, ::-1],

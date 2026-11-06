@@ -1,11 +1,11 @@
 """
-Standalone viewer for common/utils/semantic_point_cloud.py::SemanticPointCloud.
+Standalone viewer for common/utils/label_propagation_point_cloud.py::LabelPropagationPointCloud.
 
-Runs against a real single-room ProcTHOR-hab scene via ObjectDetectorGTSensor on a raw
-habitat_sim.Simulator (no ExplorationEnv/Hydra config), driven by a FrontierExplorationAgent
+Runs against procthor_scene.py's ProcTHOR-hab scene (ProcTHOR-Train-0 unless --scene-id says otherwise) via
+ObjectDetectorGTSensor on a raw habitat_sim.Simulator (no ExplorationEnv/Hydra config), driven by a FrontierExplorationAgent
 (common/hybrid_exploration/frontier_exp_agent.py) with vanilla move_forward/turn_left/turn_right actions from a
 random start pose. Each fused frame's gt_instances are projected with project_semantic_masks_to_3d,
-fused via SemanticPointCloud.__add__, and .resolve() voxelizes them and resolves per-voxel
+fused via LabelPropagationPointCloud.__add__, and .resolve() voxelizes them and resolves per-voxel
 class/object-id conflicts. Also hosts the write/read harness (run_viewer) and the retrieval mosaic
 (save_retrieval_mosaic) that test_concept_graph.py reuses.
 
@@ -36,7 +36,6 @@ from typing import Callable, Iterator, List, Tuple
 
 import cv2
 import habitat_sim
-import magnum as mn
 import numpy as np
 import torch
 from detectron2.structures import Instances
@@ -51,76 +50,10 @@ from common.env_utils.vocab_constants import make_colors
 from common.utils.image_memory import Frame, ImageMemory
 from common.utils.plot_utils import make_mosaic
 from common.utils.pose_utils import sensor_pose_matrix
-from common.utils.projection_utils import DepthCamera, ResolvedObjects, save_resolved_ply
+from common.utils.projection_utils import ResolvedObjects, save_resolved_ply
 from common.utils.retrieval import SegmentationStyle, ViewSelection, instances_from_masks, largest_objects, retrieve_views, segmentation_tile, views_mosaic
-from common.utils.semantic_point_cloud import SemanticPointCloud, project_semantic_masks_to_3d
-
-HABITAT_DATA = os.environ.get("HABITAT_DATA")
-_RESOLUTION = [640, 640]
-HFOV_DEG = 90
-MIN_DEPTH = 0.1
-MAX_DEPTH = 15.0
-_AGENT_HEIGHT = 0.88  # matches common/config/hssd-hab/default.yaml's agent height
-_FORWARD_STEP_M = 0.25
-_FLOOR_RAY_START_M = 0.3
-_TURN_ANGLE_DEG = 45.0  # matches common/config/hssd-hab/default.yaml's turn_angle
-_ENV_NAME = "ProcTHOR-hab"
-_VOCAB_NAME = "PROCTHOR100"  # CLASS_LABELS_PROCTHOR100 - see vocab_constants.py
-_DATASET_CONFIG = f"{HABITAT_DATA}/scene_datasets/ai2thor-hab/ai2thor-hab/ai2thor-hab.scene_dataset_config.json" if HABITAT_DATA else None
-_DEFAULT_SCENE_ID = "ProcTHOR-Train-9632"  # same one test_object_detector.py uses
-
-
-def _build_sim(dataset_config: str, scene_id: str) -> habitat_sim.Simulator:
-    backend_cfg = habitat_sim.SimulatorConfiguration()
-    backend_cfg.scene_dataset_config_file = dataset_config
-    backend_cfg.scene_id = scene_id
-    backend_cfg.enable_physics = True
-
-    rgb_spec = habitat_sim.CameraSensorSpec()
-    rgb_spec.uuid = "rgb"
-    rgb_spec.sensor_type = habitat_sim.SensorType.COLOR
-    rgb_spec.resolution = _RESOLUTION
-    rgb_spec.hfov = mn.Deg(HFOV_DEG)
-    rgb_spec.position = [0.0, _AGENT_HEIGHT, 0.0]
-
-    semantic_spec = habitat_sim.CameraSensorSpec()
-    semantic_spec.uuid = "semantic"
-    semantic_spec.sensor_type = habitat_sim.SensorType.SEMANTIC
-    semantic_spec.resolution = _RESOLUTION
-    semantic_spec.hfov = rgb_spec.hfov
-    semantic_spec.position = rgb_spec.position
-
-    depth_spec = habitat_sim.CameraSensorSpec()
-    depth_spec.uuid = "depth"
-    depth_spec.sensor_type = habitat_sim.SensorType.DEPTH
-    depth_spec.resolution = _RESOLUTION
-    depth_spec.hfov = rgb_spec.hfov
-    depth_spec.position = rgb_spec.position
-    depth_spec.depth_min = MIN_DEPTH
-    depth_spec.depth_max = MAX_DEPTH
-
-    agent_cfg = habitat_sim.agent.AgentConfiguration()
-    agent_cfg.sensor_specifications = [rgb_spec, semantic_spec, depth_spec]
-    agent_cfg.action_space = {
-        "move_forward": habitat_sim.agent.ActionSpec("move_forward", habitat_sim.agent.ActuationSpec(amount=_FORWARD_STEP_M)),
-        "turn_left": habitat_sim.agent.ActionSpec("turn_left", habitat_sim.agent.ActuationSpec(amount=_TURN_ANGLE_DEG)),
-        "turn_right": habitat_sim.agent.ActionSpec("turn_right", habitat_sim.agent.ActuationSpec(amount=_TURN_ANGLE_DEG)),
-    }
-
-    sim = habitat_sim.Simulator(habitat_sim.Configuration(backend_cfg, [agent_cfg]))
-    if not sim.pathfinder.is_loaded:  # ProcTHOR-hab doesn't ship a precomputed .navmesh
-        nav_settings = habitat_sim.NavMeshSettings()
-        nav_settings.set_defaults()
-        nav_settings.include_static_objects = True
-        sim.recompute_navmesh(sim.pathfinder, nav_settings)
-    return sim
-
-
-def _floor_island(pathfinder: habitat_sim.PathFinder) -> int:
-    """Recomputed ProcTHOR-hab navmeshes (see _build_sim) also cover the open-top houses' roof and
-    furniture tops, and the roof can outsize the furnished floor, so the floor is picked as the lowest island."""
-    return min(range(pathfinder.num_islands), key=lambda island: pathfinder.get_random_navigable_point(island_index=island)[1])
-
+from common.utils.label_propagation_point_cloud import LabelPropagationPointCloud, project_semantic_masks_to_3d
+from procthor_scene import DATASET_CONFIG, DEPTH_CAMERA, ENV_NAME, HFOV_DEG, SCENE_ID, TURN_ANGLE_DEG, VOCAB_NAME, floor_height, floor_island, procthor_sim
 
 def _random_agent_state(sim, rng, island_index: int = -1) -> habitat_sim.AgentState:
     state = habitat_sim.AgentState()
@@ -167,7 +100,7 @@ class _Viewer:
 
 def viewer_arg_parser(description: str, map_name: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=description)
-    parser.add_argument("--scene-id", default=_DEFAULT_SCENE_ID, help="ProcTHOR-hab scene id (pick a known single-room one from your data if that matters)")
+    parser.add_argument("--scene-id", default=SCENE_ID, help="ProcTHOR-hab scene id")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--num-frames", type=int, default=100, help=f"exploration frames fused into the {map_name}, and as many interleaved held-out views backprojected from it")
     parser.add_argument("--classes-keep", nargs="*", default=[], help="drop gt_instances whose class isn't in this list; empty means keep every class")
@@ -180,8 +113,8 @@ def run_viewer(args: argparse.Namespace, out_name: str, fused, frame_map: Callab
     """Fuses frame_map(frame_id, frame, gt_instances) pieces of an exploration run into `fused`, resolves it with resolve(fused, memory),
     saves it, backprojects it and returns it with every explored frame."""
     
-    if not _DATASET_CONFIG or not os.path.exists(_DATASET_CONFIG):
-        raise SystemExit(f"no ProcTHOR-hab data at {_DATASET_CONFIG} (check HABITAT_DATA)")
+    if not os.path.exists(DATASET_CONFIG):
+        raise SystemExit(f"no ProcTHOR-hab data at {DATASET_CONFIG} (check HABITAT_DATA)")
     viewer = _start_viewer(args, out_name)
     
     try:
@@ -229,7 +162,7 @@ def run_viewer(args: argparse.Namespace, out_name: str, fused, frame_map: Callab
             frame = memory.get_frame(frame_id)
             st = time.time()
             resolved_masks, _, resolved_classes, _ = fused.depth_raytracing(
-                frame.depth, frame.pose, hfov=HFOV_DEG, min_depth=MIN_DEPTH, max_depth=MAX_DEPTH, min_mesh_visibility_fraction=viewer.sensor.min_mesh_visibility_fraction,
+                frame.depth, frame.pose, hfov=DEPTH_CAMERA.hfov, min_depth=DEPTH_CAMERA.min_depth, max_depth=DEPTH_CAMERA.max_depth, min_mesh_visibility_fraction=viewer.sensor.min_mesh_visibility_fraction,
             )
             if len(resolved_masks) == 0:
                 print(f"backprojected frame {i:02d}: no resolved points in range, skipped ({time.time() - st:.3f}s)")
@@ -256,24 +189,18 @@ def _start_viewer(args: argparse.Namespace, out_name: str) -> _Viewer:
     out_stem = os.path.splitext(os.path.basename(args.out))[0] if args.out else args.scene_id
     os.makedirs(out_dir, exist_ok=True)
 
-    sim = _build_sim(_DATASET_CONFIG, args.scene_id)
+    sim, annotation = procthor_sim(args.scene_id)
     sensor = ObjectDetectorGTSensor(sim, ObjectDetectorGTSensorConfig(
-        env_name=_ENV_NAME, vocab_name=_VOCAB_NAME,
+        env_name=ENV_NAME, vocab_name=VOCAB_NAME,
         min_area_fraction=2e-4, filter_low_visibility=True, min_mesh_visibility_fraction=0.2,
         filter_classes=[],
     ))
-    sensor.setup_semantic_labels()
+    sensor.annotation = annotation
     colors = make_colors(len(sensor.get_classes()), seed=0, ctype=0)
     rng = np.random.default_rng(args.seed)
-    camera = DepthCamera(HFOV_DEG, MIN_DEPTH, MAX_DEPTH)
-    config = FrontierExplorationConfig(MapConfig(HFOV_DEG), DiscretePlannerConfig(_TURN_ANGLE_DEG))
-    explorer = FrontierExplorationAgent(config, camera, rng, out_dir, out_stem)
-    return _Viewer(sim, sensor, colors, out_dir, out_stem, rng, _floor_island(sim.pathfinder), explorer)
-
-
-def _navmesh_floor_offset(sim: habitat_sim.Simulator, position: np.ndarray) -> float:
-    ray = habitat_sim.geo.Ray(position + np.array([0.0, _FLOOR_RAY_START_M, 0.0]), np.array([0.0, -1.0, 0.0]))
-    return float(position[1] - sim.cast_ray(ray).hits[0].point[1])
+    config = FrontierExplorationConfig(MapConfig(HFOV_DEG), DiscretePlannerConfig(TURN_ANGLE_DEG))
+    explorer = FrontierExplorationAgent(config, DEPTH_CAMERA, rng, out_dir, out_stem)
+    return _Viewer(sim, sensor, colors, out_dir, out_stem, rng, floor_island(sim.pathfinder), explorer)
 
 
 def exploration_frames(viewer: _Viewer, num_steps: int) -> Iterator[Tuple[dict, habitat_sim.AgentState]]:
@@ -281,7 +208,7 @@ def exploration_frames(viewer: _Viewer, num_steps: int) -> Iterator[Tuple[dict, 
     sim_agent = viewer.sim.get_agent(0)
     start = _random_agent_state(viewer.sim, viewer.rng, viewer.island_index)
     sim_agent.set_state(start)
-    viewer.explorer.reset(np.array(start.position), start.position[1] - _navmesh_floor_offset(viewer.sim, np.array(start.position)))
+    viewer.explorer.reset(sim_agent.get_state(), floor_height(viewer.sim, np.array(start.position)))
     obs = viewer.sim.get_sensor_observations()
     for _ in range(num_steps):
         yield obs, sim_agent.get_state()
@@ -307,7 +234,7 @@ def _style(viewer: _Viewer) -> SegmentationStyle:
 
 def save_retrieval_mosaic(viewer: _Viewer, fused: ResolvedObjects, memory: ImageMemory, num_objects: int) -> None:
     """One mosaic row per largest resolved object, of the frames retrieve_views selects."""
-    camera = DepthCamera(HFOV_DEG, MIN_DEPTH, MAX_DEPTH)
+    camera = DEPTH_CAMERA
     raytraced = memory.raytrace_frames(fused, camera, viewer.sensor.min_mesh_visibility_fraction)
     object_frames = retrieve_views(fused, memory, raytraced, camera, ViewSelection())
     mosaic = views_mosaic(memory, raytraced, _style(viewer), {object_id: object_frames[object_id] for object_id in largest_objects(fused, num_objects)})
@@ -315,17 +242,16 @@ def save_retrieval_mosaic(viewer: _Viewer, fused: ResolvedObjects, memory: Image
         mosaic.save(os.path.join(viewer.out_dir, f"{viewer.out_stem}_retrieval_mosaic.png"))
 
 
-def resolve_point_cloud(fused: SemanticPointCloud, memory: ImageMemory) -> SemanticPointCloud:
+def resolve_point_cloud(fused: LabelPropagationPointCloud, memory: ImageMemory) -> LabelPropagationPointCloud:
     fused.resolve()
     return fused
 
 
-def frame_point_cloud(frame_id: int, frame: Frame, gt_instances: Instances) -> SemanticPointCloud:
-    infos = [{"id_object": int(info["object_id"])} for info in gt_instances.infos]
-    return project_semantic_masks_to_3d(frame.depth, frame.pose, gt_instances, infos, hfov=HFOV_DEG, min_depth=MIN_DEPTH, max_depth=MAX_DEPTH)
+def frame_point_cloud(frame_id: int, frame: Frame, gt_instances: Instances) -> LabelPropagationPointCloud:
+    return project_semantic_masks_to_3d(frame, gt_instances, DEPTH_CAMERA)
 
 
 if __name__ == "__main__":
-    args = viewer_arg_parser(__doc__, "SemanticPointCloud").parse_args()
-    viewer, fused, memory = run_viewer(args, "test_semantic_point_cloud", SemanticPointCloud(), frame_point_cloud, resolve_point_cloud)
+    args = viewer_arg_parser(__doc__, "LabelPropagationPointCloud").parse_args()
+    viewer, fused, memory = run_viewer(args, "test_label_propagation_point_cloud", LabelPropagationPointCloud(), frame_point_cloud, resolve_point_cloud)
     save_retrieval_mosaic(viewer, fused, memory, args.retrieval_objects)

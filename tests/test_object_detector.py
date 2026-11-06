@@ -65,7 +65,7 @@ _ENV_SPECS = {
     "ProcTHOR-hab": dict(
         vocab_name="PROCTHOR100",  # CLASS_LABELS_PROCTHOR100 - see vocab_constants.py
         dataset_config=f"{HABITAT_DATA}/scene_datasets/ai2thor-hab/ai2thor-hab/ai2thor-hab.scene_dataset_config.json" if HABITAT_DATA else None,
-        scene_id="ProcTHOR-Train-9632",
+        scene_id="ProcTHOR-Train-0",
     ),
 }
 

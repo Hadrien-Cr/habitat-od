@@ -1,8 +1,9 @@
 """Shared depth-observed world model for every exploration agent (FrontierExplorationAgent, HybridFrontierAgent,
 SearchAgent): an EstimatedMap built incrementally from the agent's own depth and pose, with DiscretePlanner-based
 planning on top -- all three plan entirely from this belief map, HybridFrontierAgent via a goal_map of its own
-object viewpoints/frontiers. Agents only ever see poses relative to their episode start pose (start_frame_state), as
-habitat's episodic GPS + compass sensors give them: the map's origin is the start position, its axes the start heading."""
+object viewpoints/frontiers. Agents only ever see poses relative to their reference pose (ref_frame_state), as
+habitat's episodic GPS + compass sensors give them: the map's origin is the start position, its axes the start heading
+snapped to _REF_YAW_STEP_RAD."""
 from typing import List, Optional, Tuple
 
 import cv2
@@ -16,7 +17,7 @@ from common.agents.abstract_agent import Agent, StopReason
 from common.hybrid_exploration.discrete_planner import DiscreteNavigationAction, DiscretePlanner
 from common.hybrid_exploration.exploration_map import EstimatedMap, MapConfig
 from common.hybrid_exploration.plotting import draw_in_view
-from common.utils.pose_utils import normalize_angle
+from common.utils.pose_utils import get_yaw, normalize_angle, quaternion_from_rpy
 from common.utils.projection_utils import DepthCamera
 
 _ACTION_NAMES = {
@@ -34,6 +35,7 @@ _CURRENT_POSITION_COLOR = (0, 255, 0)  # BGR -- green, the agent's current posit
 _GOAL_SCORE_COLORMAP = matplotlib.colormaps["cool"]  # cyan (low) -> magenta (high), by goal_score_image() value
 _STUCK_WINDOW_STEPS = 25
 _STUCK_RADIUS_M = 0.1
+_REF_YAW_STEP_RAD = np.pi / 2  # keeps the map grid on the world axes, along which scene walls run
 _MAP_FIT_MARGIN = 0.9  # fraction of map_size_m the navmesh's own extent must fit within to be used as the map's center
 
 class ProfileTimer:
@@ -78,8 +80,7 @@ class BaseExplorationAgent(Agent):
         self.rng = rng
         self.planner = planner
         self.floor_height = 0.0
-        self._start_position = np.zeros(3)
-        self._start_rotation_inverse = quaternion.one
+        self.ref_state: Tuple[np.ndarray, quaternion.quaternion] = (np.zeros(3), quaternion.one)
         self.estimated_map: Optional[EstimatedMap] = None
         self.trajectory: List[Tuple[np.ndarray, float]] = []
         self._spin_action = None
@@ -91,14 +92,15 @@ class BaseExplorationAgent(Agent):
     def reset(
         self, start_state: habitat_sim.AgentState, floor_height: float, navmesh_bounds: Optional[Tuple[np.ndarray, np.ndarray]] = None,
     ) -> None:
-        """start_state's pose becomes the origin of every pose the agent sees (start_frame_state); floor_height is a
-        world y. navmesh_bounds (a scene's full pathfinder.get_bounds(), world-frame) centers EstimatedMap on the
+        """ref_state becomes start_state's position and its yaw snapped to _REF_YAW_STEP_RAD, the origin of every pose the
+        agent sees (ref_frame_state); floor_height is a world y. navmesh_bounds (a scene's full pathfinder.get_bounds(), world-frame) centers EstimatedMap on the
         navmesh's own horizontal extent instead of the agent, when that extent fits within map_size_m -- so a long
         episode doesn't run the agent past the map's fixed edge; otherwise (or without navmesh_bounds) the map is
         centered on the agent's own start position, as before."""
-        self._start_position = np.array(start_state.position)
-        self._start_rotation_inverse = start_state.rotation.inverse()
-        self.floor_height = floor_height - self._start_position[1]
+        rotation = start_state.rotation
+        snapped_yaw = round(get_yaw(rotation.w, rotation.x, rotation.y, rotation.z) / _REF_YAW_STEP_RAD) * _REF_YAW_STEP_RAD
+        self.ref_state = (np.array(start_state.position), quaternion_from_rpy(0, 0, snapped_yaw))
+        self.floor_height = floor_height - self.ref_state[0][1]
         self.estimated_map = EstimatedMap(self.map_config, self._map_center(navmesh_bounds))
         if self.planner is not None:
             self.planner.reset()
@@ -109,27 +111,28 @@ class BaseExplorationAgent(Agent):
         self._initial_spin_steps_left = self._initial_spin_steps
 
     def _map_center(self, navmesh_bounds: Optional[Tuple[np.ndarray, np.ndarray]]) -> np.ndarray:
-        """The navmesh's own horizontal center, in start frame, if its full extent fits within _MAP_FIT_MARGIN of
+        """The navmesh's own horizontal center, in the reference frame, if its full extent fits within _MAP_FIT_MARGIN of
         map_size_m; np.zeros(3) (the agent's own start position) otherwise, or without navmesh_bounds."""
         if navmesh_bounds is None:
             return np.zeros(3)
         lower, upper = navmesh_bounds
         corners = np.array([[x, 0.0, z] for x in (lower[0], upper[0]) for z in (lower[2], upper[2])])
-        corners_start_frame = self.start_frame_points(corners)
-        extent = corners_start_frame.max(axis=0) - corners_start_frame.min(axis=0)
+        corners_ref_frame = self.ref_frame_points(corners)
+        extent = corners_ref_frame.max(axis=0) - corners_ref_frame.min(axis=0)
         if extent[0] > _MAP_FIT_MARGIN * self.map_config.map_size_m or extent[2] > _MAP_FIT_MARGIN * self.map_config.map_size_m:
             return np.zeros(3)
-        return (corners_start_frame.max(axis=0) + corners_start_frame.min(axis=0)) / 2
+        return (corners_ref_frame.max(axis=0) + corners_ref_frame.min(axis=0)) / 2
 
-    def start_frame_points(self, points: np.ndarray) -> np.ndarray:
-        """(N, 3) world points in the start frame."""
-        return quaternion.rotate_vectors(self._start_rotation_inverse, np.asarray(points) - self._start_position)
+    def ref_frame_points(self, points: np.ndarray) -> np.ndarray:
+        """(N, 3) world points in the reference frame."""
+        position, rotation = self.ref_state
+        return quaternion.rotate_vectors(rotation.inverse(), np.asarray(points) - position)
 
-    def start_frame_state(self, agent_state: habitat_sim.AgentState) -> habitat_sim.AgentState:
-        """agent_state, sensor poses included, relative to the start pose -- the only pose act() may use."""
+    def ref_frame_state(self, agent_state: habitat_sim.AgentState) -> habitat_sim.AgentState:
+        """agent_state, sensor poses included, relative to ref_state -- the only pose act() may use."""
         def relative(pose):
             return habitat_sim.SixDOFPose(
-                position=self.start_frame_points(np.asarray(pose.position)[None])[0], rotation=self._start_rotation_inverse * pose.rotation,
+                position=self.ref_frame_points(np.asarray(pose.position)[None])[0], rotation=self.ref_state[1].inverse() * pose.rotation,
             )
         sensor_states = {uuid: relative(pose) for uuid, pose in agent_state.sensor_states.items()}
         state = relative(agent_state)
@@ -217,8 +220,8 @@ class BaseExplorationAgent(Agent):
         if len(trajectory_px) > 1:
             cv2.polylines(image, [np.array(trajectory_px)], isClosed=False, color=_VISITED_COLOR, thickness=1)
         for point in trajectory_px:
-            cv2.circle(image, point, 2, _VISITED_COLOR, -1)
-        cv2.circle(image, trajectory_px[-1], 3, _CURRENT_POSITION_COLOR, -1)  # last position
+            cv2.circle(image, point, 1, _VISITED_COLOR, -1)
+        cv2.circle(image, trajectory_px[-1], 2, _CURRENT_POSITION_COLOR, -1)  # last position
         
         if len(self.estimated_map.frontier_pixels):
             frontier_overlay = image.copy()
@@ -229,7 +232,7 @@ class BaseExplorationAgent(Agent):
         if self._closest_goal_map is not None and self._closest_goal_map.any():
             goal_pixels = np.argwhere(self._closest_goal_map)
             for row, col in goal_pixels:
-                cv2.circle(image, (int(col), int(row)), 5, _GOAL_MARKER_COLOR, 1)
+                cv2.circle(image, (int(col), int(row)), 3, _GOAL_MARKER_COLOR, 1)
         return image
 
     @staticmethod

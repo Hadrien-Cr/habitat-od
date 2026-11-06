@@ -235,8 +235,9 @@ def view_label(object_id: int, frame_id: int) -> str:
     return f"object{object_id} frame{frame_id:03d}"
 
 
-def retrieve_resolved_views(fused, camera: DepthCamera, min_mesh_visibility_fraction: float, selection: ViewSelection) -> Tuple[dict, Dict[int, List[int]]]:
-    """(frames raytraced with fused's resolved objects, the views retrieve_views selects of each)."""
-    resolved, memory = fused.resolved_objects, fused.image_memory
+def retrieve_resolved_views(
+    resolved: ResolvedObjects, memory: ImageMemory, camera: DepthCamera, min_mesh_visibility_fraction: float, selection: ViewSelection,
+) -> Tuple[dict, Dict[int, List[int]]]:
+    """(memory's frames raytraced with resolved's objects, the views retrieve_views selects of each)."""
     raytraced = memory.raytrace_frames(resolved, camera, min_mesh_visibility_fraction)
     return raytraced, retrieve_views(resolved, memory, raytraced, camera, selection)

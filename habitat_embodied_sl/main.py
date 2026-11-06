@@ -3,7 +3,8 @@ and habitat_embodied_sl/README.md). In each collection.scenes scene, common/hybr
 explores in exhaustive mode for up to collection.steps_per_scene steps (or until it gets stuck -- no net translation
 over BaseExplorationAgent.is_stuck's window, which stops it, logged as a warning) while a Detector (Detic's proposals scored by
 objectness alone, SAM masks) segments every frame; its masks and region embeddings are fused into a concept-graphs
-ConceptGraphMemory (common/utils/concept_graph.py) whose objects are the agent's beliefs. Each step's 3-tile
+ConceptGraphMemory (common/utils/concept_graph.py), while the agent's own ObjectTracker
+(common/hybrid_exploration/object_tracker.py) tracks the same detections into the objects it inspects. Each step's 3-tile
 (observation, belief map, ground truth) snapshot is saved to datasets/<run_name>/<scene>/images/exploration_snapshots/
 and assembled into exploration.webp there. The map is then resolved, its
 foreground objects kept and classified (ConceptGraphMemory.classify), and up to collection.k_retrieval diverse views of
@@ -60,7 +61,7 @@ from common.utils.retrieval import (
 )
 from common.vision.detic import Vocabulary
 from habitat_embodied_sl.evaluation_set import ClipImageEncoder, evaluation_frames
-from common.utils.concept_graph import ConceptGraphMemory, object_beliefs, object_size_ranges, predicted_objects
+from common.utils.concept_graph import ConceptGraphMemory, object_size_ranges, predicted_objects
 from common.vision.detector import Detector
 
 _VARIANTS = ("pseudo", "pseudo_gt_classes", "recovered")
@@ -91,7 +92,8 @@ def build_detector(args: argparse.Namespace, object_params: DictConfig) -> Detec
 
 @dataclass
 class SceneMapper:
-    """Fuses each frame the agent observes into fused, keeping its RLE-encoded ground truth in ground_truth_views."""
+    """Fuses each frame the agent observes into fused and feeds its detections to the agent's tracker, keeping its
+    RLE-encoded ground truth in ground_truth_views."""
 
     agent: HybridFrontierAgent
     detector: Detector
@@ -107,7 +109,9 @@ class SceneMapper:
         frame_id = self.fused.image_memory.add_frame(frame)
         instances = self.detector.predict(frame.rgb)
         floor_height = env.get_agent_state().position[1] - self.floor_offset
-        self.fused = self.fused + predicted_objects(frame_id, frame, instances, self.camera, floor_height)
+        detections = predicted_objects(frame_id, frame, instances, self.camera, floor_height)
+        self.fused = self.fused + detections
+        self.agent.update_detections(detections)
         self.ground_truth_views += encoded_views(frame_id, ground_truth_instances(obs, self.vocabulary, self.detector.classes))
         return frame, instances
 
@@ -127,7 +131,6 @@ def explore(env: ExplorationEnv, mapper: SceneMapper, obs: dict, steps: int, sty
         ground_truth.reveal(np.array(state.position), heading)
         frame, instances = mapper.observe(obs, env)
         prediction_tiles.append(segmentation_tile(frame.rgb, instances, style, f"step{step:04d}"))
-        mapper.agent.update_objects(object_beliefs(mapper.fused))
         action, _ = mapper.agent.act(env.get_agent_state(), obs["depth"], collided)
         mosaic = exploration_snapshot(obs, mapper.agent, ground_truth, trajectory_px)
         if mosaic is not None:
@@ -147,7 +150,7 @@ def map_scene(scene: str, cfg: DictConfig, detector: Detector, style: Segmentati
     agent = build_agent("hybrid", np.random.default_rng(cfg.seed), env, habitat_cfg)
     obs = env.reset(env.episodes[0], rng=agent.rng)
     floor_offset = env.navmesh_floor_offset()
-    agent.reset(np.array(env.get_agent_state().position), env.get_agent_state().position[1] - floor_offset)
+    agent.reset(env.get_agent_state(), env.get_agent_state().position[1] - floor_offset)
     depth_cfg = habitat_cfg.habitat.simulator.agents.main_agent.sim_sensors.depth_sensor
     camera = DepthCamera(depth_cfg.hfov, depth_cfg.min_depth, depth_cfg.max_depth)
     vocabulary = resolve_classes(cfg.object_params.env_name, cfg.object_params.vocab_name)
@@ -181,7 +184,7 @@ def scene_variants(mapper: SceneMapper, ground_truth: GroundTruthObjects, cfg: D
     their ground-truth class ("pseudo_gt_classes"), and also without false positives and with false negatives' views ("recovered")."""
     resolved, memory = mapper.fused.resolved_objects, mapper.fused.image_memory
     selection = ViewSelection(k=cfg.collection.k_retrieval)
-    retrieved = retrieve_resolved_views(mapper.fused, mapper.camera, cfg.object_params.min_mesh_visibility_fraction, selection)
+    retrieved = retrieve_resolved_views(resolved, memory, mapper.camera, cfg.object_params.min_mesh_visibility_fraction, selection)
     pseudo = retrieved_views(resolved, memory, *retrieved)
     matches = matched_ground_truth(resolved, ground_truth)
     gt_classes = recover_gt_classes(pseudo, matches, ground_truth)
@@ -210,7 +213,7 @@ def save_semantic_topdowns(scene: str, scene_views: Dict[str, List[RetrievedView
         resolved = copy.deepcopy(mapper.fused.resolved_objects).relabeled(object_classes)
         out_path = root / variant / "semantic_topdown_maps" / f"{scene}.png"
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(str(out_path), estimated_semantic_topdown(resolved, mapper.agent.estimated_map, style.classes, style.colors)[:, :, ::-1])
+        cv2.imwrite(str(out_path), estimated_semantic_topdown(resolved, mapper.agent, style.classes, style.colors)[:, :, ::-1])
 
 
 def dataset_writers(cfg: DictConfig, classes: list) -> Tuple[Dict[str, ObjectViewsWriter], CocoFramesWriter]:

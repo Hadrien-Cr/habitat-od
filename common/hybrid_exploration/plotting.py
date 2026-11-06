@@ -51,7 +51,7 @@ def draw_goal_map(image: np.ndarray, goal_map: np.ndarray, radius: int = 2, goal
     If goal_score is given, also marks goal_map's highest-scoring pixel (ties broken by rounded mean position)
     with a black bounding cross and its score value as text."""
     distance = cv2.distanceTransform((goal_map == 0).astype(np.uint8), cv2.DIST_L2, 5)
-    alpha = np.clip(1.0 - distance / radius, 0.0, 1.0)[..., None]
+    alpha = 0.75 * np.clip(1.0 - distance / radius, 0.0, 1.0)[..., None]
     image[...] = ((1 - alpha) * image + alpha * np.array(_GOAL_MAP_COLOR)).astype(np.uint8)
     if goal_score is not None:
         _mark_peak(image, goal_map, goal_score)

@@ -27,7 +27,7 @@ from common.agents.random_agent import RandomAgent
 from common.env_utils.dataset import NO_FIXED_START_POSITION, NO_FIXED_START_ROTATION, ExplorationNavDataset  # noqa: F401 - registers "ExplorationSynthetic"
 from common.env_utils.env_registry import resolve_env
 from common.env_utils.lighting import AI2THOR_BRIGHT_LIGHTS
-from common.env_utils.object_annotations import ObjectAnnotation, get_all_objects, get_obj_from_id, object_world_mesh
+from common.env_utils.object_annotations import ObjectAnnotation, annotated_object_meshes, get_all_objects
 from common.env_utils.object_detector_sensors import ObjectDetectorGTSensor  # noqa: F401 - registers "ObjectDetectorGTSensor"
 from common.env_utils.sensors import AgentCollisionSensor, AgentPositionSensor, ColoredTDMapSensor  # noqa: F401 - registers agent_collision_sensor/position_sensor/colored_tdmap_sensor
 from common.hybrid_exploration.exploration_map import MapConfig
@@ -49,6 +49,12 @@ def gt_navigable_mask(pathfinder: habitat_sim.PathFinder, position: np.ndarray, 
     meters_per_pixel = maps.calculate_meters_per_pixel(resolution, pathfinder=pathfinder)
     islands = pathfinder.get_topdown_island_view(meters_per_pixel, position[1])
     return np.ascontiguousarray(islands == pathfinder.get_island(mn.Vector3(*position)), dtype=np.uint8)
+
+
+def navmesh_floor_offset(sim: habitat_sim.Simulator, position: np.ndarray) -> float:
+    """Height of navmesh position above the first collidable surface straight below it, the floor."""
+    ray = habitat_sim.geo.Ray(mn.Vector3(*(position + [0.0, _FLOOR_RAY_START_M, 0.0])), mn.Vector3(0.0, -1.0, 0.0))
+    return float(position[1] - sim.cast_ray(ray).hits[0].point[1])
 
 
 @dataclass
@@ -189,10 +195,7 @@ class ExplorationEnv(RLEnv):
         return self._env.sim
 
     def navmesh_floor_offset(self) -> float:
-        """Height of the agent's navmesh position above the first collidable surface straight below it, the floor."""
-        position = np.array(self.get_agent_state().position)
-        ray = habitat_sim.geo.Ray(mn.Vector3(*(position + [0.0, _FLOOR_RAY_START_M, 0.0])), mn.Vector3(0.0, -1.0, 0.0))
-        return float(position[1] - self._env.sim.cast_ray(ray).hits[0].point[1])
+        return navmesh_floor_offset(self._env.sim, np.array(self.get_agent_state().position))
 
     def get_map_bounds(self) -> tuple[tuple[float, float], tuple[float, float]]:
         l, u = self._env.sim.pathfinder.get_bounds()
@@ -214,16 +217,8 @@ class ExplorationEnv(RLEnv):
         return GroundTruthMapTracker(self._env.sim.pathfinder, position, fov_deg, visibility_dist_m, resolution)
 
     def get_gt_meshes(self, classes: list) -> list[tuple[int, int, trimesh.Trimesh]]:
-        r"""(object_id, class_id, world mesh) of every scene object the GT sensor annotates with one of
-        classes -- env-owned, needs no agent."""
-        annotation = self.get_object_annotation()
-        class_ids = {name: idx for idx, name in enumerate(classes)}
-        names = {object_id: annotation.classes[class_id] for object_id, class_id in annotation.obj_id_to_class_id.items()}
-        objects = [
-            (object_id, class_ids[name], get_obj_from_id(self._env.sim, object_id)) for object_id, name in names.items() if name in class_ids
-        ]
-        meshes = [(object_id, class_id, object_world_mesh(obj)) for object_id, class_id, obj in objects if obj is not None]
-        return [(object_id, class_id, mesh) for object_id, class_id, mesh in meshes if mesh is not None]
+        r"""annotated_object_meshes of the GT sensor's annotation -- env-owned, needs no agent."""
+        return annotated_object_meshes(self._env.sim, self.get_object_annotation(), classes)
 
     def get_gt_semantic_map(self, classes: list, colors: list, resolution: int = 256) -> np.ndarray:
         r"""RGB top-down silhouette map of every GT-annotated object of `classes`, on this env's own

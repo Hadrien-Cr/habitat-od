@@ -78,7 +78,7 @@ class FrontierExplorationAgent(BaseExplorationAgent):
         self._successive_collisions = self._successive_collisions + 1 if collided else 0
         if self._successive_collisions >= self.config.max_successive_collisions:
             return "stop", StopReason.COLLISION
-        agent_state = self.start_frame_state(agent_state)
+        agent_state = self.ref_frame_state(agent_state)
         position, heading = self.observe(agent_state, depth, self.camera)
         if self.is_stuck():
             return "stop", StopReason.STUCK
@@ -101,7 +101,7 @@ class FrontierExplorationAgent(BaseExplorationAgent):
 
 
 _SNAPSHOT_TILE_SIZE = 1024
-_BELIEF_CROP_CELLS = 256
+_BELIEF_CROP_M = 8.0
 
 
 def exploration_snapshot(
@@ -109,7 +109,7 @@ def exploration_snapshot(
 ) -> Optional[Image.Image]:
     """3-tile mosaic, every tile upscaled to _SNAPSHOT_TILE_SIZE: first-person rgb (or, when agent defines
     detections_tile() -- e.g. SearchAgent's Detic predictions -- that same frame with its detections drawn on
-    it), the agent's own belief map cropped to _BELIEF_CROP_CELLS around the agent, the ground-truth comparison map."""
+    it), the agent's own belief map cropped to _BELIEF_CROP_M around the agent, the ground-truth comparison map."""
     size = (_SNAPSHOT_TILE_SIZE, _SNAPSHOT_TILE_SIZE)
     if hasattr(agent, "detections_tile"):
         observation_label, first_person = agent.detections_tile()
@@ -117,7 +117,7 @@ def exploration_snapshot(
         observation_label, first_person = "observation", obs["rgb"][:, :, :3]
     first_person = letterboxed(np.ascontiguousarray(first_person), *size)
     agent_pixel = agent.estimated_map.to_pixel(agent.trajectory[-1][0])
-    belief_map = cv2.resize(centered_crop(agent.map_image(), agent_pixel, _BELIEF_CROP_CELLS)[:, :, ::-1], size, interpolation=cv2.INTER_NEAREST)
+    belief_map = cv2.resize(centered_crop(agent.map_image(), agent_pixel, int(round(_BELIEF_CROP_M / agent.estimated_map.meters_per_pixel)))[:, :, ::-1], size, interpolation=cv2.INTER_NEAREST)
     gt_map = letterboxed(ground_truth.image(trajectory_px)[:, :, ::-1], *size)
     return rows_mosaic([[
         (observation_label, np.ascontiguousarray(first_person)),

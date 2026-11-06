@@ -26,8 +26,9 @@ used only for scoring, unless an ablation flag (below) is turned on.
    set (unset runs every episode of the scene -- set it, with `scenes` narrowed to one scene, to rerun a single
    episode, e.g. to inspect a run's images again under updated code). Stop after `max_episodes` episodes across all
    scenes (`null` runs every one).
-2. **Reset:** the agent gets the episode's start pose. From then on it sees only poses relative to that start
-   (`start_frame_state`), as habitat's episodic GPS + compass give them. The target embedding is the CLIP text
+2. **Reset:** the agent gets the episode's start pose. From then on it sees only poses relative to that start, its
+   yaw snapped to 90° so the map grid stays on the world axes (`ref_state`, `ref_frame_state`), as habitat's episodic
+   GPS + compass give them. The target embedding is the CLIP text
    embedding of the main category. Its belief map (`EstimatedMap`, fixed at `map_size_m`, 48 m) is centered on the
    scene's own navmesh extent (`pathfinder.get_bounds()`, computed once per scene) rather than the agent's start
    position, whenever that extent fits within `map_size_m` -- so a long episode doesn't run the agent past the

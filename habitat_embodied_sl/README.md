@@ -55,8 +55,15 @@ come from, out of it; they belong with the code that builds them (`common/env_ut
     and objectness are averaged, weighted by detection counts. Detected frames are unioned.
   - (1.4.6) **Merge overlapping objects:** a pair merges when overlap ratio > 0.5, embedding similarity > 0.5 and their
     sum > 1.2. Pairs merge greedily, highest sum first.
-- (1.5) **Steer.** Every fused object is passed to `agent.update_objects` as an `ObjectBelief` of its points, with
-  confidence min(detections, 5) / 5. The agent's belief map (`EstimatedMap`, 0.1 m cells) marks as obstacles every
+- (1.5) **Steer.** The step's lifted detections (1.3) also go to `agent.update_detections`, whose `ObjectTracker`
+  (`common/hybrid_exploration/object_tracker.py`) denoises each as in 1.4.2 (detections under 16 points skipped) and
+  matches it as in 1.4.3: it merges into the best-scoring tracked object, or is tracked as a new one if every score is 0
+  and it has ≥ 16 points. Unlike the map, tracked objects are never merged with each other nor dropped, so each keeps
+  the id its seen sectors are stored under. Every tracked object is an `ObjectBelief` of its points, with confidence
+  min(detections, 5) / 5 (`_FULL_CONFIDENCE_DETECTIONS`); only objects of confidence ≥ 0.5
+  (`HybridConfig.confidence_thresh`) get viewpoints. The agent sees its poses, and the tracked objects' points, in its reference frame (`ref_state`: the start
+  position, with the start yaw snapped to 90° so the map grid stays on the world axes). Its belief map (`EstimatedMap`,
+  0.1 m cells) marks as obstacles every
   depth point between 0.2 m (`MapConfig.max_climb_m`, habitat-sim's step height) and 0.88 m (`obstacle_height_m`) above
   the floor. Downward rays with no depth hit also count, at their floor-plane crossing within `visibility_dist_m`
   (`missing_floor_points`, e.g. the drop past a terrace edge), dropping crossings whose own top-down cluster covers
@@ -70,7 +77,7 @@ come from, out of it; they belong with the code that builds them (`common/env_ut
   (`segmentation_tile`) is kept and, once exploration ends, saved both individually
   (`datadump/<run_name>/<scene>/prediction_frames/step_<step>.png`) and as one `predictions_mosaic.png`
   (`save_exploration_visuals`, which also writes that scene's final `decision.png`/`object.png`). Each step also saves a
-  3-tile (observation, belief map cropped to the 256 x 256 cells around the agent, ground truth) snapshot to
+  3-tile (observation, belief map cropped to the 5 x 5 m around the agent, ground truth) snapshot to
   `datadump/<run_name>/<scene>/images/exploration_snapshots/snapshot_<step>.png`, assembled into `exploration.webp`
   (lossless animated WebP, not GIF -- GIF's 256-color palette cap crowds out or merges rare colors like the belief
   map's green explored tint) once exploration ends.
@@ -157,8 +164,9 @@ come from, out of it; they belong with the code that builds them (`common/env_ut
 - (6.3) Each picked frame is written to the COCO test set with all its ground-truth instances as annotations, each
   keeping its simulator object id. One test set is shared by the three train sets.
 
-Fusion thresholds live in `ConceptGraphConfig` and the lifting, steering and size-mask constants (`_MIN_LIFT_FRACTION`,
-`_FULL_CONFIDENCE_DETECTIONS`, `_SIZE_MARGIN`) at the top of `common/utils/concept_graph.py`; floor, wall and raytracing
+Fusion and tracking thresholds live in `ConceptGraphConfig`, the lifting and size-mask constants (`_MIN_LIFT_FRACTION`,
+`_SIZE_MARGIN`) at the top of `common/utils/concept_graph.py`, the steering one (`_FULL_CONFIDENCE_DETECTIONS`) at the top
+of `common/hybrid_exploration/object_tracker.py`; floor, wall and raytracing
 thresholds (`_MIN_RAYTRACED_FRACTION`) at the top of `common/utils/projection_utils.py`; budgets, scenes and ground-truth
 filters in the collection config.
 

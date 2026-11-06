@@ -187,6 +187,15 @@ class ObjectAnnotation:
             raise NotImplementedError(f"Environment {self.env_name} not supported for object annotations")
 
 
+def annotated_object_meshes(sim: habitat_sim.Simulator, annotation: ObjectAnnotation, classes: list) -> list[tuple[int, int, trimesh.Trimesh]]:
+    """(object_id, class_id in classes, world mesh) of every scene object annotation labels with one of classes."""
+    class_ids = {name: idx for idx, name in enumerate(classes)}
+    names = {object_id: annotation.classes[class_id] for object_id, class_id in annotation.obj_id_to_class_id.items()}
+    objects = [(object_id, class_ids[name], get_obj_from_id(sim, object_id)) for object_id, name in names.items() if name in class_ids]
+    meshes = [(object_id, class_id, object_world_mesh(obj)) for object_id, class_id, obj in objects if obj is not None]
+    return [(object_id, class_id, mesh) for object_id, class_id, mesh in meshes if mesh is not None]
+
+
 @lru_cache(maxsize=None)
 def _load_hssd_vocab(vocab_name: str) -> tuple[list[str], dict[str, str], dict[str, str]]:
     """HSSD-HAB has no native per-object category scheme, so every object's handle has to be

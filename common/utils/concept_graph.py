@@ -8,7 +8,6 @@ from detectron2.structures import Instances
 from scipy.spatial.kdtree import KDTree
 
 from common.env_utils.visibility_utils import within_size_ranges
-from common.hybrid_exploration.object_viewpoints import ObjectBelief
 from common.utils.image_memory import Frame, ImageMemory
 from common.utils.projection_utils import (
     DepthCamera, ResolvedObjects, box_columns, downsample_points, foreground_points, instance_masks_and_classes, largest_cluster_mask, main_cluster_mask,
@@ -22,7 +21,6 @@ from common.vision.detector import Detector
 
 UNCLASSIFIED = -1
 _MIN_LIFT_FRACTION = 2e-4
-_FULL_CONFIDENCE_DETECTIONS = 5
 _SIZE_MARGIN = 0.5
 
 
@@ -93,14 +91,19 @@ def project_detections_to_objects(
     """One raw ConceptGraphObject per instance of frame frame_id, without the floor and the walls behind it; instances must
     carry region_features."""
     masks, _ = instance_masks_and_classes(instances)
-    camera_center = np.asarray(frame.pose)[:3, 3]
-    points = [foreground_points(object_points(frame.depth, frame.pose, mask, camera), floor_height, camera_center) for mask in masks]
+    points = detection_points(frame, masks, camera, floor_height)
     objects = [
-        ConceptGraphObject(detection_points, np.ones(len(detection_points), dtype=int), region_feature, float(score), frozenset({frame_id}))
-        for detection_points, region_feature, score in zip(points, instances.region_features, instances.scores)
+        ConceptGraphObject(lifted, np.ones(len(lifted), dtype=int), region_feature, float(score), frozenset({frame_id}))
+        for lifted, region_feature, score in zip(points, instances.region_features, instances.scores)
     ]
     all_pixels = np.ones(np.squeeze(frame.depth).shape, dtype=bool)
     return FrameDetections(objects, object_points(frame.depth, frame.pose, all_pixels, camera))
+
+
+def detection_points(frame: Frame, masks: torch.Tensor, camera: DepthCamera, floor_height: float) -> List[np.ndarray]:
+    """World points of each of masks on frame, without the floor and the walls behind them."""
+    camera_center = np.asarray(frame.pose)[:3, 3]
+    return [foreground_points(object_points(frame.depth, frame.pose, mask, camera), floor_height, camera_center) for mask in masks]
 
 
 def has_enough_depth_points(frame: Frame, instances: Instances, camera: DepthCamera) -> torch.Tensor:
@@ -119,11 +122,16 @@ def lifted_instances(instances: Instances, shape: Tuple[int, int]) -> Instances:
     return lifted
 
 
+def liftable_instances(frame: Frame, instances: Instances, camera: DepthCamera) -> Instances:
+    """instances resized to the frame's depth, keeping those covering at least _MIN_LIFT_FRACTION of it with valid depth."""
+    instances = lifted_instances(instances, np.squeeze(frame.depth).shape)
+    return instances[has_enough_depth_points(frame, instances, camera)]
+
+
 def predicted_objects(frame_id: int, frame: Frame, instances: Instances, camera: DepthCamera, floor_height: float) -> FrameDetections:
     """One ConceptGraphObject per prediction on frame frame_id whose mask, resized to the frame's depth, covers at least
     _MIN_LIFT_FRACTION of it with valid depth, with its Detic region embedding and objectness."""
-    instances = lifted_instances(instances, np.squeeze(frame.depth).shape)
-    instances = instances[has_enough_depth_points(frame, instances, camera)]
+    instances = liftable_instances(frame, instances, camera)
     if len(instances) == 0:
         return FrameDetections([], np.empty((0, 3)))
     return project_detections_to_objects(frame_id, frame, instances, camera, floor_height)
@@ -135,6 +143,45 @@ def object_size_ranges(classes: list, class_ranges: Dict[str, Dict[str, Tuple[fl
         class_id: {measure: (_SIZE_MARGIN * low, high / _SIZE_MARGIN) for measure, (low, high) in class_ranges[name].items()}
         for class_id, name in enumerate(classes) if name in class_ranges
     }
+
+
+def downsampled_object(obj: ConceptGraphObject, voxel_size: float) -> ConceptGraphObject:
+    points, point_num_dets = voxel_merge([(obj.points, obj.point_num_dets)], voxel_size)
+    return replace(obj, points=points, point_num_dets=point_num_dets)
+
+
+def processed_detections(frame: FrameDetections, config: ConceptGraphConfig) -> List[ConceptGraphObject]:
+    """frame's detections with at least min_points_threshold (and 5) points, each voxel-downsampled, then its largest tight
+    DBSCAN cluster with the small ones attached to it: its thin parts stay, while its mask's spill onto a neighbouring
+    object, which only a tight cluster separates, goes."""
+    downsampled = [
+        downsampled_object(detection, config.downsample_voxel_size)
+        for detection in frame.objects if len(detection.points) >= max(config.min_points_threshold, 5)
+    ]
+    return [
+        detection.subset(main_cluster_mask(
+            detection.points, config.detection_dbscan_eps, config.detection_dbscan_min_points, config.dbscan_eps, config.detection_max_attached_fraction,
+        ))
+        for detection in downsampled
+    ]
+
+
+def view_tree(frame: FrameDetections, voxel_size: float) -> KDTree:
+    return KDTree(downsample_points(frame.view_points, voxel_size))
+
+
+def match_similarities(
+    detections: List[ConceptGraphObject], objects: List[ConceptGraphObject], frame_view_tree: KDTree, config: ConceptGraphConfig,
+) -> torch.Tensor:
+    """(detections, objects) IoU with the objects' parts seen in this frame (frame_view_tree) + region-embedding similarity,
+    0 where that IoU is under match_iou_thresh."""
+    spatial_sim = torch.from_numpy(view_iou_matrix(
+        [detection.points for detection in detections], [obj.points for obj in objects], frame_view_tree, config.downsample_voxel_size,
+    )).float()
+    visual_sim = visual_similarity_matrix(
+        torch.stack([detection.region_feature for detection in detections]), torch.stack([obj.region_feature for obj in objects]),
+    )
+    return torch.where(spatial_sim >= config.match_iou_thresh, spatial_sim + visual_sim, torch.zeros_like(spatial_sim))
 
 
 @dataclass(eq=False)
@@ -172,18 +219,18 @@ class ConceptGraphMemory:
 
     def __add__(self, frame: FrameDetections) -> "ConceptGraphMemory":
         """Matches each detection to its most similar object, merging it there or adding it as a new object, then merges overlapping objects."""
-        processed = [self._detection_processed(detection) for detection in frame.objects if len(detection.points) >= max(self.config.min_points_threshold, 5)]
+        processed = processed_detections(frame, self.config)
         if not processed:
             return self
         if self.objects:
-            self._match_into_objects(processed, KDTree(downsample_points(frame.view_points, self.config.downsample_voxel_size)))
+            self._match_into_objects(processed, view_tree(frame, self.config.downsample_voxel_size))
         else:
             self.objects.extend(processed)
         self.objects = self._merge_overlapping(self.objects)
         return self
 
-    def _match_into_objects(self, detections: List[ConceptGraphObject], view_tree: KDTree) -> None:
-        similarities = self._match_similarities(detections, view_tree)
+    def _match_into_objects(self, detections: List[ConceptGraphObject], frame_view_tree: KDTree) -> None:
+        similarities = match_similarities(detections, self.objects, frame_view_tree, self.config)
         for detection, detection_similarities in zip(detections, similarities):
             best_object = int(detection_similarities.argmax())
             if detection_similarities[best_object] == 0:
@@ -211,30 +258,6 @@ class ConceptGraphMemory:
         ]
         return detection.subset(~self._near_any(detection.points, trees))
 
-    def _detection_processed(self, detection: ConceptGraphObject) -> ConceptGraphObject:
-        """detection voxel-downsampled, then its largest tight DBSCAN cluster with the small ones attached to it: its thin parts
-        stay, while its mask's spill onto a neighbouring object, which only a tight cluster separates, goes."""
-        downsampled = self._downsampled(detection)
-        return downsampled.subset(main_cluster_mask(
-            downsampled.points, self.config.detection_dbscan_eps, self.config.detection_dbscan_min_points,
-            self.config.dbscan_eps, self.config.detection_max_attached_fraction,
-        ))
-
-    def _downsampled(self, obj: ConceptGraphObject) -> ConceptGraphObject:
-        points, point_num_dets = voxel_merge([(obj.points, obj.point_num_dets)], self.config.downsample_voxel_size)
-        return replace(obj, points=points, point_num_dets=point_num_dets)
-
-    def _match_similarities(self, detections: List[ConceptGraphObject], view_tree: KDTree) -> torch.Tensor:
-        """(detections, objects) IoU with the objects' parts seen in this frame + region-embedding similarity, 0 where that IoU is
-        under match_iou_thresh, computed before any merge of this frame."""
-        spatial_sim = torch.from_numpy(view_iou_matrix(
-            [detection.points for detection in detections], [obj.points for obj in self.objects], view_tree, self.config.downsample_voxel_size,
-        )).float()
-        visual_sim = visual_similarity_matrix(
-            torch.stack([detection.region_feature for detection in detections]), torch.stack([obj.region_feature for obj in self.objects]),
-        )
-        return torch.where(spatial_sim >= self.config.match_iou_thresh, spatial_sim + visual_sim, torch.zeros_like(spatial_sim))
-
     def resolve(self) -> None:
         """concept-graphs' end-of-run filter, then points in fewer than min_point_num_dets detections dropped, each object
         denoised, shared points kept by the object detected there most often and the adjacent parts of a single object
@@ -252,7 +275,7 @@ class ConceptGraphMemory:
 
     def _denoised(self, obj: ConceptGraphObject) -> ConceptGraphObject:
         """obj voxel-downsampled, then its largest DBSCAN cluster (concept-graphs' process_pcd), obj itself if under 4 points survive."""
-        downsampled = self._downsampled(obj)
+        downsampled = downsampled_object(obj, self.config.downsample_voxel_size)
         denoised = downsampled.subset(largest_cluster_mask(downsampled.points, self.config.dbscan_eps, self.config.dbscan_min_points))
         return denoised if len(denoised.points) >= 4 else obj
 
@@ -362,14 +385,6 @@ class ConceptGraphMemory:
             plausible = torch.tensor([within_size_ranges(dimensions, size_ranges.get(class_id, {})) for class_id in range(len(probs))])
             scores[object_id] = self.foreground_scores[object_id] * probs * plausible
         self.resolved_objects.classified({object_id: object_scores for object_id, object_scores in scores.items() if object_scores.any()})
-
-
-def object_beliefs(fused: ConceptGraphMemory) -> Dict[int, ObjectBelief]:
-    """Every fused object's points, its confidence growing linearly with its detections up to _FULL_CONFIDENCE_DETECTIONS."""
-    return {
-        object_id: ObjectBelief(min(obj.object_num_dets, _FULL_CONFIDENCE_DETECTIONS) / _FULL_CONFIDENCE_DETECTIONS, obj.points)
-        for object_id, obj in enumerate(fused.objects)
-    }
 
 
 def fused_object_rows(stage: str, fused: ConceptGraphMemory) -> List[dict]:

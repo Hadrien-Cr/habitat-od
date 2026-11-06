@@ -9,8 +9,10 @@ from common.agents.abstract_agent import StopReason
 from common.agents.base_exploration_agent import BaseExplorationAgent
 from common.hybrid_exploration.discrete_planner import DiscretePlanner
 from common.hybrid_exploration.exploration_map import EstimatedMap, MapConfig
+from common.hybrid_exploration.object_tracker import ObjectTracker
 from common.hybrid_exploration.object_viewpoints import Candidate, ObjectBelief, footprint, sector_positions
 from common.hybrid_exploration.plotting import draw_goal_map, draw_in_view, draw_objects
+from common.utils.concept_graph import FrameDetections
 from common.utils.projection_utils import DepthCamera
 
 _VISITED_COLOR = (0, 0, 255)  # BGR -- red, matching BaseExplorationAgent's trajectory color
@@ -42,7 +44,8 @@ class HybridFrontierAgent(BaseExplorationAgent):
     action -- no ground-truth navmesh pathfinding and no per-candidate cost comparison. Reaching a viewpoint (within
     reach_m) is checked before invoking the planner each step and short-circuits to turning the agent to face the
     object, since DiscretePlanner has no "look at point" concept.
-    Uses ObjectBeliefs. see main.py for usage
+    Its objects are the ObjectBeliefs of its own ObjectTracker, fed every step's lifted detections by update_detections
+    (see main.py for usage).
     """
 
     map_config: MapConfig
@@ -70,20 +73,26 @@ class HybridFrontierAgent(BaseExplorationAgent):
         super().__init__(config.map_config, rng, config.turn_angle_deg, planner)
         self.config = config
         self.camera = camera
+        self.tracker = ObjectTracker()
         self.objects: Dict[int, ObjectBelief] = {}
         self.seen_sectors: Dict[int, np.ndarray] = {}
         self._goal_map: Optional[np.ndarray] = None
         self._successive_collisions = 0
 
-    def reset(self, position: np.ndarray, floor_height: float, navmesh_bounds: Optional[Tuple[np.ndarray, np.ndarray]] = None) -> None:
-        super().reset(habitat_sim.AgentState(position=position), floor_height, navmesh_bounds)
+    def reset(self, start_state: habitat_sim.AgentState, floor_height: float, navmesh_bounds: Optional[Tuple[np.ndarray, np.ndarray]] = None) -> None:
+        super().reset(start_state, floor_height, navmesh_bounds)
+        self.tracker = ObjectTracker()
         self.objects = {}
         self.seen_sectors = {}
         self._goal_map = None
         self._successive_collisions = 0
 
-    def update_objects(self, objects: Dict[int, ObjectBelief]) -> None:
-        self.objects = objects
+    def update_detections(self, frame: FrameDetections) -> None:
+        """Tracks frame's lifted (world) detections; the tracked objects, in the reference frame, become the ones to inspect."""
+        self.tracker.update(frame)
+        self.objects = {
+            object_id: ObjectBelief(belief.confidence, self.ref_frame_points(belief.points)) for object_id, belief in self.tracker.beliefs().items()
+        }
 
     def seen(self, object_id: int) -> np.ndarray:
         return self.seen_sectors.setdefault(object_id, np.zeros(self.config.n_sectors, dtype=bool))
@@ -98,7 +107,7 @@ class HybridFrontierAgent(BaseExplorationAgent):
         if self._successive_collisions >= self.config.max_successive_collisions:
             return "stop", StopReason.COLLISION
 
-        position, heading = self.observe(agent_state, depth, self.camera)
+        position, heading = self.observe(self.ref_frame_state(agent_state), depth, self.camera)
         if self.is_stuck():
             return "stop", StopReason.STUCK
         self._mark_inspected(position, heading)
@@ -226,7 +235,7 @@ class HybridFrontierAgent(BaseExplorationAgent):
             draw_objects(image, self.objects, self.config.confidence_thresh, self.estimated_map.to_pixels)
         
         if self._goal_map is not None and np.any(self._goal_map):
-            draw_goal_map(image, self._goal_map, radius=int(self.config.reach_m / self.estimated_map.meters_per_pixel))
+            draw_goal_map(image, self._goal_map, radius=1)
         
         return image
 

@@ -73,8 +73,8 @@ def _believed_goal_correct(agent: SearchAgent, goals: List[SceneGoal]) -> bool:
     believed = agent.estimated_map.believed_goal_positions(agent.config.goal_score_thresh)
     if len(believed) == 0:
         return False
-    goals_start_frame_xz = agent.start_frame_points(goal_positions(goals))[:, [0, 2]]
-    return bool(np.any(np.linalg.norm(goals_start_frame_xz[:, None] - believed[None], axis=2) <= _BELIEVED_GOAL_MATCH_M))
+    goals_ref_frame_xz = agent.ref_frame_points(goal_positions(goals))[:, [0, 2]]
+    return bool(np.any(np.linalg.norm(goals_ref_frame_xz[:, None] - believed[None], axis=2) <= _BELIEVED_GOAL_MATCH_M))
 
 
 def classify_failure(success: bool, agent: SearchAgent, goals: List[SceneGoal], goal_seen: bool) -> FailureCategory:

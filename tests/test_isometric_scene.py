@@ -43,7 +43,7 @@ _MP3D_CONFIG = f"{HABITAT_DATA}/scene_datasets/mp3d/mp3d.scene_dataset_config.js
 _HSSD_SCENE = "102816756"
 _GIBSON_SCENE = "Corozal"
 _MP3D_SCENE = "17DRP5sb8fy"
-_PROCTHOR_SCENE = "ProcTHOR-Train-9632"
+_PROCTHOR_SCENE = "ProcTHOR-Train-0"
 _PROCTHOR_SCENE_2 = "ProcTHOR-Train-6340"  # multi-room house, exercises the ceiling-stripping across several rooms at once
 
 _RESOLUTION = [900, 900]

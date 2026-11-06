@@ -222,11 +222,13 @@ def filled_footprint(pixels: np.ndarray, shape: tuple) -> np.ndarray:
     return ndimage.binary_fill_holes(ndimage.binary_closing(mask, iterations=_FOOTPRINT_CLOSING_ITERATIONS) | mask)
 
 
-def estimated_semantic_topdown(resolved: "ResolvedObjects", estimated_map, classes: list, colors: list) -> np.ndarray:
-    """RGB top-down map of resolved's objects, by class, over the agent's own explored-and-free belief map --
-    the fully agent-side counterpart to gt_semantic_topdown, built from EstimatedMap alone (no ground truth)."""
+def estimated_semantic_topdown(resolved: "ResolvedObjects", agent, classes: list, colors: list) -> np.ndarray:
+    """RGB top-down map of resolved's (world) objects, by class, over the agent's own explored-and-free belief map, in
+    its reference frame -- the fully agent-side counterpart to gt_semantic_topdown, built from EstimatedMap alone (no
+    ground truth)."""
+    estimated_map = agent.estimated_map
     navigable = estimated_map.explored & ~estimated_map.obstacles.astype(bool)
-    pixels = estimated_map.to_pixels(resolved.resolved_points)
+    pixels = estimated_map.to_pixels(agent.ref_frame_points(resolved.resolved_points))
     inside = ((pixels >= 0) & (pixels < np.array(navigable.shape))).all(axis=1)
     pixels, infos = pixels[inside], resolved.resolved_infos[inside]
     object_classes = dict(zip(infos[:, 1], infos[:, 0]))
