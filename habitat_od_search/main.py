@@ -1,8 +1,9 @@
 """Evaluates habitat_od_search's SearchAgent on IMPRINT's HSSD-rare ObjectNav episodes (--config, see
 habitat_od_search/config/hssd_rare_eval.yaml). For each scene in `scenes` (every saved hssd_rare_eps scene when
 empty), one ExplorationEnv is built; each of its episodes whose start navmesh island covers at least
-min_island_area_m2 (smaller ones, e.g. a balcony cut off from the house, are skipped), and whose episode_id matches
-cfg.episode_id when given (every episode otherwise), resets the env to the episode's
+min_island_area_m2 (smaller ones, e.g. a balcony cut off from the house, are skipped) and at most max_island_area_m2
+(larger ones are usually a navmesh merging areas that shouldn't be connected), and whose episode_id is in
+cfg.episode_ids when given (every episode otherwise), resets the env to the episode's
 own start pose and runs a fresh SearchAgent, targeting the CLIP text embedding of the episode's main category (the text before the first
 comma of its fine-grained object_category), until it stops (also once stuck, BaseExplorationAgent.is_stuck) or
 runs out of agent.max_steps -- for at most max_episodes episodes in all (every one when null). Each episode's success, SPL,
@@ -137,6 +138,10 @@ def episode_rng(cfg_seed: int, scene_id: str, episode_id: str) -> np.random.Gene
     return np.random.default_rng(zlib.crc32(f"{cfg_seed}_{scene_id}_{episode_id}".encode()))
 
 
+def episode_island_area(pathfinder, episode: NavigationEpisode) -> float:
+    return pathfinder.island_area(pathfinder.get_island(np.array(episode.start_position)))
+
+
 def evaluate_scene(scene_id: str, cfg: DictConfig, detector: Detector, run_dir: Path, run_indices: Iterator[int]) -> Iterator[EpisodeResult]:
     """EpisodeResult of every HSSD-rare episode of scene_id, yielded as each one ends; run_indices numbers them across scenes."""
     scene_episodes = load_scene_episodes(scene_id)
@@ -150,8 +155,8 @@ def evaluate_scene(scene_id: str, cfg: DictConfig, detector: Detector, run_dir: 
     navmesh_bounds = pathfinder.get_bounds()
     episodes = [
         episode for episode in scene_episodes.episodes
-        if pathfinder.island_area(pathfinder.get_island(np.array(episode.start_position))) >= cfg.min_island_area_m2
-        and episode.episode_id == cfg.get("episode_id", episode.episode_id)
+        if cfg.min_island_area_m2 <= episode_island_area(pathfinder, episode) <= cfg.max_island_area_m2
+        and episode.episode_id in cfg.get("episode_ids", [episode.episode_id])
     ]
     try:
         for episode in tqdm(episodes, desc=f"search {scene_id}", ncols=80):

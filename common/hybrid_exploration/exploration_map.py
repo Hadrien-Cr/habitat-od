@@ -30,7 +30,9 @@ class MapConfig:
     min_frontier_size_m: float = 0.5  # shorter frontier fragments are dropped (without_small_frontiers)
     min_missing_floor_cluster_m: float = 0.5  # smaller missing_floor_points clusters are dropped -- a single bad
     # depth pixel (e.g. a hole in the scanned mesh) otherwise floor-projects into an isolated, often-arbitrary obstacle cell
-    obstacle_height_m: float = 0.88  # matches common/config/hssd-hab/default.yaml's agent height
+    obstacle_height_m: float = 1.2  # above the agent's own 0.88 m height (common/config/hssd-hab/default.yaml) so a
+    # solid rising surface (e.g. a staircase's treads/soffit) stays marked past the agent's head height, short of
+    # a typical door lintel (~2 m) wrongly becoming an obstacle too
     max_climb_m: float = 0.2  # matches habitat-sim's NavMeshSettings.agent_max_climb: lower steps/sills are traversable
     min_frontier_dist_m: float = 0.5  # frontier cells this close to the agent are excluded -- reveal_fog_of_war's
     # FOV cone has its apex at the agent's own position, which (before it has moved anywhere) is itself explored

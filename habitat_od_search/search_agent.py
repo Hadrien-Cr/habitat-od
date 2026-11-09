@@ -120,8 +120,9 @@ class SearchAgent(BaseExplorationAgent):
         self.last_instances = instances
         self.last_rgb = rgb[:, :, :3]
 
-        # If the best detection's score exceeds the threshold, mark the estimated map's goal_score with its mask.
-        if best_score >= self.config.goal_score_thresh:
+        # If the best detection is confident enough, mark the estimated map's goal_score with its mask; goal_score_thresh
+        # is the separate threshold on the accumulated map belief, read by goal_mask() and evaluator.py.
+        if best_score >= self.config.confidence_thresh:
             best_idx = int(instances.scores.argmax())
             self.estimated_map.mark_goal(
                 depth, agent_state.sensor_states["depth"], instances.pred_masks[best_idx], best_score, self.camera, self.floor_height,

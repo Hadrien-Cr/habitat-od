@@ -101,7 +101,7 @@ class FrontierExplorationAgent(BaseExplorationAgent):
 
 
 _SNAPSHOT_TILE_SIZE = 1024
-_BELIEF_CROP_M = 8.0
+_BELIEF_CROP_M = 12.0
 
 
 def exploration_snapshot(

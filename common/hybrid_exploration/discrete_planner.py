@@ -497,27 +497,34 @@ class DiscretePlanner:
     def _heading_step_goal(
         self, traversible: np.ndarray, state: np.ndarray, heading_deg: float
     ) -> Tuple[Tuple[float, float], bool, bool, List[Tuple[Tuple[float, float], bool]]]:
-        """(the landing point of one step_size forward move along the reachable heading -- the current one turned by a whole
-        number of turn_angle -- whose straight path stays on traversible cells and ends closest to the goal on fmm_distance,
-        ties kept by the smallest turn; replan, when no such move gets closer than the agent's cell; stop, on the goal).
-        state is the agent's cell in the padded traversible/fmm_distance arrays. heading_points is each tested heading's
-        landing cell (in the same unpadded frame as start/short_term_goal) and whether its straight path was traversible,
-        for debug_mosaic_save."""
+        """(the landing point of one forward move along the reachable heading -- the current one turned by a whole
+        number of turn_angle -- clipped to the farthest traversible point on its straight path (up to step_size),
+        among headings with a nonzero traversible distance the one ending closest to the goal on fmm_distance, ties
+        kept by the smallest turn; replan, when every heading is blocked at its very first sample point; stop, on
+        the goal). state is the agent's cell in the padded traversible/fmm_distance arrays. heading_points is each
+        tested heading's (possibly clipped) landing cell (in the same unpadded frame as start/short_term_goal) and
+        whether it reached any traversible point, for debug_mosaic_save."""
         assert self.fmm_distance is not None
         current = self.fmm_distance[tuple(state)]
         n_headings = int(round(360.0 / self.turn_angle))
         fractions = np.linspace(0.0, 1.0, 2 * int(np.ceil(self.step_size)) + 1)[1:]
+        max_index = np.array(traversible.shape) - 1
         best_goal, best_distance = None, current - 0.0001
         heading_points: List[Tuple[Tuple[float, float], bool]] = []
         for turn in sorted(range(1 - n_headings // 2, n_headings // 2 + 1), key=abs):
             angle = np.radians(heading_deg + turn * self.turn_angle)
             path = state + np.outer(fractions, [np.sin(angle), np.cos(angle)]) * self.step_size
             cells = np.round(path).astype(int)
-            on_traversible = np.all((cells >= 0) & (cells < traversible.shape)) and traversible[cells[:, 0], cells[:, 1]].all()
+            in_bounds = np.all((cells >= 0) & (cells <= max_index), axis=1)
+            clipped_cells = np.clip(cells, 0, max_index)
+            clear = in_bounds & traversible[clipped_cells[:, 0], clipped_cells[:, 1]].astype(bool)
+            reachable = int(np.argmin(clear)) if not clear.all() else len(clear)
+            on_traversible = reachable > 0
+            landing_cell = cells[reachable - 1] if on_traversible else cells[0]
             if self.debug:
-                heading_points.append(((cells[-1, 0] - 1, cells[-1, 1] - 1), on_traversible))
-            if on_traversible and self.fmm_distance[tuple(cells[-1])] < best_distance:
-                best_goal, best_distance = path[-1], self.fmm_distance[tuple(cells[-1])]
+                heading_points.append(((landing_cell[0] - 1, landing_cell[1] - 1), on_traversible))
+            if on_traversible and self.fmm_distance[tuple(landing_cell)] < best_distance:
+                best_goal, best_distance = path[reachable - 1], self.fmm_distance[tuple(landing_cell)]
         goal = state if best_goal is None else best_goal
         return (float(goal[0]), float(goal[1])), best_goal is None, current < self.goal_tolerance, heading_points
 
