@@ -1,4 +1,5 @@
 import math
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Union
 
@@ -13,7 +14,7 @@ from common.agents.base_exploration_agent import BaseExplorationAgent
 from common.hybrid_exploration.discrete_planner import DiscretePlanner
 from common.hybrid_exploration.exploration_map import EstimatedMap, MapConfig
 from common.hybrid_exploration.hybrid_agent import HybridFrontierAgent
-from common.utils.plot_utils import centered_crop, letterboxed, make_mosaic, rows_mosaic
+from common.utils.plot_utils import PNG_COMPRESS_LEVEL, centered_crop, letterboxed, make_mosaic, rows_mosaic, save_tile
 from common.utils.projection_utils import DepthCamera
 
 
@@ -85,23 +86,13 @@ class FrontierExplorationAgent(BaseExplorationAgent):
         spin_action = self.initial_spin()
         if spin_action is not None:
             return spin_action, None
-        frontier_map = self.estimated_map.frontier_map()
-
-        action, self._closest_goal_map, self._short_term_goal, _, no_feasible_plan, no_frontier = self.planner.plan(
-            obstacle_map=self.estimated_map.obstacles,
-            goal_map=np.zeros_like(frontier_map, dtype=np.uint8),  # no goal map for vanilla frontier exploration
-            frontier_map=frontier_map,
-            sensor_pose=self.sensor_pose(position, heading),
-            found_goal=bool(frontier_map.any()),
-            use_dilation_for_stg=False,
-            current_timestep=len(self.trajectory) - 1,
-        )
-        action_name = self.action_name(action)
-        return action_name, self.plan_stop_reason(action_name, no_feasible_plan, no_frontier)
+        no_goal = np.zeros_like(self.estimated_map.obstacles)
+        return self.plan_action(no_goal, len(self.estimated_map.frontier_pixels) > 0, position, heading, len(self.trajectory) - 1)
 
 
 _SNAPSHOT_TILE_SIZE = 1024
 _BELIEF_CROP_M = 12.0
+_SAVE_WORKERS = 8
 
 
 def exploration_snapshot(
@@ -126,12 +117,13 @@ def exploration_snapshot(
     ]])
 
 def save_exploration_visuals(agent: HybridFrontierAgent, prediction_tiles: list, out_dir: Path) -> None:
-    """predictions_mosaic.png and prediction_frames/step_<step>.png of every step."""
+    """predictions_mosaic.png and prediction_frames/step_<step>.png of every step, the frames saved in parallel (PIL
+    releases the GIL while encoding)."""
     assert agent.estimated_map is not None, "Call reset() first"
 
-    make_mosaic(prediction_tiles, N_cols=5).save(out_dir / "predictions_mosaic.png")
-    frames_dir = out_dir / "prediction_frames"
-    frames_dir.mkdir(parents=True, exist_ok=True)
-    for step, tile in enumerate(prediction_tiles):
-        make_mosaic([tile], N_cols=1).save(frames_dir / f"step_{step:04d}.png")
+    frame_paths = [out_dir / "prediction_frames" / f"step_{step:04d}.png" for step in range(len(prediction_tiles))]
+    with ThreadPoolExecutor(_SAVE_WORKERS) as pool:
+        frames_saved = pool.map(save_tile, prediction_tiles, frame_paths)
+        make_mosaic(prediction_tiles, N_cols=5).save(out_dir / "predictions_mosaic.png", compress_level=PNG_COMPRESS_LEVEL)
+        list(frames_saved)
 

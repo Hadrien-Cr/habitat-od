@@ -1,5 +1,5 @@
 """Evaluates a Detic config and checkpoint (MODEL.WEIGHTS, in the trailing opts) on a COCO test split written by
-habitat_embodied_sl/main.py (datasets/<run_name>/test/, see README.md), with Detic's own train_net.py do_test and its
+habitat_embodied_sl/collect.py (datasets/<run_name>/test/, see README.md), with Detic's own train_net.py do_test and its
 COCOEvaluator. Detic's zero-shot classifier is reset to the CLIP text embeddings of the split's categories, prompted as
 `a <class>`. Results go to <test-dir>/inference/<config-file's stem>/.
 

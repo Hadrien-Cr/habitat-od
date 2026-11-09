@@ -36,6 +36,7 @@ class _RaytracedMap:
     fused: ResolvedObjects
     memory: ImageMemory
     raytraced: dict
+    point_indices: Dict[int, Dict[int, np.ndarray]]
     camera: DepthCamera
 
 
@@ -78,15 +79,8 @@ def save_prediction_frame(rgb: np.ndarray, instances: Instances, style: Segmenta
     save_tile(segmentation_tile(rgb, instances, style, label), out_path)
 
 
-def retrieve_views(fused: ResolvedObjects, memory: ImageMemory, raytraced: dict, camera: DepthCamera, selection: ViewSelection) -> Dict[int, List[int]]:
-    """{object id: ids of the frames selection picks among those raytraced (ImageMemory.raytrace_frames) to show it}
-    of every resolved object, largest first."""
-    raytraced_map = _RaytracedMap(fused, memory, raytraced, camera)
-    return {object_id: _select_views(raytraced_map, object_id, selection) for object_id in objects_by_size(fused)}
-
-
 def retrieved_views(fused: ResolvedObjects, memory: ImageMemory, raytraced: dict, object_frames: Dict[int, List[int]]) -> List[RetrievedView]:
-    """One view per frame object_frames (retrieve_views) picks for each object, its raytraced mask resized to the frame's
+    """One view per frame object_frames (retrieve_resolved_views) picks for each object, its raytraced mask resized to the frame's
     rgb, labelled with the object's resolved class."""
     object_classes = fused.object_classes()
     return [
@@ -212,9 +206,8 @@ def _visibility(raytraced_map: _RaytracedMap, frame_id: int, object_id: int) -> 
 
 def _covered_elements(raytraced_map: _RaytracedMap, frame_id: int, object_id: int) -> Tuple[np.ndarray, np.ndarray]:
     """(point index, viewing angle) of the object's resolved points its raytraced mask hits in the frame."""
-    frame, fused = raytraced_map.memory.get_frame(frame_id), raytraced_map.fused
-    indices = fused.raytraced_point_indices(frame.depth, frame.pose, raytraced_mask(raytraced_map.raytraced, frame_id, object_id), raytraced_map.camera, object_id)
-    return indices, viewing_angles(fused.resolved_points[indices], frame.pose[:3, 3])
+    indices = raytraced_map.point_indices[frame_id][object_id]
+    return indices, viewing_angles(raytraced_map.fused.resolved_points[indices], raytraced_map.memory.get_frame(frame_id).pose[:3, 3])
 
 
 def _retrieval_tile(frame: Frame, frame_id: int, object_id: int, frame_raytraced: tuple, style: SegmentationStyle) -> Tuple[str, np.ndarray]:
@@ -238,6 +231,10 @@ def view_label(object_id: int, frame_id: int) -> str:
 def retrieve_resolved_views(
     resolved: ResolvedObjects, memory: ImageMemory, camera: DepthCamera, min_mesh_visibility_fraction: float, selection: ViewSelection,
 ) -> Tuple[dict, Dict[int, List[int]]]:
-    """(memory's frames raytraced with resolved's objects, the views retrieve_views selects of each)."""
-    raytraced = memory.raytrace_frames(resolved, camera, min_mesh_visibility_fraction)
-    return raytraced, retrieve_views(resolved, memory, raytraced, camera, selection)
+    """(memory's frames raytraced with resolved's objects (ImageMemory.raytrace_frames), {object id: ids of the frames
+    selection picks among those to show it} of every resolved object, largest first)."""
+    raytraced_points = memory.raytrace_frame_points(resolved, camera, min_mesh_visibility_fraction)
+    raytraced = {frame_id: frame_raytraced[:3] for frame_id, frame_raytraced in raytraced_points.items()}
+    point_indices = {frame_id: frame_raytraced[3] for frame_id, frame_raytraced in raytraced_points.items()}
+    raytraced_map = _RaytracedMap(resolved, memory, raytraced, point_indices, camera)
+    return raytraced, {object_id: _select_views(raytraced_map, object_id, selection) for object_id in objects_by_size(resolved)}

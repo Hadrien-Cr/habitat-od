@@ -18,7 +18,7 @@ Read: queries each held-out frame (the ones in between, never fused) through .de
 GT sensor's own min_mesh_visibility_fraction, tiled into a backprojected_mosaic.png, showing how well the map
 generalizes to unseen views.
 Retrieve: every exploration frame (fused and held-out) is kept in an ImageMemory; for each of the
---retrieval-objects largest resolved objects, common/utils/retrieval.py's retrieve_views selects diverse frames it
+--retrieval-objects largest resolved objects, common/utils/retrieval.py's retrieve_resolved_views selects diverse frames it
 appears in, tiled one object per row into a retrieval_mosaic.png.
 Finally saves the FrontierExplorationAgent's exploration_map.png (free/explored area, trajectory)
 and an exploration_mosaic.png of that map at every step.
@@ -51,7 +51,7 @@ from common.utils.image_memory import Frame, ImageMemory
 from common.utils.plot_utils import make_mosaic
 from common.utils.pose_utils import sensor_pose_matrix
 from common.utils.projection_utils import ResolvedObjects, save_resolved_ply
-from common.utils.retrieval import SegmentationStyle, ViewSelection, instances_from_masks, largest_objects, retrieve_views, segmentation_tile, views_mosaic
+from common.utils.retrieval import SegmentationStyle, ViewSelection, instances_from_masks, largest_objects, retrieve_resolved_views, segmentation_tile, views_mosaic
 from common.utils.label_propagation_point_cloud import LabelPropagationPointCloud, project_semantic_masks_to_3d
 from procthor_scene import DATASET_CONFIG, DEPTH_CAMERA, ENV_NAME, HFOV_DEG, SCENE_ID, TURN_ANGLE_DEG, VOCAB_NAME, floor_height, floor_island, procthor_sim
 
@@ -192,7 +192,7 @@ def _start_viewer(args: argparse.Namespace, out_name: str) -> _Viewer:
     sim, annotation = procthor_sim(args.scene_id)
     sensor = ObjectDetectorGTSensor(sim, ObjectDetectorGTSensorConfig(
         env_name=ENV_NAME, vocab_name=VOCAB_NAME,
-        min_area_fraction=2e-4, filter_low_visibility=True, min_mesh_visibility_fraction=0.2,
+        min_area_fraction=5e-4, filter_low_visibility=True, min_mesh_visibility_fraction=0.2,
         filter_classes=[],
     ))
     sensor.annotation = annotation
@@ -233,10 +233,8 @@ def _style(viewer: _Viewer) -> SegmentationStyle:
 
 
 def save_retrieval_mosaic(viewer: _Viewer, fused: ResolvedObjects, memory: ImageMemory, num_objects: int) -> None:
-    """One mosaic row per largest resolved object, of the frames retrieve_views selects."""
-    camera = DEPTH_CAMERA
-    raytraced = memory.raytrace_frames(fused, camera, viewer.sensor.min_mesh_visibility_fraction)
-    object_frames = retrieve_views(fused, memory, raytraced, camera, ViewSelection())
+    """One mosaic row per largest resolved object, of the frames retrieve_resolved_views selects."""
+    raytraced, object_frames = retrieve_resolved_views(fused, memory, DEPTH_CAMERA, viewer.sensor.min_mesh_visibility_fraction, ViewSelection())
     mosaic = views_mosaic(memory, raytraced, _style(viewer), {object_id: object_frames[object_id] for object_id in largest_objects(fused, num_objects)})
     if mosaic is not None:
         mosaic.save(os.path.join(viewer.out_dir, f"{viewer.out_stem}_retrieval_mosaic.png"))

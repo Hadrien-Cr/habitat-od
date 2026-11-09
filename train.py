@@ -1,6 +1,6 @@
 """Fine-tuning entry point for habitat_embodied_sl/meta_arch.py's CustomFT_Detic on
 ObjectViewsDataset -- one of the collection config's three train variants (pseudo,
-pseudo_gt_classes, recovered; habitat_embodied_sl/main.py), scored against its written test set
+pseudo_gt_classes, recovered; habitat_embodied_sl/collect.py), scored against its written test set
 (datasets/<run_name>/test). For a plain COCO architecture trained from scratch/a COCO checkpoint
 instead (e.g. BoxSup-C2_L_CLIP_SwinB_896b32_4x), use pretrain.py.
 

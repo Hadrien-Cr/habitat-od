@@ -1,5 +1,6 @@
-"""Builds retrieval datasets from a collection config (--config, see habitat_embodied_sl/config/collection_procthor.yaml
-and habitat_embodied_sl/README.md). In each collection.scenes scene, common/hybrid_exploration's HybridFrontierAgent
+"""Builds retrieval datasets from a collection config (see habitat_embodied_sl/config/collection_procthor.yaml and
+habitat_embodied_sl/README.md), one scene per call, so one call per scene can run in parallel, each on its own GPU, all
+writing to the config's datasets/<run_name>/. In a collection.scenes scene, common/hybrid_exploration's HybridFrontierAgent
 explores in exhaustive mode for up to collection.steps_per_scene steps (or until it gets stuck -- no net translation
 over BaseExplorationAgent.is_stuck's window, which stops it, logged as a warning) while a Detector (Detic's proposals scored by
 objectness alone, SAM masks) segments every frame; its masks and region embeddings are fused into a concept-graphs
@@ -13,21 +14,24 @@ datasets/<run_name>/<variant>/train/: "pseudo" with the classified labels, "pseu
 their ground-truth class (recover_gt_classes), and "recovered" with false positives dropped and false negatives' views
 added too (recover_drop_fp, recover_add_fn; common/utils/ground_truth_recovery.py). Their shared COCO test set,
 datasets/<run_name>/test/test.json, pools every evaluation.scenes scene's diverse, fully annotated frames
-(habitat_embodied_sl/evaluation_set.py). Each split is written with a scrambled mosaic by common/utils/dataset_writers.py,
-and each collection scene gets a retrieval mosaic per variant, <variant>/retrieval_mosaics/<scene>.png, one row of
+(habitat_embodied_sl/evaluation_set.py); an evaluation scene's call writes those. Each call first deletes what an earlier
+run of its scene wrote, writes the scene's records to its own shard of each split, then, under a lock on
+datasets/<run_name>/.merge.lock, rebuilds each split's json and scrambled mosaic from every shard written so far
+(common/utils/dataset_writers.py): once every scene's call is done, each split pools them all. Each collection scene gets a retrieval mosaic per variant, <variant>/retrieval_mosaics/<scene>.png, one row of
 views per object at half resolution, its objects relabelled or added by recovery bordered red, and a semantic top-down
 map per variant, <variant>/semantic_topdown_maps/<scene>.png, of its resolved objects by their class in the variant.
 
 Usage (Detic's Swin-B checkpoint from https://github.com/facebookresearch/Detic's model zoo; Detic classifies
 against the CLIP text embeddings of the config's vocab_name/filter_classes class names):
   export HABITAT_DATA=$HOME/habitat_data/data BASE_DIR=$(pwd) PYTHONNOUSERSITE=1
-  PYTHONPATH=. python habitat_embodied_sl/main.py --config habitat_embodied_sl/config/collection_procthor.yaml \
+  PYTHONPATH=. python habitat_embodied_sl/collect.py <gpu> <scene> habitat_embodied_sl/config/collection_procthor.yaml \
       --config-file third_party/Detic/configs/Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.yaml \
       --checkpoint third_party/Detic/models/Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.pth \
       --sam-checkpoint data/sam/sam_vit_b_01ec64.pth
 """
 import argparse
 import copy
+import os
 import shutil
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -55,7 +59,8 @@ from common.utils.image_memory import Frame
 from common.utils.plot_utils import save_gif
 from common.utils.pose_utils import sensor_pose_matrix
 from common.utils.projection_utils import DepthCamera, estimated_semantic_topdown, nearest_resized
-from common.utils.dataset_writers import CocoFramesWriter, ObjectViewsWriter
+from common.utils.dataset_writers import SCENES_DIR, CocoFramesWriter, ObjectViewsWriter, locked
+from common.utils.object_views_dataset import IMAGES_DIR
 from common.utils.retrieval import (
     RetrievedView, SegmentationStyle, ViewSelection, objects_views_mosaic, retrieve_resolved_views, retrieved_views, segmentation_tile,
 )
@@ -67,6 +72,7 @@ from common.vision.detector import Detector
 _VARIANTS = ("pseudo", "pseudo_gt_classes", "recovered")
 _TILE_DOWNSCALE = 2
 _GIF_FPS = 10
+_MERGE_LOCK = ".merge.lock"
 
 
 
@@ -86,7 +92,7 @@ def build_detector(args: argparse.Namespace, object_params: DictConfig) -> Detec
     """Detector classifying among object_params' kept classes."""
     return Detector(
         args.config_file, args.checkpoint, kept_vocabulary(object_params), args.sam_checkpoint,
-        score_thresh=args.score_thresh, nms_thresh=args.nms_thresh, mask_thresh=args.mask_thresh, device=args.device, input_size=args.input_image_size,
+        score_thresh=args.score_thresh, nms_thresh=args.nms_thresh, mask_thresh=args.mask_thresh, input_size=args.input_image_size,
     )
 
 
@@ -147,7 +153,8 @@ def map_scene(scene: str, cfg: DictConfig, detector: Detector, style: Segmentati
     step's detector predictions (save_exploration_visuals) and every step's 3-tile snapshot assembled into
     exploration.webp (save_gif) to datasets/<run_name>/<scene>/."""
     env, habitat_cfg = build_env(scene, cfg.seed, cfg.collection.steps_per_scene, cfg.object_params, args.input_image_size)
-    agent = build_agent("hybrid", np.random.default_rng(cfg.seed), env, habitat_cfg)
+    scene_dump_dir = constants.DATASET_ROOT / cfg.run_name / scene
+    agent = build_agent("hybrid", np.random.default_rng(cfg.seed), env, habitat_cfg, dump_location=str(scene_dump_dir), exp_name="planner")
     obs = env.reset(env.episodes[0], rng=agent.rng)
     floor_offset = env.navmesh_floor_offset()
     agent.reset(env.get_agent_state(), env.get_agent_state().position[1] - floor_offset)
@@ -159,7 +166,6 @@ def map_scene(scene: str, cfg: DictConfig, detector: Detector, style: Segmentati
     map_config = agent.config.map_config
     ground_truth = env.gt_map_tracker(map_config.fov_deg, map_config.visibility_dist_m)
     ground_truth.set_object_footprints(gt_meshes)
-    scene_dump_dir = constants.DATASET_ROOT / cfg.run_name / scene
     images_dir = scene_dump_dir / "images" / "exploration_snapshots"
     images_dir.mkdir(parents=True, exist_ok=True)
     prediction_tiles, stuck = explore(env, mapper, obs, cfg.collection.steps_per_scene, style, ground_truth, images_dir)
@@ -216,42 +222,68 @@ def save_semantic_topdowns(scene: str, scene_views: Dict[str, List[RetrievedView
         cv2.imwrite(str(out_path), estimated_semantic_topdown(resolved, mapper.agent, style.classes, style.colors)[:, :, ::-1])
 
 
-def dataset_writers(cfg: DictConfig, classes: list) -> Tuple[Dict[str, ObjectViewsWriter], CocoFramesWriter]:
-    """({variant: its train split's writer, datasets/<run_name>/<variant>/train/}, the shared test split's writer,
-    datasets/<run_name>/test/), emptied."""
-    root = constants.DATASET_ROOT / cfg.run_name
-    shutil.rmtree(root, ignore_errors=True)
+def train_set_writers(cfg: DictConfig, classes: list) -> Dict[str, ObjectViewsWriter]:
+    """{variant: its train split's writer, datasets/<run_name>/<variant>/train/}."""
     retrieval = {**asdict(ViewSelection(k=cfg.collection.k_retrieval)), "min_mesh_visibility_fraction": cfg.object_params.min_mesh_visibility_fraction}
-    train_writers = {variant: ObjectViewsWriter(root / variant / "train", {"categories": classes, "retrieval": retrieval}) for variant in _VARIANTS}
+    return {variant: ObjectViewsWriter(constants.DATASET_ROOT / cfg.run_name / variant / "train", {"categories": classes, "retrieval": retrieval}) for variant in _VARIANTS}
+
+
+def flush_scene(root: Path, scene: str) -> None:
+    """Deletes what an earlier run of the scene wrote under root: its own folder, and in every split its shard, its frames
+    and its per-scene pngs (retrieval mosaics, semantic top-down maps, decision frames)."""
+    shutil.rmtree(root / scene, ignore_errors=True)
+    patterns = (f"**/{SCENES_DIR}/{scene}.json", f"**/{IMAGES_DIR}/{scene}_[0-9]*.jpg", f"**/{scene}.png")
+    for path in [path for pattern in patterns for path in root.glob(pattern)]:
+        path.unlink()
+
+
+def collect_scene(scene: str, cfg: DictConfig, args: argparse.Namespace) -> None:
+    """Maps the collection scene into its shard of every variant's train set, then merges each train set."""
+    detector = build_detector(args, cfg.object_params)
+    style = SegmentationStyle(detector.classes, make_colors(len(detector.classes), seed=0, ctype=0))
+    mapper, ground_truth = map_scene(scene, cfg, detector, style, args)
+    resolve_and_classify(mapper, cfg.object_params.min_mesh_visibility_fraction)
+    scene_views = scene_variants(mapper, ground_truth, cfg)
+    root = constants.DATASET_ROOT / cfg.run_name
+    save_retrieval_mosaics(scene, scene_views, style, root)
+    save_semantic_topdowns(scene, scene_views, mapper, style, root)
+    train_writers = train_set_writers(cfg, detector.classes)
+    for variant, views in scene_views.items():
+        train_writers[variant].write_scene(scene, views)
+    with locked(root / _MERGE_LOCK):
+        for writer in train_writers.values():
+            writer.merge(np.random.default_rng(cfg.seed))
+
+
+def test_scene(scene: str, cfg: DictConfig, args: argparse.Namespace) -> None:
+    """The evaluation scene's diverse frames into its shard of the shared test set, datasets/<run_name>/test/, then merges it."""
+    classes = list(kept_vocabulary(cfg.object_params).classes)
     info = {"evaluation": OmegaConf.to_container(cfg.evaluation), "frontier_agent": OmegaConf.to_container(cfg.frontier_agent)}
-    return train_writers, CocoFramesWriter(root / "test", info, classes)
+    writer = CocoFramesWriter(constants.DATASET_ROOT / cfg.run_name / "test", info, classes)
+    writer.write_scene(scene, evaluation_frames(scene, cfg, classes, args.input_image_size, ClipImageEncoder("cuda")))
+    with locked(constants.DATASET_ROOT / cfg.run_name / _MERGE_LOCK):
+        writer.merge(np.random.default_rng(cfg.seed))
 
 
 def main(args: argparse.Namespace) -> None:
     cfg = OmegaConf.load(args.config)
-    detector = build_detector(args, cfg.object_params)
-    train_writers, test_writer = dataset_writers(cfg, detector.classes)
-    style = SegmentationStyle(detector.classes, make_colors(len(detector.classes), seed=0, ctype=0))
-    for scene in cfg.collection.scenes:
-        mapper, ground_truth = map_scene(scene, cfg, detector, style, args)
-        resolve_and_classify(mapper, cfg.object_params.min_mesh_visibility_fraction)
-        scene_views = scene_variants(mapper, ground_truth, cfg)
-        save_retrieval_mosaics(scene, scene_views, style, constants.DATASET_ROOT / cfg.run_name)
-        save_semantic_topdowns(scene, scene_views, mapper, style, constants.DATASET_ROOT / cfg.run_name)
-        for variant, views in scene_views.items():
-            train_writers[variant].add_scene(scene, views)
-    encoder = ClipImageEncoder(args.device)
-    for scene in cfg.evaluation.scenes:
-        test_writer.add_scene(scene, evaluation_frames(scene, cfg, detector.classes, args.input_image_size, encoder))
-    rng = np.random.default_rng(cfg.seed)
-    for writer in [*train_writers.values(), test_writer]:
-        writer.write(rng)
-    print(f"Train sets {', '.join(_VARIANTS)} and their test set written to {constants.DATASET_ROOT / cfg.run_name}")
+    if args.scene not in [*cfg.collection.scenes, *cfg.evaluation.scenes]:
+        raise ValueError(f"{args.scene} is in neither collection.scenes nor evaluation.scenes of {args.config}")
+    root = constants.DATASET_ROOT / cfg.run_name
+    with locked(root / _MERGE_LOCK):
+        flush_scene(root, args.scene)
+    if args.scene in cfg.collection.scenes:
+        collect_scene(args.scene, cfg, args)
+    if args.scene in cfg.evaluation.scenes:
+        test_scene(args.scene, cfg, args)
+    print(f"{args.scene} written to {root}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--config", default="habitat_embodied_sl/config/collection_procthor.yaml", help="Collection config: scenes, budgets, object_params.")
+    parser.add_argument("gpu", help="Index of the GPU both habitat-sim's renderer and the models run on.")
+    parser.add_argument("scene", help="One of the config's collection.scenes or evaluation.scenes.")
+    parser.add_argument("config", help="Collection config: scenes, budgets, object_params.")
     parser.add_argument("--config-file", default="third_party/Detic/configs/Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.yaml")
     parser.add_argument("--checkpoint", default="third_party/Detic/models/Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.pth")
     parser.add_argument("--sam-checkpoint", default=None)
@@ -260,5 +292,6 @@ if __name__ == "__main__":
     parser.add_argument("--input-image-size", type=int, default=1024, help="Side of the rendered frames, Detic's and SAM's input.")
     parser.add_argument("--lift-image-size", type=int, default=512, help="Side depth and masks are resized to for lifting and raytracing.")
     parser.add_argument("--mask-thresh", type=float, default=0.5)
-    parser.add_argument("--device", default="cuda")
-    main(parser.parse_args())
+    args = parser.parse_args()
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu  # read when CUDA first initializes, which none of the imports above does
+    main(args)

@@ -1,7 +1,8 @@
 # Retrieval datasets from semantic mapping with class-agnostic detection
 
-`main.py` builds retrieval datasets from a collection config (`--config`, e.g. `config/collection_procthor.yaml`). It maps
-every collection scene (`collection.scenes`): `common/hybrid_exploration`'s `HybridFrontierAgent` explores the scene in
+`collect.py` builds retrieval datasets from a collection config (e.g. `config/collection_procthor.yaml`), one scene per
+call, so calls for different scenes run in parallel, each on its own GPU, into the same `datasets/<run_name>/`. It maps
+each collection scene (`collection.scenes`): `common/hybrid_exploration`'s `HybridFrontierAgent` explores the scene in
 exhaustive mode, while a class-agnostic `Detector` (`common/vision/detector.py`) segments every frame, and its detections are lifted to
 3D and fused into a concept-graphs `ConceptGraphMemory` (`common/utils/concept_graph.py`). When exploration ends, the map
 is resolved, filtered and classified, and diverse views of each object are retrieved into three object-view train sets.
@@ -34,7 +35,7 @@ come from, out of it; they belong with the code that builds them (`common/env_ut
   - (1.2.5) `without_parts` (drops masks lying ≥ 80% inside a larger one) exists but is currently disabled.
 - (1.3) **Lift** (`predicted_objects`, `project_detections_to_objects`):
   - (1.3.1) Resize each mask to the frame's depth by nearest neighbour, the same pixels the depth was resized with.
-  - (1.3.2) Drop detections whose mask covers less than `_MIN_LIFT_FRACTION` (2e-4) of the frame's pixels with valid depth.
+  - (1.3.2) Drop detections whose mask covers less than `_MIN_LIFT_FRACTION` (5e-4) of the frame's pixels with valid depth.
   - (1.3.3) Back-project each mask's in-range depth pixels to world points.
   - (1.3.4) **Floor:** drop points at most 2 cm above the floor (agent height minus the navmesh floor offset).
   - (1.3.5) **Background walls:** peel up to 3 RANSAC planes (2 cm inlier distance). A plane is removed only if it is vertical
@@ -70,7 +71,9 @@ come from, out of it; they belong with the code that builds them (`common/env_ut
   fewer than `min_missing_floor_cluster_m` (0.5 m) cells -- a real void spans many such rays, unlike the single
   isolated cell one bad depth pixel (e.g. a hole in the scanned mesh) yields. Then `agent.act` picks the action: belief-map-only, via
   a shared `DiscretePlanner` FMM pass over a goal map of every unseen object viewpoint (or, once none remain, every frontier cell; frontier
-  fragments under 0.5 m, `MapConfig.min_frontier_size_m`, are dropped) -- no ground-truth navmesh pathfinding. Of the
+  fragments under 0.5 m, `MapConfig.min_frontier_size_m`, are dropped) -- no ground-truth navmesh pathfinding. That pass
+  only covers the bounding box of the explored and goal cells and the agent, grown by 2 m (`MapConfig.planning_margin_m`,
+  `EstimatedMap.planning_window`), not the whole map. Of the
   agent's 8 headings, it heads for the one whose single 0.25 m move (`DiscretePlannerConfig.step_size_m`) stays on
   traversable cells (obstacles dilated by a 3-cell disk, `DiscretePlannerConfig.obs_dilation_selem_radius`) and ends
   closest to the goal on that FMM distance (the smallest turn on ties). The step's labelled detector-prediction tile
@@ -82,7 +85,7 @@ come from, out of it; they belong with the code that builds them (`common/env_ut
   (lossless animated WebP, not GIF -- GIF's 256-color palette cap crowds out or merges rare colors like the belief
   map's green explored tint) once exploration ends.
 - (1.6) **Ground truth:** the step's ground-truth instances come from the `bbsgt` sensor, filtered by
-  `object_params.min_area_fraction` (min(2 × mask area, box area) ≥ 2e-4 of the frame's pixels) and `filter_low_visibility`/`min_mesh_visibility_fraction`
+  `object_params.min_area_fraction` (box area ≥ 5e-4 of the frame's pixels) and `filter_low_visibility`/`min_mesh_visibility_fraction`
   (`mesh_visibility_fraction`: the sum of the mask's connected components' own bounding-box areas, over the object's largest
   box face projected at the mask's mean depth),
   and remapped to the kept classes. They don't affect the map; they are kept RLE-encoded, with their object id and
@@ -111,7 +114,7 @@ come from, out of it; they belong with the code that builds them (`common/env_ut
 ### 3. Foreground filter (`ConceptGraphMemory.keep_foreground`)
 
 - (3.1) **Raytrace:** project every resolved object into every stored frame. Each depth pixel is back-projected and takes
-  the object of the nearest resolved point within 2.5 cm. An object counts as visible in a frame if it gets ≥ 2e-4
+  the object of the nearest resolved point within 2.5 cm. An object counts as visible in a frame if it gets ≥ 5e-4
   (`_MIN_RAYTRACED_FRACTION`) of the frame's pixels and its `mesh_visibility_fraction` is ≥ `object_params.min_mesh_visibility_fraction` (0.2).
 - (3.2) **Detection rate:** the share of the frames showing the object in which it was actually detected.
   Objects under 0.3 are dropped, which removes spurious one-off detections.
@@ -132,7 +135,7 @@ come from, out of it; they belong with the code that builds them (`common/env_ut
 
 ### 5. Retrieval and train sets
 
-- (5.1) **Retrieval** (`common/utils/retrieval.py::retrieve_views`): for each object, pick up to `collection.k_retrieval` (10)
+- (5.1) **Retrieval** (`common/utils/retrieval.py::retrieve_resolved_views`): for each object, pick up to `collection.k_retrieval` (10)
   views greedily so they cover its (resolved point, viewing angle) elements, the angle from the point to the camera
   (not the agent's heading). A view's gain is visibility^α × Σ (1 − γ) γ^(effective times already covered), with
   γ = 0.5 and α = 1; a point already covered by a chosen view lends credit to a new candidate's angle for it in
@@ -172,9 +175,13 @@ filters in the collection config.
 
 ## Outputs
 
-`datasets/<run_name>/` is emptied at start, then gets (`common/utils/dataset_writers.py`) one train set per variant,
-`<variant>/train/` for `pseudo`, `pseudo_gt_classes` and `recovered`, and the test set they share, `test/`. Each split
-folder holds its json, its mosaic and an `images/` folder:
+`datasets/<run_name>/` gets (`common/utils/dataset_writers.py`) one train set per variant, `<variant>/train/` for
+`pseudo`, `pseudo_gt_classes` and `recovered`, and the test set they share, `test/`. Each split folder holds its json,
+its mosaic, an `images/` folder and a `scenes/` folder of per-scene shards. A call first deletes what an earlier run of
+its scene wrote (its `<scene>/` folder, shards, frames and per-scene pngs), leaving the other scenes' alone, then writes
+its scene's records to `<split>/scenes/<scene>.json`. Holding a lock on `datasets/<run_name>/.merge.lock`, it then
+rebuilds each split it wrote to, its json and mosaic pooling every shard written so far, in scene name order. Once every
+scene's call has finished, each split pools all of them:
 
 | file | contents |
 |---|---|
@@ -184,13 +191,14 @@ folder holds its json, its mosaic and an `images/` folder:
 | `<variant>/decision_frames/<scene>.png`, `test/decision_frames/<scene>.png` | each collection scene's exploration map with the agent's trajectory and last decision once exploration ends, the same in every variant; each test scene's frontier exploration map and trajectory |
 | `<variant>/semantic_topdown_maps/<scene>.png` | each collection scene's resolved objects the variant keeps, by their class in the variant, on the agent's top-down map; objects `recover_add_fn` adds have no points to draw |
 | `<variant>/retrieval_mosaics/<scene>.png` | each collection scene's objects in the variant, one row of its retrieved views per object, tiles at half resolution (`_TILE_DOWNSCALE`); objects recovery relabelled (5.3.2) or added (5.3.3) are bordered red |
+| `<variant>/train/scenes/<scene>.json`, `test/scenes/<scene>.json` | one scene's records of the split, which merging pools into its json: `frames` and `retrieved_objects` for a train set; `images` and `annotations` (each pointing at its image by its index in the shard, ids assigned when pooled) for the test set |
 | `<variant>/train/train_mosaic.png`, `test/test_mosaic.png` | 32 records of the split, read back from its json and drawn in random order, each its frame with its annotations' boxes and classes |
 
 ## Files
 
 | file | contents |
 |---|---|
-| `main.py` | the full run: per collection scene, exploration loop and `SceneMapper`, resolve → foreground → size-masked classify, retrieval and recovery into the train sets; then the test sets |
+| `collect.py` | one scene's run: for a collection scene, exploration loop and `SceneMapper`, resolve → foreground → size-masked classify, retrieval and recovery into the train sets; for an evaluation scene, its frames into the test set; then the merge of the splits it wrote to |
 | `evaluation_set.py` | a test scene's frontier exploration and CLIP-diverse frame selection |
 | `config/collection_procthor.yaml` | collection config: `run_name`, `seed`, `object_params`, `collection` and `evaluation` scenes and budgets |
 | `meta_arch.py` | `CustomFT_Detic`, Detic's `CustomRCNN` registered as a `META_ARCHITECTURE` for fine-tuning on a train variant's `ObjectViewsDataset`; trained by the root `train.py` |
@@ -199,10 +207,22 @@ folder holds its json, its mosaic and an `images/` folder:
 
 ```bash
 export HABITAT_DATA=$HOME/habitat_data/data BASE_DIR=$(pwd) PYTHONNOUSERSITE=1
-PYTHONPATH=. python habitat_embodied_sl/main.py --config habitat_embodied_sl/config/collection_procthor.yaml \
+PYTHONPATH=. python habitat_embodied_sl/collect.py <gpu> <scene> habitat_embodied_sl/config/collection_procthor.yaml \
     --config-file third_party/Detic/configs/Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.yaml \
     --checkpoint third_party/Detic/models/Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.pth \
     --sam-checkpoint data/sam/sam_vit_b_01ec64.pth
+```
+
+`<scene>` is one of the config's `collection.scenes` or `evaluation.scenes`, and `<gpu>` the index of the GPU both the
+renderer and the models run on. Each scene is its own call, so every scene of the config, evaluation scenes included,
+needs one before the splits are complete; calls for different scenes can run at once, e.g. one per GPU:
+
+```bash
+scenes=(ProcTHOR-Train-0 ProcTHOR-Train-1 ProcTHOR-Train-2 ProcTHOR-Train-3)
+for gpu in 0 1 2 3; do
+  PYTHONPATH=. nohup python habitat_embodied_sl/collect.py $gpu ${scenes[$gpu]} habitat_embodied_sl/config/collection_procthor.yaml \
+      --sam-checkpoint data/sam/sam_vit_b_01ec64.pth > collect_${scenes[$gpu]}.log 2>&1 &
+done
 ```
 
 Defaults: `--input-image-size 1024` (sensor resolution and Detic's shortest edge), `--lift-image-size 512` (depth and mask resolution for lifting and raytracing).

@@ -6,7 +6,7 @@ HSSD-rare ObjectNav episodes. Ground truth comes from the simulator's semantic s
 
 # Dataset collection
 
-`habitat_embodied_sl/main.py` explores scenes with an exploration agent, maps Detic detections into object views,
+`habitat_embodied_sl/collect.py` explores scenes with an exploration agent, maps Detic detections into object views,
 and writes COCO train/test splits (e.g. `datasets/smoke_sl/{train,test}`). Its pipeline steps, thresholds and
 outputs are described in `habitat_embodied_sl/README.md`.
 
@@ -18,7 +18,7 @@ Two entry points, both launched from the repo root with `PYTHONPATH=.`:
   checkpoint (e.g. `BoxSup-C2_L_CLIP_SwinB_896b32_4x`), on `coco_testbench`'s local COCO copy or
   any registered COCO dataset. Supports multi-GPU via `--num-gpus`.
 - **`train.py`** -- fine-tunes `habitat_embodied_sl/meta_arch.py`'s `CustomFT_Detic` on an
-  `ObjectViewsDataset` (one of `habitat_embodied_sl/main.py`'s collection train variants:
+  `ObjectViewsDataset` (one of `habitat_embodied_sl/collect.py`'s collection train variants:
   `pseudo`, `pseudo_gt_classes`, `recovered`), scored against that run's written test set (e.g.
   `datasets/smoke_sl/test`). Single-GPU only.
 
@@ -27,7 +27,7 @@ evaluator-wired `Trainer`, periodic TensorBoard image logging (`PeriodicImageWri
 final-checkpoint reporting are shared by both via `common/utils/detectron_trainer.py`.
 
 - **`evaluate.py`** -- standalone evaluation of a Detic config/checkpoint against a COCO test
-  split written by `habitat_embodied_sl/main.py` (e.g. `datasets/smoke_sl/test`), via Detic's own
+  split written by `habitat_embodied_sl/collect.py` (e.g. `datasets/smoke_sl/test`), via Detic's own
   `train_net.py` `do_test` and `COCOEvaluator`. Resets Detic's zero-shot classifier to the CLIP
   text embeddings of the split's categories.
 

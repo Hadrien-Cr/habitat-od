@@ -15,7 +15,7 @@ min_island_area_m2: 10.0
 object_params:
   env_name: "HSSD-HAB"
   vocab_name: "HSSD400"
-  min_area_fraction: 2e-4
+  min_area_fraction: 5e-4
   filter_low_visibility: True
   min_mesh_visibility_fraction: 0.2
   filter_classes: []

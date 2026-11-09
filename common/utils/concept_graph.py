@@ -20,7 +20,7 @@ from common.vision.detector import Detector
 
 
 UNCLASSIFIED = -1
-_MIN_LIFT_FRACTION = 2e-4
+_MIN_LIFT_FRACTION = 5e-4
 _SIZE_MARGIN = 0.5
 
 

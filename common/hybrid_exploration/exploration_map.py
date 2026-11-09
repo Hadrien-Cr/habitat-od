@@ -1,13 +1,15 @@
 """Top-down map of the agent's own depth-observed world: a fixed grid centered on the episode start, built
 incrementally from depth (no ground-truth navmesh). Cells start free (unknown is traversable until a depth
 point marks it an obstacle, matching facebookresearch/home-robot's DiscretePlanner convention) and
-accumulate forever; `explored` tracks what's actually been observed, for frontier detection only -- it never
-gates what FMMPlanner can plan through. Also carries goal_score, a per-cell running max of a single-target
+accumulate forever; `explored` tracks what's actually been observed, for frontier detection and for bounding
+the window FMMPlanner plans in (planning_window) -- it never gates which cells within it are traversable. Also carries goal_score, a per-cell running max of a single-target
 search's own detection score (SearchAgent's "is the target here" belief, modeled on home-robot's
 Categorical2DSemanticMapState, narrowed to the one caller-chosen target class Detector.predict_target scores
 per frame)."""
 from dataclasses import dataclass
+from typing import Tuple
 
+import cv2
 import habitat_sim
 import numpy as np
 import torch
@@ -40,6 +42,8 @@ class MapConfig:
     # DiscretePlanner's closest-goal collapse to the agent's current position (distance 0, no real target)
     lift_image_size: int = 512  # goal-mask depth/mask resize before mark_goal's own back-projection
     score_decay: float = 0.9  # mark_goal's running per-cell score, aged by this factor each step within in_view
+    planning_margin_m: float = 2.0  # planning_window's growth past explored/goal cells, for paths skirting just outside
+    # them -- FMM's cost grows with the window's area, the whole map's being mostly unknown space far from any goal
     # concept-graphs' own per-detection denoising (ConceptGraphConfig), reused by mark_goal to drop a mask's
     # floor/background bleed-through before it reaches goal_score: voxel-downsample, then main_cluster_mask's
     # largest DBSCAN cluster (detection_dbscan_eps/min_points) plus any smaller one attached within dbscan_eps,
@@ -75,7 +79,7 @@ def _goal_mask_points(
     depth: np.ndarray, sensor_state: habitat_sim.SixDOFPose, mask: torch.Tensor, camera: DepthCamera, floor_height: float, config: MapConfig,
 ) -> np.ndarray:
     """World points of mask's in-range depth pixels, depth and mask resized to lift_image_size together (the
-    resolution lifting runs at elsewhere, habitat_embodied_sl/main.py::observe_frame), denoised."""
+    resolution lifting runs at elsewhere, habitat_embodied_sl/collect.py::observe_frame), denoised."""
     lift_shape = (config.lift_image_size, config.lift_image_size)
     resized_depth = nearest_resized(np.asarray(depth).squeeze(), lift_shape).numpy()
     resized_mask = nearest_resized(mask[None, None].float(), lift_shape)[0, 0].bool()
@@ -232,6 +236,17 @@ class EstimatedMap:
     def is_explored(self, pixel: np.ndarray) -> bool:
         row, col = int(pixel[0]), int(pixel[1])
         return 0 <= row < self.explored.shape[0] and 0 <= col < self.explored.shape[1] and bool(self.explored[row, col])
+
+    def planning_window(self, goal_map: np.ndarray, position: np.ndarray) -> Tuple[slice, slice]:
+        """(row, col) slices of the bounding box of the explored cells, goal_map's and position's, grown by
+        planning_margin_m and clipped to the map."""
+        cells = self.explored | goal_map
+        row, col = self.to_pixel(position)
+        cells[row, col] = 1
+        x, y, width, height = cv2.boundingRect(cells)
+        margin = self.pixels(self.config.planning_margin_m)
+        rows, cols = self.obstacles.shape
+        return slice(max(y - margin, 0), min(y + height + margin, rows)), slice(max(x - margin, 0), min(x + width + margin, cols))
 
     def frontier_map(self) -> np.ndarray:
         """(M, M) uint8 dense mask of frontier_pixels, for DiscretePlanner.plan()'s frontier_map/goal_map arg."""

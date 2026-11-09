@@ -37,7 +37,15 @@ class ImageMemory:
     def raytrace_frames(self, resolved_objects: ResolvedObjects, camera: DepthCamera, min_mesh_visibility_fraction: float) -> Dict[int, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
         """{frame id: (masks, ids, classes)} of the resolved objects raytraced in each frame at least min_mesh_visibility_fraction visible."""
         return {
-            frame_id: resolved_objects.visible_objects(
+            frame_id: raytraced[:3] for frame_id, raytraced in self.raytrace_frame_points(resolved_objects, camera, min_mesh_visibility_fraction).items()
+        }
+
+    def raytrace_frame_points(
+        self, resolved_objects: ResolvedObjects, camera: DepthCamera, min_mesh_visibility_fraction: float,
+    ) -> Dict[int, Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[int, np.ndarray]]]:
+        """{frame id: (masks, ids, classes, {id: hit point indices})} of raytrace_frames' objects (ResolvedObjects.visible_object_points)."""
+        return {
+            frame_id: resolved_objects.visible_object_points(
                 frame.depth, frame.pose, camera.hfov, camera.min_depth, camera.max_depth, min_mesh_visibility_fraction=min_mesh_visibility_fraction,
             )
             for frame_id, frame in self.frames.items()

@@ -406,10 +406,13 @@ def rows_mosaic(rows: list[list[tuple[str, np.ndarray]]]) -> Optional[Image.Imag
     return make_mosaic(tiles, row_sizes=[len(row) for row in rows]) if tiles else None
 
 
+PNG_COMPRESS_LEVEL = 1  # PIL's default zlib level 6 encodes ~2x slower for files only ~1.5x smaller
+
+
 def save_tile(tile: tuple, out_path: Path) -> None:
     """(label, image) tile as a single-tile mosaic, saved to out_path."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    make_mosaic([tile], N_cols=1).save(out_path)
+    make_mosaic([tile], N_cols=1).save(out_path, compress_level=PNG_COMPRESS_LEVEL)
 
 
 def centered_crop(image: np.ndarray, center: np.ndarray, size: int) -> np.ndarray:

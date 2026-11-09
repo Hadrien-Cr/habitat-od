@@ -45,7 +45,7 @@ class HybridFrontierAgent(BaseExplorationAgent):
     reach_m) is checked before invoking the planner each step and short-circuits to turning the agent to face the
     object, since DiscretePlanner has no "look at point" concept.
     Its objects are the ObjectBeliefs of its own ObjectTracker, fed every step's lifted detections by update_detections
-    (see main.py for usage).
+    (see habitat_embodied_sl/collect.py for usage).
     """
 
     map_config: MapConfig
@@ -127,20 +127,7 @@ class HybridFrontierAgent(BaseExplorationAgent):
 
         goal_map = self._build_goal_map(viewpoints)
         self._goal_map = goal_map  # for visualization/debugging
-
-        frontier_map = self.estimated_map.frontier_map()
-
-        action, self._closest_goal_map, self._short_term_goal, _, no_feasible_plan, no_frontier = self.planner.plan(
-            obstacle_map=self.estimated_map.obstacles,
-            goal_map=goal_map,
-            frontier_map=frontier_map,
-            sensor_pose=self.sensor_pose(position, heading),
-            found_goal=bool(goal_map.any()),
-            use_dilation_for_stg=False,
-            current_timestep=len(self.trajectory) - 1,
-        )
-        action_name = self.action_name(action)
-        return action_name, self.plan_stop_reason(action_name, no_feasible_plan, no_frontier)
+        return self.plan_action(goal_map, bool(goal_map.any()), position, heading, len(self.trajectory) - 1)
 
     def _arrived_viewpoint(self, position: np.ndarray, viewpoints: List[Candidate]) -> Optional[Candidate]:
         """The viewpoint the agent is within reach of, preferring the one it last arrived at for drift tolerance."""

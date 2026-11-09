@@ -93,14 +93,13 @@ class ObjectDetectorGTSensor(habitat.Sensor): # type: ignore
             filtered_class = classes[class_id] == "unknown" or (self.filter_classes is not None and classes[class_id] not in self.filter_classes)
 
             x, y, w, h = cv2.boundingRect(mask)
-            mask_area = np.sum(mask)
             bbx_area = w * h
 
             filtered_low_area = False
             filtered_low_visibility = False
             visibility_fraction = 1.0
 
-            if min(mask_area*2, bbx_area) < self.min_area_fraction * mask.size:
+            if bbx_area < self.min_area_fraction * mask.size:
                 filtered_low_area = True
 
             elif self.filter_low_visibility:

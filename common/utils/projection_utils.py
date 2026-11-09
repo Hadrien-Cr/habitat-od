@@ -25,8 +25,9 @@ _PLANE_DISTANCE_M = 0.02
 _PLANE_RANSAC_ITERATIONS = 1000
 _MAX_VERTICAL_NORMAL_UP = 0.1
 _MAX_WALLS = 3
-_MIN_RAYTRACED_FRACTION = 2e-4
+_MIN_RAYTRACED_FRACTION = 5e-4
 _FOOTPRINT_CLOSING_ITERATIONS = 2
+_KDTREE_WORKERS = 16  # workers=-1 starts one thread per core (192 here) per query, slower than 16 on a 640x640 frame
 TOPDOWN_MAP_SCALE = 8
 
 
@@ -151,10 +152,18 @@ def downsample_points(points: np.ndarray, voxel_size: float) -> np.ndarray:
     return np.asarray(o3d.geometry.PointCloud(o3d.utility.Vector3dVector(points)).voxel_down_sample(voxel_size).points)
 
 
+def _voxel_ids(points: np.ndarray, voxel_size: float) -> np.ndarray:
+    """Index of each point's voxel, in a world-anchored grid of voxel_size, among the occupied voxels sorted by (x, y, z)."""
+    voxels = np.floor(points / voxel_size).astype(np.int64)
+    voxels -= voxels.min(axis=0)
+    extent = voxels.max(axis=0) + 1
+    # one int64 key per voxel, ordered as its (x, y, z) row: a 1-D unique is ~5x faster than unique(axis=0)'s row sort
+    return np.unique((voxels[:, 0] * extent[1] + voxels[:, 1]) * extent[2] + voxels[:, 2], return_inverse=True)[1]
+
+
 def _voxel_reduce(points: np.ndarray, counts: np.ndarray, voxel_size: float, reduce: np.ufunc) -> Tuple[np.ndarray, np.ndarray]:
     """Points averaged and counts reduced per voxel of a world-anchored grid of voxel_size."""
-    _, voxel_ids = np.unique(np.floor(points / voxel_size).astype(np.int64), axis=0, return_inverse=True)
-    voxel_ids = voxel_ids.reshape(-1)
+    voxel_ids = _voxel_ids(points, voxel_size)
     voxel_points = np.zeros((voxel_ids.max() + 1, 3))
     np.add.at(voxel_points, voxel_ids, points)
     voxel_counts = np.zeros(voxel_ids.max() + 1, dtype=counts.dtype)
@@ -298,12 +307,6 @@ class ResolvedObjects:
         """(1, num_classes) logits of one resolved object."""
         raise NotImplementedError
 
-    def raytraced_point_indices(self, depth, pose, mask: torch.Tensor, camera: DepthCamera, object_id: int) -> np.ndarray:
-        """Indices of the object's resolved points nearest, within raytrace_radius, to mask's depth pixels seen from pose."""
-        nearest = self.kdtree.query(object_points(depth, pose, mask, camera), distance_upper_bound=self.raytrace_radius(), k=1, workers=-1)[1]
-        nearest = nearest[nearest < len(self.resolved_points)]
-        return np.unique(nearest[self.resolved_infos[nearest, 1] == object_id])
-
     def classified(self, class_probs: Dict[int, torch.Tensor]) -> "ResolvedObjects":
         """self restricted to the objects of class_probs, each taking its most probable class."""
         self.resolved_logits = class_probs
@@ -338,23 +341,38 @@ class ResolvedObjects:
         self, depth, pose, hfov, min_depth, max_depth, *, min_mesh_visibility_fraction: float = 0.2
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Masks, ids and classes of the resolved objects seen in depth from pose, dropping those below min_mesh_visibility_fraction."""
+        return self.visible_object_points(depth, pose, hfov, min_depth, max_depth, min_mesh_visibility_fraction=min_mesh_visibility_fraction)[:3]
+
+    def visible_object_points(
+        self, depth, pose, hfov, min_depth, max_depth, *, min_mesh_visibility_fraction: float = 0.2
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[int, np.ndarray]]:
+        """visible_objects' masks, ids and classes, and {id: indices of the object's resolved points its mask's pixels hit}."""
         if len(self.resolved_points) == 0:
             log.warning("no resolved points to raytrace")
-            return torch.Tensor(), torch.Tensor(), torch.Tensor()
+            return torch.Tensor(), torch.Tensor(), torch.Tensor(), {}
         projected_points = project_batch_masks(depth, pose, hfov=hfov, min_depth=min_depth, max_depth=max_depth).numpy()
-        nearest_points = self.kdtree.query(projected_points, distance_upper_bound=self.raytrace_radius(), k=1, workers=-1)[1]
+        nearest_points = self.kdtree.query(projected_points, distance_upper_bound=self.raytrace_radius(), k=1, workers=_KDTREE_WORKERS)[1]
         resolved_masks, resolved_ids, resolved_classes = self._object_masks(nearest_points, depth.shape)
         kept = [
             idx for idx, (mask, object_id) in enumerate(zip(resolved_masks, resolved_ids))
             if mesh_visibility_fraction(self.object_dimensions(object_id), mask.numpy(), np.asarray(depth), hfov) >= min_mesh_visibility_fraction
         ]
         if not kept:
-            return torch.Tensor(), torch.Tensor(), torch.Tensor()
+            return torch.Tensor(), torch.Tensor(), torch.Tensor(), {}
+        kept_ids = [resolved_ids[idx] for idx in kept]
         return (
             torch.stack([resolved_masks[idx] for idx in kept]),
-            torch.tensor([resolved_ids[idx] for idx in kept], dtype=torch.int),
+            torch.tensor(kept_ids, dtype=torch.int),
             torch.tensor([resolved_classes[idx] for idx in kept], dtype=torch.int),
+            self._hit_points(nearest_points, kept_ids),
         )
+
+    def _hit_points(self, nearest_points: np.ndarray, object_ids: List[int]) -> Dict[int, np.ndarray]:
+        """{object id: sorted indices of its resolved points nearest to some pixel} of each of object_ids, nearest_points
+        being every pixel's nearest point index (len(resolved_points) where none is)."""
+        hit = np.flatnonzero(np.bincount(nearest_points, minlength=len(self.resolved_points) + 1)[:-1])
+        hit_ids = self.resolved_infos[hit, 1]
+        return {object_id: hit[hit_ids == object_id] for object_id in object_ids}
 
     def object_dimensions(self, object_id: int) -> np.ndarray:
         """World-axis-aligned extent of one resolved object's points, the stand-in for its mesh AABB in mesh_visibility_fraction."""

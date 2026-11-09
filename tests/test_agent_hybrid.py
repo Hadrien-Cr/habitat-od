@@ -1,30 +1,29 @@
 """
 Agent should satisfy stop conditions.
 Runs common/hybrid_exploration's HybridFrontierAgent in exhaustive mode in procthor_scene.py's ProcTHOR-Train-0 from its
-start_state, steered as in habitat_embodied_sl/main.py by its own ObjectTracker, fed every step's Detector predictions
+start_state, steered as in habitat_embodied_sl/collect.py by its own ObjectTracker, fed every step's Detector predictions
 lifted by concept_graph.py's predicted_objects.
 Into tests/testdump/test_agent_hybrid/ (emptied when the test starts) go every step's class-agnostic predictions
 drawn on its rgb as one tile of predictions_mosaic.png and individually as prediction_frames/step_<step>.png, and
-every step's 3-tile (observation, belief map, ground truth) snapshot to
-images/test_exploration_gif/snapshot_<step>.png and assembled into exploration.webp; ground_truth_mesh.glb merges the
-scene's stage, without its ceilings, and every placed object.
+the last step's 3-tile (observation, belief map, ground truth) snapshot to exploration_snapshot.png; ground_truth_mesh.glb
+merges the scene's stage, without its ceilings, and every placed object.
 The run asserts it never got stuck (no net translation, BaseExplorationAgent.is_stuck).
 
-Alongside, as in habitat_embodied_sl/main.py, a Detector (Detic Swin-B's proposals scored by objectness alone) detects
+Alongside, as in habitat_embodied_sl/collect.py, a Detector (Detic Swin-B's proposals scored by objectness alone) detects
 in every frame and SAM masks its boxes, and its masks and region embeddings are fused into a ConceptGraphMemory
 (common/utils/concept_graph.py).
 Once the run ends it is resolved, only its foreground objects kept (ConceptGraphMemory.keep_foreground), each classified
 among the PROCTHOR100 classes by ConceptGraphMemory.classify from its raytraced views, only among the classes its size
-fits as in main.py, then drawn by class on the agent's map to estimated_topdown.png next to the labelled objects' mesh
+fits as in collect.py, then drawn by class on the agent's map to estimated_topdown.png next to the labelled objects' mesh
 silhouettes, saved as semantic_point_cloud.ply with its objects' box wireframes in semantic_wireframes.glb, in
 ground_truth_topdown.png (both eval_utils.py's save_maps), scored against the labelled objects by eval_utils.py's
 evaluate_resolved (3D box AP, confusion_matrix.png, class-agnostic matching), and retrieval_mosaic.png gets one row per
-resolved object of the diverse remembered views of it common/utils/retrieval.py's retrieve_views selects,
+resolved object of the diverse remembered views of it common/utils/retrieval.py's retrieve_resolved_views selects,
 retrieval_first_views.png its first column as a single row.
 Those views are written as train/train.json (common/utils/dataset_writers.py's ObjectViewsWriter, with train_mosaic.png), read
 back as a common/utils/object_views_dataset.py ObjectViewsDataset, of which _MOSAIC_BATCHES class-balanced batches are
 drawn one per row into dataset_mosaic.png. _LABEL_SOURCE = "gt" first relabels every resolved object matching a labelled
-object (main.py's class-agnostic matching) with its ground-truth class and drops the others, after evaluation; "pseudo"
+object (collect.py's class-agnostic matching) with its ground-truth class and drops the others, after evaluation; "pseudo"
 keeps ConceptGraphMemory.classify's.
 test_agent_hybrid_label_propagation.py reruns the same exploration into a LabelPropagationPointCloud instead.
 Every RNG is seeded with _SEED.
@@ -59,7 +58,7 @@ from common.env_utils.object_annotations import PROCTHOR100_SIZES_PATH, ObjectAn
 from common.env_utils.vocab_constants import make_colors
 from common.utils.eval_utils import GroundTruthObjects, evaluate_resolved, matched_ground_truth_classes, save_maps
 from common.utils.image_memory import Frame, ImageMemory
-from common.utils.plot_utils import save_gif
+from common.utils.plot_utils import PNG_COMPRESS_LEVEL
 from common.utils.pose_utils import sensor_pose_matrix
 from common.utils.projection_utils import ResolvedObjects
 from common.utils.dataset_writers import ObjectViewsWriter
@@ -92,7 +91,6 @@ _SEED = 0
 _LABEL_SOURCE = "pseudo"
 _BATCH_SIZE = 8
 _MOSAIC_BATCHES = 20
-_GIF_FPS = 10
 
 
 @dataclass
@@ -134,16 +132,16 @@ def _start_agent(sim: habitat_sim.Simulator, testdump_dir: Path) -> HybridFronti
     return agent
 
 
-def _explore(run: HybridRun, fused, lift: Callable, images_dir: Path) -> Tuple[object, bool]:
+def _explore(run: HybridRun, fused, lift: Callable) -> Tuple[object, bool]:
     """(fused with lift(detections, frame, predictions, floor height) of every step's frame added, whether the agent got
-    stuck) of run's agent, its tracker fed every step's detections (predicted_objects), saving a 3-tile (observation,
-    belief map, ground truth) snapshot per step to images_dir/snapshot_<step>.png."""
+    stuck) of run's agent, its tracker fed every step's detections (predicted_objects), saving the last step's 3-tile
+    (observation, belief map, ground truth) snapshot to run's testdump as exploration_snapshot.png."""
     sim, sim_agent = run.sim, run.sim.get_agent(0)
     start = np.array(sim_agent.get_state().position)
     ground_truth = GroundTruthMapTracker(sim.pathfinder, start, fov_deg=MAP_CONFIG.fov_deg, visibility_dist_m=MAP_CONFIG.visibility_dist_m)
     ground_truth.set_object_footprints(annotated_object_meshes(sim, run.annotation, CLASSES))
     floor, trajectory_px = floor_height(sim, start), []
-    for step in tqdm(range(_EXPLORATION_STEPS), desc="Exploration"):
+    for _ in tqdm(range(_EXPLORATION_STEPS), desc="Exploration"):
         state, obs = sim_agent.get_state(), sim.get_sensor_observations()
         trajectory_px.append(ground_truth.to_pixel(np.array(state.position)))
         ground_truth.reveal(np.array(state.position), float(TopDownMap.get_polar_angle(state)))
@@ -154,13 +152,13 @@ def _explore(run: HybridRun, fused, lift: Callable, images_dir: Path) -> Tuple[o
         fused = fused + lift(detections, frame, run.predictions[-1], floor)
         run.agent.update_detections(detections)
         action, _ = run.agent.act(state, obs["depth"])
-        mosaic = exploration_snapshot(obs, run.agent, ground_truth, trajectory_px)
-        if mosaic is not None:
-            mosaic.save(images_dir / f"snapshot_gif_{step:03d}.png")
         if action == "stop":
-            return fused, run.agent.is_stuck()
+            break
         sim.step(action)
-    return fused, False
+    mosaic = exploration_snapshot(obs, run.agent, ground_truth, trajectory_px)
+    if mosaic is not None:
+        mosaic.save(run.testdump_dir / "exploration_snapshot.png", compress_level=PNG_COMPRESS_LEVEL)
+    return fused, action == "stop" and run.agent.is_stuck()
 
 
 def _prediction_tiles(run: HybridRun) -> list:
@@ -173,26 +171,24 @@ def _prediction_tiles(run: HybridRun) -> list:
 
 def explore_and_fuse(detector: Detector, testdump_dir: Path, fused, lift: Callable) -> Tuple[HybridRun, object]:
     """(HybridRun, fused) of an exploration from an emptied testdump_dir, fusing lift(detections, frame, predictions,
-    floor height) of every step into fused; saves ground_truth_mesh.glb, exploration.webp and the
+    floor height) of every step into fused; saves ground_truth_mesh.glb, exploration_snapshot.png and the
     prediction visuals there, and asserts the agent never got stuck."""
     seed_all_rng(_SEED)
     shutil.rmtree(testdump_dir, ignore_errors=True)
-    images_dir = testdump_dir / "images" / "test_exploration_gif"
-    images_dir.mkdir(parents=True)
+    testdump_dir.mkdir(parents=True)
     sim, annotation = procthor_sim()
     scene_world_mesh(sim).export(testdump_dir / "ground_truth_mesh.glb")
     run = HybridRun(sim, annotation, _start_agent(sim, testdump_dir), detector, testdump_dir)
     with timed("Exploring and fusing"):
-        fused, stuck = _explore(run, fused, lift, images_dir)
+        fused, stuck = _explore(run, fused, lift)
     assert not stuck, "agent got stuck (no net translation)"
-    save_gif(images_dir, "exploration.webp", fps=_GIF_FPS)
     with timed("Visualisation"):
         save_exploration_visuals(run.agent, _prediction_tiles(run), testdump_dir)
     return run, fused
 
 
 def _resolve_and_classify(fused: ConceptGraphMemory, detector: Detector) -> None:
-    """Resolves fused, keeps its foreground objects and classifies them among the classes their size fits, as main.py does."""
+    """Resolves fused, keeps its foreground objects and classifies them among the classes their size fits, as collect.py does."""
     with timed("Resolving"):
         fused.resolve()
     with timed("Keeping foreground"):
@@ -217,14 +213,14 @@ def _relabel_with_ground_truth(run: HybridRun, resolved: ResolvedObjects) -> Non
 
 
 def retrieve_and_save_mosaics(run: HybridRun, resolved: ResolvedObjects) -> Tuple[dict, dict]:
-    """(run's frames raytraced with resolved's objects, the views retrieve_views selects of each), saving
+    """(run's frames raytraced with resolved's objects, the views retrieve_resolved_views selects of each), saving
     retrieval_mosaic.png (one row per object of those views) and retrieval_first_views.png (its first column as a single
     row) to run's testdump."""
     with timed("Retrieval mosaics"):
         raytraced, object_frames = retrieve_resolved_views(resolved, run.memory, DEPTH_CAMERA, _MIN_MESH_VISIBILITY_FRACTION, ViewSelection(k=5))
-        views_mosaic(run.memory, raytraced, _DETIC_STYLE, object_frames).save(run.testdump_dir / "retrieval_mosaic.png")
+        views_mosaic(run.memory, raytraced, _DETIC_STYLE, object_frames).save(run.testdump_dir / "retrieval_mosaic.png", compress_level=PNG_COMPRESS_LEVEL)
         first_views = first_views_mosaic(retrieved_views(resolved, run.memory, raytraced, object_frames), _DETIC_STYLE)
-        first_views.save(run.testdump_dir / "retrieval_first_views.png")
+        first_views.save(run.testdump_dir / "retrieval_first_views.png", compress_level=PNG_COMPRESS_LEVEL)
     return raytraced, object_frames
 
 
@@ -232,12 +228,12 @@ def _save_dataset_mosaic(fused: ConceptGraphMemory, raytraced: dict, object_fram
     """train/train.json of the retrieved views, then dataset_mosaic.png, one row per batch of the first _MOSAIC_BATCHES the
     balanced_loader of the ObjectViewsDataset read back from it draws."""
     writer = ObjectViewsWriter(_TESTDUMP_DIR / "train", {"categories": CLASSES})
-    writer.add_scene("procthor", retrieved_views(fused.resolved_objects, fused.image_memory, raytraced, object_frames))
-    writer.write(np.random.default_rng(_SEED))
+    writer.write_scene("procthor", retrieved_views(fused.resolved_objects, fused.image_memory, raytraced, object_frames))
+    writer.merge(np.random.default_rng(_SEED))
     mapper = DatasetMapper(is_train=True, augmentations=[], image_format="RGB", use_instance_mask=True, instance_mask_format="bitmask")
     loader = balanced_loader(ObjectViewsDataset.from_json(_TESTDUMP_DIR / "train" / "train.json"), _BATCH_SIZE, mapper)
     batches = itertools.islice(itertools.chain.from_iterable(itertools.repeat(loader)), _MOSAIC_BATCHES)
-    batches_mosaic(batches, _DETIC_STYLE).save(_TESTDUMP_DIR / "dataset_mosaic.png")
+    batches_mosaic(batches, _DETIC_STYLE).save(_TESTDUMP_DIR / "dataset_mosaic.png", compress_level=PNG_COMPRESS_LEVEL)
 
 
 def test_exhaustive_mode_reaches_viewpoints():

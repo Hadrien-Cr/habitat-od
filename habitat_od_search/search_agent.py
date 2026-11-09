@@ -139,21 +139,7 @@ class SearchAgent(BaseExplorationAgent):
 
         goal_map = self.estimated_map.goal_mask(self.config.goal_score_thresh)
         self._goal_map = goal_map  # for visualization/debugging
-
-        frontier_map = self.estimated_map.frontier_map()
-
-        action, self._closest_goal_map, self._short_term_goal, _, no_feasible_plan, no_frontier = self.planner.plan(
-            obstacle_map=self.estimated_map.obstacles,
-            goal_map=goal_map,
-            frontier_map=frontier_map,
-            sensor_pose=self.sensor_pose(position, heading),
-            found_goal=np.any(goal_map),
-            use_dilation_for_stg=False,
-            current_timestep=self.step_count - 1,
-        )
-
-        action_name = self.action_name(action)
-        return action_name, self.plan_stop_reason(action_name, no_feasible_plan, no_frontier)
+        return self.plan_action(goal_map, bool(goal_map.any()), position, heading, self.step_count - 1)
 
     def map_image(self) -> np.ndarray:
         image = super().map_image()

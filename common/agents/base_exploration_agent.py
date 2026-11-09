@@ -154,10 +154,30 @@ class BaseExplorationAgent(Agent):
         self.estimated_map.reveal(position, heading)
         return position, heading
 
-    def sensor_pose(self, position: np.ndarray, heading: float) -> np.ndarray:
+    def plan_action(self, goal_map: np.ndarray, found_goal: bool, position: np.ndarray, heading: float, timestep: int) -> Tuple[str, Optional[StopReason]]:
+        """DiscretePlanner.plan()'s action and StopReason towards goal_map, frontiers as its fallback, planned within
+        EstimatedMap.planning_window; its closest goal map and short-term goal are kept in full-map pixels."""
+        assert self.estimated_map is not None and self.planner is not None, "Call reset() first"
+        rows, cols = self.estimated_map.planning_window(goal_map, position)
+        action, closest_goal_map, short_term_goal, _, no_feasible_plan, no_frontier = self.planner.plan(
+            obstacle_map=self.estimated_map.obstacles[rows, cols],
+            goal_map=goal_map[rows, cols],
+            frontier_map=self.estimated_map.frontier_map()[rows, cols],
+            sensor_pose=self.sensor_pose(position, heading, rows, cols),
+            found_goal=found_goal,
+            use_dilation_for_stg=False,
+            current_timestep=timestep,
+        )
+        self._closest_goal_map = np.zeros_like(goal_map)
+        self._closest_goal_map[rows, cols] = closest_goal_map
+        self._short_term_goal = (short_term_goal[0] + rows.start, short_term_goal[1] + cols.start)
+        action_name = self.action_name(action)
+        return action_name, self.plan_stop_reason(action_name, no_feasible_plan, no_frontier)
+
+    def sensor_pose(self, position: np.ndarray, heading: float, rows: slice, cols: slice) -> np.ndarray:
         """(7,) [x, y, o, gx1, gx2, gy1, gy2] for DiscretePlanner.plan(): x/y in meters derived from this
         agent's own EstimatedMap pixel grid (row -> y, col -> x, matching plan()'s own start=[row, col]
-        derivation), planning window = the whole map (EstimatedMap has no local/global tiers).
+        derivation), planning window = the map's rows and cols (EstimatedMap.planning_window).
 
         o is in degrees, in DiscretePlanner's own convention -- NOT habitat's polar angle (heading, as
         TopDownMap.get_polar_angle/observe() use for fog-of-war and point-turn logic elsewhere). o = 90 -
@@ -172,9 +192,9 @@ class BaseExplorationAgent(Agent):
         correct end-to-end against real sim movement."""
         assert self.estimated_map is not None, "Call reset() first"
         row, col = self.estimated_map.to_pixel(position)
-        size = self.estimated_map.map_pixels_size
         o = normalize_angle(90.0 - np.degrees(heading))
-        return np.array([col * self.estimated_map.meters_per_pixel, row * self.estimated_map.meters_per_pixel, o, 0, size, 0, size], dtype=float)
+        meters_per_pixel = self.estimated_map.meters_per_pixel
+        return np.array([col * meters_per_pixel, row * meters_per_pixel, o, rows.start, rows.stop, cols.start, cols.stop], dtype=float)
 
     def is_stuck(self) -> bool:
         """True once the last _STUCK_WINDOW_STEPS trajectory positions all lie within _STUCK_RADIUS_M of each other --
