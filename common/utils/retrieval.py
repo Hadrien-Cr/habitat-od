@@ -13,7 +13,7 @@ from PIL import Image
 
 from common.env_utils.visibility_utils import mesh_visibility_fraction
 from common.utils.image_memory import Frame, ImageMemory
-from common.utils.plot_utils import make_mosaic, plot_segmentation, plot_segmentation_pred, rows_mosaic, save_tile
+from common.utils.plot_utils import chunked, make_mosaic, plot_segmentation, plot_segmentation_pred, rows_mosaic, save_tile
 from common.utils.projection_utils import DepthCamera, ResolvedObjects, nearest_resized, viewing_angles
 
 _HIGHLIGHT_COLOR = (255, 0, 0)
@@ -26,7 +26,7 @@ class ViewSelection:
     nearby viewing angles for the same point sharing credit within an angular Gaussian kernel of std sigma)."""
 
     k: int = 10
-    gamma: float = 0.5
+    gamma: float = 0.1
     alpha: float = 1.0
     sigma: float = np.pi / 4
 
@@ -154,11 +154,15 @@ def first_views_mosaic(views: List[RetrievedView], style: SegmentationStyle, hig
     return make_mosaic(tiles, N_cols=len(tiles), tile_colors=[_HIGHLIGHT_COLOR if view.object_id in highlighted else None for view in first_views])
 
 
-def objects_views_mosaic(views: List[RetrievedView], style: SegmentationStyle, highlighted: Collection[int] = (), downscale: int = 1) -> Optional[Image.Image]:
-    """One mosaic row per object of all its views among views, each tile downscaled by downscale, bordered red for the highlighted objects."""
-    rows = list(_views_by_object(views).values())
-    if not rows:
-        return None
+def objects_views_mosaics(
+    views: List[RetrievedView], style: SegmentationStyle, highlighted: Collection[int], downscale: int, max_rows: Optional[int],
+) -> List[Image.Image]:
+    """Mosaics of one row per object of all its views among views, at most max_rows objects each (all in one without
+    max_rows), each tile downscaled by downscale, bordered red for the highlighted objects."""
+    return [_rows_mosaic(rows, style, highlighted, downscale) for rows in chunked(list(_views_by_object(views).values()), max_rows)]
+
+
+def _rows_mosaic(rows: List[List[RetrievedView]], style: SegmentationStyle, highlighted: Collection[int], downscale: int) -> Image.Image:
     ordered = [view for row in rows for view in row]
     return make_mosaic(
         [_view_tile(view, style, downscale) for view in ordered],

@@ -1,0 +1,32 @@
+# Collection config for habitat_embodied_sl/collect.py (see ../README.md): writes datasets/<run_name>/<variant>/.
+# The first 8 ProcTHOR-Train houses of 2 to 3 rooms (counted from their stage's interior wall names), launched by
+# scripts/collect_procthor_medium.sh.
+run_name: procthor_medium
+seed: 0
+
+object_params:
+  env_name: "ProcTHOR-hab"
+  vocab_name: "PROCTHOR100"
+  min_area_fraction: 5e-4
+  filter_low_visibility: True
+  min_mesh_visibility_fraction: 0.2
+  filter_classes: []
+
+collection:
+  steps_per_scene: 1000
+  k_retrieval: 10
+  scenes: [
+    "ProcTHOR-Train-5", "ProcTHOR-Train-6", "ProcTHOR-Train-9", "ProcTHOR-Train-11",
+    "ProcTHOR-Train-14", "ProcTHOR-Train-26", "ProcTHOR-Train-30", "ProcTHOR-Train-32",
+  ]
+
+evaluation:
+  frames_per_scene: 50
+  downsampling: 4
+  scenes: [
+    "ProcTHOR-Val-0", "ProcTHOR-Val-1",
+  ]
+
+frontier_agent:
+  visibility_dist_m: 3.0
+  steps: 1000

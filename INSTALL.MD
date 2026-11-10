@@ -100,3 +100,19 @@ wget -c https://rgbd.cs.princeton.edu/data/SUNRGBDMeta3DBB_v2.mat -P $HABITAT_DA
 mkdir -p $HABITAT_DATA/nyu_depth_v2
 wget -c https://horatio.cs.nyu.edu/mit/silberman/nyu_depth_v2/nyu_depth_v2_labeled.mat -P $HABITAT_DATA/nyu_depth_v2
 ```
+
+```bash
+# Download OpenLex3D (open-vocab eval, no simulator) for one Replica scene, office0: tiered ground truth labels
+# (all 23 scenes, 20 MB), Replica's own office_0 (habitat/mesh_semantic.ply's per-face object_id is what the labels
+# index) and NICE-SLAM's office0 RGB-D sequence + poses (the trajectory OpenLex3D's predictions use).
+# Replica ships as one split .tar.gz (~34 GB): it's streamed through and only office_0 (~1.5 GB) is kept.
+# NICE-SLAM's Replica.zip (12.4 GB) holds all 8 scenes; only office0 is unzipped. See notebooks/openlex3d_visualization.ipynb.
+mkdir -p $HABITAT_DATA/openlex3d $HABITAT_DATA/replica/nice_slam
+wget -c http://aisdatasets.cs.uni-freiburg.de/openlex3d/gt_openlex3d.zip -P $HABITAT_DATA/openlex3d
+unzip -q $HABITAT_DATA/openlex3d/gt_openlex3d.zip -d $HABITAT_DATA/openlex3d && rm $HABITAT_DATA/openlex3d/gt_openlex3d.zip
+for p in {a..q}; do curl -sfL https://github.com/facebookresearch/Replica-Dataset/releases/download/v1.0/replica_v1_0.tar.gz.parta$p; done \
+    | unpigz | tar -xC $HABITAT_DATA/replica --wildcards 'office_0/*'
+wget -c https://cvg-data.inf.ethz.ch/nice-slam/data/Replica.zip -P $HABITAT_DATA/replica/nice_slam
+unzip -q $HABITAT_DATA/replica/nice_slam/Replica.zip 'Replica/office0/*' 'Replica/cam_params.json' -d $HABITAT_DATA/replica/nice_slam \
+    && rm $HABITAT_DATA/replica/nice_slam/Replica.zip
+```

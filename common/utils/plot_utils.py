@@ -409,6 +409,20 @@ def rows_mosaic(rows: list[list[tuple[str, np.ndarray]]]) -> Optional[Image.Imag
 PNG_COMPRESS_LEVEL = 1  # PIL's default zlib level 6 encodes ~2x slower for files only ~1.5x smaller
 
 
+def chunked(items: list, size: Optional[int]) -> list[list]:
+    """items in consecutive chunks of at most size each, or one chunk of them all without size."""
+    step = size or max(len(items), 1)
+    return [items[start:start + step] for start in range(0, len(items), step)]
+
+
+def save_mosaic_parts(mosaics: list[Image.Image], out_path: Path) -> None:
+    """A single mosaic to out_path, several each to out_path's stem suffixed with its index."""
+    paths = [out_path] if len(mosaics) == 1 else [out_path.with_name(f"{out_path.stem}_{index:02d}{out_path.suffix}") for index in range(len(mosaics))]
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    for mosaic, path in zip(mosaics, paths):
+        mosaic.save(path, compress_level=PNG_COMPRESS_LEVEL)
+
+
 def save_tile(tile: tuple, out_path: Path) -> None:
     """(label, image) tile as a single-tile mosaic, saved to out_path."""
     out_path.parent.mkdir(parents=True, exist_ok=True)

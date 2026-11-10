@@ -14,7 +14,7 @@ from common.agents.base_exploration_agent import BaseExplorationAgent
 from common.hybrid_exploration.discrete_planner import DiscretePlanner
 from common.hybrid_exploration.exploration_map import EstimatedMap, MapConfig
 from common.hybrid_exploration.hybrid_agent import HybridFrontierAgent
-from common.utils.plot_utils import PNG_COMPRESS_LEVEL, centered_crop, letterboxed, make_mosaic, rows_mosaic, save_tile
+from common.utils.plot_utils import chunked, centered_crop, letterboxed, make_mosaic, rows_mosaic, save_mosaic_parts, save_tile
 from common.utils.projection_utils import DepthCamera
 
 
@@ -93,6 +93,7 @@ class FrontierExplorationAgent(BaseExplorationAgent):
 _SNAPSHOT_TILE_SIZE = 1024
 _BELIEF_CROP_M = 12.0
 _SAVE_WORKERS = 8
+_PREDICTION_COLS = 5
 
 
 def exploration_snapshot(
@@ -116,6 +117,13 @@ def exploration_snapshot(
         ("ground truth", np.ascontiguousarray(gt_map)),
     ]])
 
+def save_predictions_mosaic(prediction_tiles: list, out_dir: Path, max_rows: Optional[int] = None) -> None:
+    """out_dir/predictions_mosaic.png of every step's prediction tile, _PREDICTION_COLS per row, split into parts of at
+    most max_rows rows (save_mosaic_parts)."""
+    parts = chunked(prediction_tiles, max_rows and max_rows * _PREDICTION_COLS)
+    save_mosaic_parts([make_mosaic(tiles, N_cols=_PREDICTION_COLS) for tiles in parts], out_dir / "predictions_mosaic.png")
+
+
 def save_exploration_visuals(agent: HybridFrontierAgent, prediction_tiles: list, out_dir: Path) -> None:
     """predictions_mosaic.png and prediction_frames/step_<step>.png of every step, the frames saved in parallel (PIL
     releases the GIL while encoding)."""
@@ -124,6 +132,6 @@ def save_exploration_visuals(agent: HybridFrontierAgent, prediction_tiles: list,
     frame_paths = [out_dir / "prediction_frames" / f"step_{step:04d}.png" for step in range(len(prediction_tiles))]
     with ThreadPoolExecutor(_SAVE_WORKERS) as pool:
         frames_saved = pool.map(save_tile, prediction_tiles, frame_paths)
-        make_mosaic(prediction_tiles, N_cols=5).save(out_dir / "predictions_mosaic.png", compress_level=PNG_COMPRESS_LEVEL)
+        save_predictions_mosaic(prediction_tiles, out_dir)
         list(frames_saved)
 

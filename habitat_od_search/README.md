@@ -36,9 +36,8 @@ used only for scoring, unless an ablation flag (below) is turned on.
    agent's own start position, as before.
 3. **Per step (`SearchAgent.act`):**
    - Update the belief map from depth: obstacles are depth points 0.2–0.88 m above the floor, plus the
-     floor-plane crossings of no-hit downward rays (dropping any crossing whose own cluster covers fewer than
-     `min_missing_floor_cluster_m`, 0.5 m, cells -- e.g. a single bad depth pixel from a hole in the scanned
-     mesh). Then age the goal-score map by `score_decay` (0.9), within the agent's current field of view only --
+     floor-plane crossings of no-hit downward rays (the no-hit mask first opened by a `missing_floor_opening_px`,
+     5 × 5, kernel in the depth image, dropping isolated pixels and 1-px seam cracks of the scanned mesh). Then age the goal-score map by `score_decay` (0.9), within the agent's current field of view only --
      cells outside it keep their last score, since no new observation of them happened this step.
    - **Detect:** run `Detector.predict_target`, Detic's single-class zero-shot inference against the target
      embedding (classifier reset to [target, background]), with SAM masks when `--sam-checkpoint` is given.
@@ -56,7 +55,7 @@ used only for scoring, unless an ablation flag (below) is turned on.
      translation over 25 steps, `BaseExplorationAgent.is_stuck`).
    - **Act:** start with a full 360° spin. Then the `DiscretePlanner` (cells of `resolution_m`, 0.05 m in
      `eval_200_*`; the default config uses 0.1 m) plans towards the believed goal cell once one exists, and
-     towards the frontiers otherwise. It stops within 0.75 × `reach_m` of the goal, or when there is neither a
+     towards the frontiers otherwise. It stops within 0.75 × `reach_m` (2 m) of the goal, or when there is neither a
      goal nor a frontier left. With `agent.planner_debug` (off by default), each step also writes a
      `snapshot_planner_<timestep>.png` mosaic (traversable/goal/FMM-distance/frontier cells around the agent) to
      the episode's own `images/<run_index>_ep<episode_id>_<scene_id>/planner/`, alongside its own
@@ -74,8 +73,10 @@ used only for scoring, unless an ablation flag (below) is turned on.
 
 ## Metrics (`evaluator.py`)
 
-- **Success:** the final position is within `SUCCESS_DIST_M` (1 m), horizontally, of a goal object's mesh
-  footprint (1000 surface samples, top-down).
+- **Success:** the final position is within `SUCCESS_DIST_M` (2 m), horizontally, of a goal object's mesh
+  footprint (1000 surface samples, top-down). IMPRINT uses 1 m; widened because some goals stand more than 1 m from any
+  navigable point, beyond the planner's 0.75 × `reach_m` stop radius at `reach_m` = 1 m. Horizontal distance ignores
+  walls, so a stop behind a wall within 2 m also counts.
 - **SPL:** success × geodesic distance / max(path length, geodesic distance), using the episode's own
   `geodesic_distance`.
 - **Distance to goal (dtg):** the final horizontal distance to the nearest goal footprint.
@@ -87,7 +88,7 @@ used only for scoring, unless an ablation flag (below) is turned on.
   | `exploration_failure` | no detection ever reached `goal_score_thresh`, and no goal was ever visible in a ground-truth frame |
   | `fn_recognition_failure` | no detection ever reached `goal_score_thresh`, but a goal was visible in some ground-truth frame |
   | `fp_recognition_failure` | the agent locked onto a believed goal more than 1 m from every real goal |
-  | `tp_early_stop` | the agent locked onto a real goal (within 1 m) but stopped more than 1 m from its footprint |
+  | `tp_early_stop` | the agent locked onto a real goal (within 1 m) but stopped more than `SUCCESS_DIST_M` from its footprint |
 
 ## Outputs
 

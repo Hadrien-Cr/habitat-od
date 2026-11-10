@@ -67,9 +67,9 @@ come from, out of it; they belong with the code that builds them (`common/env_ut
   0.1 m cells) marks as obstacles every
   depth point between 0.2 m (`MapConfig.max_climb_m`, habitat-sim's step height) and 0.88 m (`obstacle_height_m`) above
   the floor. Downward rays with no depth hit also count, at their floor-plane crossing within `visibility_dist_m`
-  (`missing_floor_points`, e.g. the drop past a terrace edge), dropping crossings whose own top-down cluster covers
-  fewer than `min_missing_floor_cluster_m` (0.5 m) cells -- a real void spans many such rays, unlike the single
-  isolated cell one bad depth pixel (e.g. a hole in the scanned mesh) yields. Then `agent.act` picks the action: belief-map-only, via
+  (`missing_floor_points`, e.g. the drop past a terrace edge), after opening the no-hit mask with a
+  `missing_floor_opening_px` (5 × 5) kernel in the depth image -- a real void is a solid image region, unlike the
+  isolated pixels and 1-px seam cracks of the scanned mesh. Then `agent.act` picks the action: belief-map-only, via
   a shared `DiscretePlanner` FMM pass over a goal map of every unseen object viewpoint (or, once none remain, every frontier cell; frontier
   fragments under 0.5 m, `MapConfig.min_frontier_size_m`, are dropped) -- no ground-truth navmesh pathfinding. That pass
   only covers the bounding box of the explored and goal cells and the agent, grown by 2 m (`MapConfig.planning_margin_m`,
@@ -77,13 +77,11 @@ come from, out of it; they belong with the code that builds them (`common/env_ut
   agent's 8 headings, it heads for the one whose single 0.25 m move (`DiscretePlannerConfig.step_size_m`) stays on
   traversable cells (obstacles dilated by a 3-cell disk, `DiscretePlannerConfig.obs_dilation_selem_radius`) and ends
   closest to the goal on that FMM distance (the smallest turn on ties). The step's labelled detector-prediction tile
-  (`segmentation_tile`) is kept and, once exploration ends, saved both individually
-  (`datadump/<run_name>/<scene>/prediction_frames/step_<step>.png`) and as one `predictions_mosaic.png`
-  (`save_exploration_visuals`, which also writes that scene's final `decision.png`/`object.png`). Each step also saves a
-  3-tile (observation, belief map cropped to the 5 x 5 m around the agent, ground truth) snapshot to
-  `datadump/<run_name>/<scene>/images/exploration_snapshots/snapshot_<step>.png`, assembled into `exploration.webp`
-  (lossless animated WebP, not GIF -- GIF's 256-color palette cap crowds out or merges rare colors like the belief
-  map's green explored tint) once exploration ends.
+  (`segmentation_tile`) is kept and, once exploration ends, saved as one
+  `datasets/<run_name>/<scene>/predictions_mosaic.png` (`save_predictions_mosaic`, 5 tiles per row; split into
+  `predictions_mosaic_<part>.png` of at most 32 rows each unless `--no-split`), along with the last step's 3-tile
+  (observation, belief map cropped to the 5 x 5 m around the agent, ground truth) snapshot,
+  `datasets/<run_name>/<scene>/exploration_snapshot.png`.
 - (1.6) **Ground truth:** the step's ground-truth instances come from the `bbsgt` sensor, filtered by
   `object_params.min_area_fraction` (box area ≥ 5e-4 of the frame's pixels) and `filter_low_visibility`/`min_mesh_visibility_fraction`
   (`mesh_visibility_fraction`: the sum of the mask's connected components' own bounding-box areas, over the object's largest
@@ -138,7 +136,7 @@ come from, out of it; they belong with the code that builds them (`common/env_ut
 - (5.1) **Retrieval** (`common/utils/retrieval.py::retrieve_resolved_views`): for each object, pick up to `collection.k_retrieval` (10)
   views greedily so they cover its (resolved point, viewing angle) elements, the angle from the point to the camera
   (not the agent's heading). A view's gain is visibility^α × Σ (1 − γ) γ^(effective times already covered), with
-  γ = 0.5 and α = 1; a point already covered by a chosen view lends credit to a new candidate's angle for it in
+  γ = 0.1 and α = 1; a point already covered by a chosen view lends credit to a new candidate's angle for it in
   proportion to a Gaussian kernel of std σ = π/4 over their angular distance, so nearby angles share credit instead of
   only exact repeats. Each view's raytraced mask is resized to the rgb by nearest neighbour and labelled with the
   object's class.
@@ -178,7 +176,7 @@ filters in the collection config.
 `datasets/<run_name>/` gets (`common/utils/dataset_writers.py`) one train set per variant, `<variant>/train/` for
 `pseudo`, `pseudo_gt_classes` and `recovered`, and the test set they share, `test/`. Each split folder holds its json,
 its mosaic, an `images/` folder and a `scenes/` folder of per-scene shards. A call first deletes what an earlier run of
-its scene wrote (its `<scene>/` folder, shards, frames and per-scene pngs), leaving the other scenes' alone, then writes
+its scene wrote (its `<scene>/` folder, shards, frames and per-scene pngs and their parts), leaving the other scenes' alone, then writes
 its scene's records to `<split>/scenes/<scene>.json`. Holding a lock on `datasets/<run_name>/.merge.lock`, it then
 rebuilds each split it wrote to, its json and mosaic pooling every shard written so far, in scene name order. Once every
 scene's call has finished, each split pools all of them:
@@ -190,7 +188,8 @@ scene's call has finished, each split pools all of them:
 | `test/images/<scene>_<frame>.jpg`, `test/test.json` | COCO instance segmentation of the test frames: `images` (`file_name` relative to `images/`), `annotations` (RLE `segmentation`, `bbox`, `area`, `iscrowd`, plus `object_id`, the simulator object id), `categories` (ids 1..N, the kept classes in order), `info` (the `evaluation` config); image and annotation ids start at 1 too. Loads with detectron2's `register_coco_instances(name, {}, "<run_name>/test/test.json", "<run_name>/test/images")` |
 | `<variant>/decision_frames/<scene>.png`, `test/decision_frames/<scene>.png` | each collection scene's exploration map with the agent's trajectory and last decision once exploration ends, the same in every variant; each test scene's frontier exploration map and trajectory |
 | `<variant>/semantic_topdown_maps/<scene>.png` | each collection scene's resolved objects the variant keeps, by their class in the variant, on the agent's top-down map; objects `recover_add_fn` adds have no points to draw |
-| `<variant>/retrieval_mosaics/<scene>.png` | each collection scene's objects in the variant, one row of its retrieved views per object, tiles at half resolution (`_TILE_DOWNSCALE`); objects recovery relabelled (5.3.2) or added (5.3.3) are bordered red |
+| `<variant>/retrieval_mosaics/<scene>.png` | each collection scene's objects in the variant, one row of its retrieved views per object, tiles at half resolution (`_TILE_DOWNSCALE`); objects recovery relabelled (5.3.2) or added (5.3.3) are bordered red. Split into `<scene>_<part>.png` of at most 32 objects each (`_MAX_MOSAIC_ROWS`) unless `--no-split` |
+| `<variant>/retrieval_mosaics/<scene>_first_views.png` | the same objects, one row of each object's first retrieved view (its highest-gain one, 5.1) at full resolution, bordered red as above |
 | `<variant>/train/scenes/<scene>.json`, `test/scenes/<scene>.json` | one scene's records of the split, which merging pools into its json: `frames` and `retrieved_objects` for a train set; `images` and `annotations` (each pointing at its image by its index in the shard, ids assigned when pooled) for the test set |
 | `<variant>/train/train_mosaic.png`, `test/test_mosaic.png` | 32 records of the split, read back from its json and drawn in random order, each its frame with its annotations' boxes and classes |
 
@@ -201,6 +200,7 @@ scene's call has finished, each split pools all of them:
 | `collect.py` | one scene's run: for a collection scene, exploration loop and `SceneMapper`, resolve → foreground → size-masked classify, retrieval and recovery into the train sets; for an evaluation scene, its frames into the test set; then the merge of the splits it wrote to |
 | `evaluation_set.py` | a test scene's frontier exploration and CLIP-diverse frame selection |
 | `config/collection_procthor.yaml` | collection config: `run_name`, `seed`, `object_params`, `collection` and `evaluation` scenes and budgets |
+| `config/collection_procthor_medium.yaml` | the same for the first 8 ProcTHOR-Train houses of 2 to 4 rooms, 1000 steps each; collected 4 at a time, one per GPU, by `scripts/collect_procthor_medium.sh` |
 | `meta_arch.py` | `CustomFT_Detic`, Detic's `CustomRCNN` registered as a `META_ARCHITECTURE` for fine-tuning on a train variant's `ObjectViewsDataset`; trained by the root `train.py` |
 
 ## Running

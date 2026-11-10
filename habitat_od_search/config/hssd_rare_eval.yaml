@@ -29,6 +29,6 @@ agent:
   score_decay: 0.9
   goal_score_thresh: 0.5
   confidence_thresh: 0.5
-  reach_m: 1.0
+  reach_m: 2.0
   # Ground-truth detections of the episode's goal objects (scored 1.0) instead of Detic's.
   use_gt_detections: False

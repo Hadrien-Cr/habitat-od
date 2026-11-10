@@ -14,7 +14,7 @@ import habitat_sim
 import numpy as np
 import torch
 
-from common.hybrid_exploration.frontiers import detect_frontier_waypoints, large_component_mask, reveal_fog_of_war, without_small_frontiers
+from common.hybrid_exploration.frontiers import detect_frontier_waypoints, reveal_fog_of_war, without_small_frontiers
 from common.utils.concept_graph import ConceptGraphConfig
 from common.utils.projection_utils import (
     DepthCamera, downsample_points, foreground_points, main_cluster_mask, nearest_resized, object_points, project_batch_masks,
@@ -30,9 +30,9 @@ class MapConfig:
     visibility_dist_m: float = 3.0
     area_thresh_m: float = 3.0
     min_frontier_size_m: float = 0.5  # shorter frontier fragments are dropped (without_small_frontiers)
-    min_missing_floor_cluster_m: float = 0.5  # smaller missing_floor_points clusters are dropped -- a single bad
-    # depth pixel (e.g. a hole in the scanned mesh) otherwise floor-projects into an isolated, often-arbitrary obstacle cell
-    obstacle_height_m: float = 1.2  # above the agent's own 0.88 m height (common/config/hssd-hab/default.yaml) so a
+    missing_floor_opening_px: int = 5  # depth-image pixels: no-hit regions thinner than this (e.g. 1-px cracks along a
+    # wall/floor mesh seam, which line up into a wall-long top-down cluster) are dropped before floor projection
+    obstacle_height_m: float = 1.4  # above the agent's own 0.88 m height (common/config/hssd-hab/default.yaml) so a
     # solid rising surface (e.g. a staircase's treads/soffit) stays marked past the agent's head height, short of
     # a typical door lintel (~2 m) wrongly becoming an obstacle too
     max_climb_m: float = 0.2  # matches habitat-sim's NavMeshSettings.agent_max_climb: lower steps/sills are traversable
@@ -160,20 +160,17 @@ class EstimatedMap:
     def missing_floor_points(self, depth: np.ndarray, pose: np.ndarray, camera: DepthCamera, floor_height: float) -> np.ndarray:
         """Floor-plane crossings, within visibility_dist_m, of the downward rays whose depth hit no geometry (clipped to
         min_depth) -- e.g. the void past a terrace edge, which would otherwise stay free and keep yielding frontiers.
-        Crossings whose top-down cluster covers fewer than min_missing_floor_cluster_m cells are dropped: a real void
-        spans many such rays, while a single bad depth pixel (e.g. a hole in the scanned mesh) yields just one,
-        floor-projected to an effectively arbitrary nearby point."""
-        missing = torch.as_tensor(np.asarray(depth).squeeze() <= camera.min_depth)
+        The no-hit mask is first morphologically opened by missing_floor_opening_px: a real void is a solid image
+        region, while mesh holes and seam cracks are isolated pixels or 1-px lines."""
+        no_hit = (np.asarray(depth).squeeze() <= camera.min_depth).astype(np.uint8)
+        kernel = np.ones((self.config.missing_floor_opening_px, self.config.missing_floor_opening_px), np.uint8)
+        missing = torch.as_tensor(cv2.morphologyEx(no_hit, cv2.MORPH_OPEN, kernel).astype(bool))
         unit_depth_points = project_batch_masks(torch.ones(missing.shape), pose, missing, hfov=camera.hfov, min_depth=0.0, max_depth=2.0).numpy()
         camera_center = pose[:3, 3]
         rays = unit_depth_points - camera_center
         rays = rays[rays[:, 1] < 0]
         crossings = camera_center + rays * ((floor_height - camera_center[1]) / rays[:, 1])[:, None]
-        crossings = crossings[np.linalg.norm(crossings[:, [0, 2]] - camera_center[[0, 2]], axis=1) <= self.config.visibility_dist_m]
-        if len(crossings) == 0:
-            return crossings
-        min_cluster_px = self.pixels(self.config.min_missing_floor_cluster_m)
-        return crossings[large_component_mask(self.to_pixels(crossings), self.obstacles.shape, min_cluster_px)]
+        return crossings[np.linalg.norm(crossings[:, [0, 2]] - camera_center[[0, 2]], axis=1) <= self.config.visibility_dist_m]
 
     def _mark(self, grid: np.ndarray, points: np.ndarray, fill: int) -> None:
         if len(points) == 0:

@@ -5,9 +5,9 @@ explores in exhaustive mode for up to collection.steps_per_scene steps (or until
 over BaseExplorationAgent.is_stuck's window, which stops it, logged as a warning) while a Detector (Detic's proposals scored by
 objectness alone, SAM masks) segments every frame; its masks and region embeddings are fused into a concept-graphs
 ConceptGraphMemory (common/utils/concept_graph.py), while the agent's own ObjectTracker
-(common/hybrid_exploration/object_tracker.py) tracks the same detections into the objects it inspects. Each step's 3-tile
-(observation, belief map, ground truth) snapshot is saved to datasets/<run_name>/<scene>/images/exploration_snapshots/
-and assembled into exploration.webp there. The map is then resolved, its
+(common/hybrid_exploration/object_tracker.py) tracks the same detections into the objects it inspects. The last step's 3-tile
+(observation, belief map, ground truth) snapshot is saved to datasets/<run_name>/<scene>/exploration_snapshot.png and
+every step's predictions to predictions_mosaic.png there. The map is then resolved, its
 foreground objects kept and classified (ConceptGraphMemory.classify), and up to collection.k_retrieval diverse views of
 each retrieved (common/utils/retrieval.py). Those views make three object-view train sets under
 datasets/<run_name>/<variant>/train/: "pseudo" with the classified labels, "pseudo_gt_classes" with matched objects taking
@@ -18,8 +18,10 @@ datasets/<run_name>/test/test.json, pools every evaluation.scenes scene's divers
 run of its scene wrote, writes the scene's records to its own shard of each split, then, under a lock on
 datasets/<run_name>/.merge.lock, rebuilds each split's json and scrambled mosaic from every shard written so far
 (common/utils/dataset_writers.py): once every scene's call is done, each split pools them all. Each collection scene gets a retrieval mosaic per variant, <variant>/retrieval_mosaics/<scene>.png, one row of
-views per object at half resolution, its objects relabelled or added by recovery bordered red, and a semantic top-down
-map per variant, <variant>/semantic_topdown_maps/<scene>.png, of its resolved objects by their class in the variant.
+views per object at half resolution, its objects relabelled or added by recovery bordered red, split into
+<scene>_<part>.png of at most 32 objects each unless --no-split; <scene>_first_views.png there too, one row of each
+object's first view; and a semantic top-down map per variant, <variant>/semantic_topdown_maps/<scene>.png, of its
+resolved objects by their class in the variant. predictions_mosaic.png is split the same way, 32 rows per part.
 
 Usage (Detic's Swin-B checkpoint from https://github.com/facebookresearch/Detic's model zoo; Detic classifies
 against the CLIP text embeddings of the config's vocab_name/filter_classes class names):
@@ -35,7 +37,7 @@ import os
 import shutil
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -45,7 +47,7 @@ from omegaconf import DictConfig, OmegaConf
 from tqdm import tqdm
 
 from common import constants
-from common.hybrid_exploration.frontier_exp_agent import exploration_snapshot, save_exploration_visuals
+from common.hybrid_exploration.frontier_exp_agent import exploration_snapshot, save_predictions_mosaic
 from common.hybrid_exploration.hybrid_agent import HybridFrontierAgent
 from common.utils.eval_utils import GroundTruthObjects, matched_ground_truth
 from common.env_utils.env_base import ExplorationEnv, build_agent, build_env
@@ -56,13 +58,14 @@ from common.utils.ground_truth_recovery import (
     GroundTruthAnnotation, GroundTruthView, encoded_views, recover_add_fn, recover_drop_fp, recover_gt_classes, recovered_objects,
 )
 from common.utils.image_memory import Frame
-from common.utils.plot_utils import save_gif
+from common.utils.plot_utils import PNG_COMPRESS_LEVEL, save_mosaic_parts
 from common.utils.pose_utils import sensor_pose_matrix
 from common.utils.projection_utils import DepthCamera, estimated_semantic_topdown, nearest_resized
 from common.utils.dataset_writers import SCENES_DIR, CocoFramesWriter, ObjectViewsWriter, locked
 from common.utils.object_views_dataset import IMAGES_DIR
 from common.utils.retrieval import (
-    RetrievedView, SegmentationStyle, ViewSelection, objects_views_mosaic, retrieve_resolved_views, retrieved_views, segmentation_tile,
+    RetrievedView, SegmentationStyle, ViewSelection, first_views_mosaic, objects_views_mosaics, retrieve_resolved_views, retrieved_views,
+    segmentation_tile,
 )
 from common.vision.detic import Vocabulary
 from habitat_embodied_sl.evaluation_set import ClipImageEncoder, evaluation_frames
@@ -71,7 +74,7 @@ from common.vision.detector import Detector
 
 _VARIANTS = ("pseudo", "pseudo_gt_classes", "recovered")
 _TILE_DOWNSCALE = 2
-_GIF_FPS = 10
+_MAX_MOSAIC_ROWS = 32
 _MERGE_LOCK = ".merge.lock"
 
 
@@ -81,6 +84,10 @@ def observe_frame(obs: dict, env: ExplorationEnv, lift_image_size: int) -> Frame
     rgb = obs["rgb"][:, :, :3]
     pose = sensor_pose_matrix(env.get_agent_state().sensor_states["depth"])
     return Frame(rgb, nearest_resized(obs["depth"].squeeze(), (lift_image_size, lift_image_size)).numpy(), pose)
+
+
+def mosaic_max_rows(args: argparse.Namespace) -> Optional[int]:
+    return None if args.no_split else _MAX_MOSAIC_ROWS
 
 
 def kept_vocabulary(object_params: DictConfig) -> Vocabulary:
@@ -122,10 +129,10 @@ class SceneMapper:
         return frame, instances
 
 
-def explore(env: ExplorationEnv, mapper: SceneMapper, obs: dict, steps: int, style: SegmentationStyle, ground_truth, images_dir: Path) -> Tuple[list, bool]:
+def explore(env: ExplorationEnv, mapper: SceneMapper, obs: dict, steps: int, style: SegmentationStyle, ground_truth, out_dir: Path) -> Tuple[list, bool]:
     """Has mapper observe every frame from obs on until its agent stops (also after too many successive collisions),
-    gets stuck or steps run out, saving a 3-tile (observation, belief map, ground truth) snapshot per step to
-    images_dir/snapshot_<step>.png and returning (each step's labelled detector-prediction tile (segmentation_tile),
+    gets stuck or steps run out, saving the last step's 3-tile (observation, belief map, ground truth) snapshot to
+    out_dir/exploration_snapshot.png and returning (each step's labelled detector-prediction tile (segmentation_tile),
     whether the agent got stuck)."""
     collided = False
     prediction_tiles = []
@@ -138,20 +145,20 @@ def explore(env: ExplorationEnv, mapper: SceneMapper, obs: dict, steps: int, sty
         frame, instances = mapper.observe(obs, env)
         prediction_tiles.append(segmentation_tile(frame.rgb, instances, style, f"step{step:04d}"))
         action, _ = mapper.agent.act(env.get_agent_state(), obs["depth"], collided)
-        mosaic = exploration_snapshot(obs, mapper.agent, ground_truth, trajectory_px)
-        if mosaic is not None:
-            mosaic.save(images_dir / f"snapshot_gif_{step:04d}.png")
         if action == "stop":
             break
         obs, _, _, _ = env.step(action)
         collided = bool(np.any(obs["agent_collision_sensor"]))
+    snapshot = exploration_snapshot(obs, mapper.agent, ground_truth, trajectory_px)
+    if snapshot is not None:
+        snapshot.save(out_dir / "exploration_snapshot.png", compress_level=PNG_COMPRESS_LEVEL)
     return prediction_tiles, mapper.agent.is_stuck()
 
 
 def map_scene(scene: str, cfg: DictConfig, detector: Detector, style: SegmentationStyle, args: argparse.Namespace) -> Tuple[SceneMapper, GroundTruthObjects]:
     """(SceneMapper of the scene's exploration, the scene's annotated objects of detector's classes), saving every
-    step's detector predictions (save_exploration_visuals) and every step's 3-tile snapshot assembled into
-    exploration.webp (save_gif) to datasets/<run_name>/<scene>/."""
+    step's detector predictions as one mosaic (save_predictions_mosaic) and the last step's 3-tile snapshot to
+    datasets/<run_name>/<scene>/."""
     env, habitat_cfg = build_env(scene, cfg.seed, cfg.collection.steps_per_scene, cfg.object_params, args.input_image_size)
     scene_dump_dir = constants.DATASET_ROOT / cfg.run_name / scene
     agent = build_agent("hybrid", np.random.default_rng(cfg.seed), env, habitat_cfg, dump_location=str(scene_dump_dir), exp_name="planner")
@@ -166,13 +173,11 @@ def map_scene(scene: str, cfg: DictConfig, detector: Detector, style: Segmentati
     map_config = agent.config.map_config
     ground_truth = env.gt_map_tracker(map_config.fov_deg, map_config.visibility_dist_m)
     ground_truth.set_object_footprints(gt_meshes)
-    images_dir = scene_dump_dir / "images" / "exploration_snapshots"
-    images_dir.mkdir(parents=True, exist_ok=True)
-    prediction_tiles, stuck = explore(env, mapper, obs, cfg.collection.steps_per_scene, style, ground_truth, images_dir)
+    scene_dump_dir.mkdir(parents=True, exist_ok=True)
+    prediction_tiles, stuck = explore(env, mapper, obs, cfg.collection.steps_per_scene, style, ground_truth, scene_dump_dir)
     if stuck:
         print(f"Warning: agent got stuck in {scene} (no net translation)")
-    save_gif(images_dir, "exploration.webp", fps=_GIF_FPS)
-    save_exploration_visuals(agent, prediction_tiles, scene_dump_dir)
+    save_predictions_mosaic(prediction_tiles, scene_dump_dir, mosaic_max_rows(args))
     env.close()
     return mapper, GroundTruthObjects.from_meshes(gt_meshes)
 
@@ -199,16 +204,17 @@ def scene_variants(mapper: SceneMapper, ground_truth: GroundTruthObjects, cfg: D
     return dict(zip(_VARIANTS, (pseudo, gt_classes, recovered)))
 
 
-def save_retrieval_mosaics(scene: str, scene_views: Dict[str, List[RetrievedView]], style: SegmentationStyle, root: Path) -> None:
+def save_retrieval_mosaics(scene: str, scene_views: Dict[str, List[RetrievedView]], style: SegmentationStyle, root: Path, max_rows: Optional[int]) -> None:
     """root/<variant>/retrieval_mosaics/<scene>.png of every variant's scene_views (scene_variants): one row per object of
-    its views, tiles downscaled by _TILE_DOWNSCALE, bordered red when recovery relabelled or added the object."""
+    its views, tiles downscaled by _TILE_DOWNSCALE, bordered red when recovery relabelled or added the object, split into
+    parts of at most max_rows objects (save_mosaic_parts); and <scene>_first_views.png, one row of each object's first view."""
     for variant, views in scene_views.items():
-        mosaic = objects_views_mosaic(views, style, recovered_objects(scene_views[_VARIANTS[0]], views), _TILE_DOWNSCALE)
-        if mosaic is None:
-            continue
-        out_path = root / variant / "retrieval_mosaics" / f"{scene}.png"
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        mosaic.save(out_path)
+        highlighted = recovered_objects(scene_views[_VARIANTS[0]], views)
+        out_dir = root / variant / "retrieval_mosaics"
+        save_mosaic_parts(objects_views_mosaics(views, style, highlighted, _TILE_DOWNSCALE, max_rows), out_dir / f"{scene}.png")
+        first_views = first_views_mosaic(views, style, highlighted)
+        if first_views is not None:
+            first_views.save(out_dir / f"{scene}_first_views.png", compress_level=PNG_COMPRESS_LEVEL)
 
 
 def save_semantic_topdowns(scene: str, scene_views: Dict[str, List[RetrievedView]], mapper: SceneMapper, style: SegmentationStyle, root: Path) -> None:
@@ -230,9 +236,9 @@ def train_set_writers(cfg: DictConfig, classes: list) -> Dict[str, ObjectViewsWr
 
 def flush_scene(root: Path, scene: str) -> None:
     """Deletes what an earlier run of the scene wrote under root: its own folder, and in every split its shard, its frames
-    and its per-scene pngs (retrieval mosaics, semantic top-down maps, decision frames)."""
+    and its per-scene pngs (retrieval mosaics and their parts, semantic top-down maps, decision frames)."""
     shutil.rmtree(root / scene, ignore_errors=True)
-    patterns = (f"**/{SCENES_DIR}/{scene}.json", f"**/{IMAGES_DIR}/{scene}_[0-9]*.jpg", f"**/{scene}.png")
+    patterns = (f"**/{SCENES_DIR}/{scene}.json", f"**/{IMAGES_DIR}/{scene}_[0-9]*.jpg", f"**/{scene}.png", f"**/{scene}_*.png")
     for path in [path for pattern in patterns for path in root.glob(pattern)]:
         path.unlink()
 
@@ -245,7 +251,7 @@ def collect_scene(scene: str, cfg: DictConfig, args: argparse.Namespace) -> None
     resolve_and_classify(mapper, cfg.object_params.min_mesh_visibility_fraction)
     scene_views = scene_variants(mapper, ground_truth, cfg)
     root = constants.DATASET_ROOT / cfg.run_name
-    save_retrieval_mosaics(scene, scene_views, style, root)
+    save_retrieval_mosaics(scene, scene_views, style, root, mosaic_max_rows(args))
     save_semantic_topdowns(scene, scene_views, mapper, style, root)
     train_writers = train_set_writers(cfg, detector.classes)
     for variant, views in scene_views.items():
@@ -292,6 +298,7 @@ if __name__ == "__main__":
     parser.add_argument("--input-image-size", type=int, default=1024, help="Side of the rendered frames, Detic's and SAM's input.")
     parser.add_argument("--lift-image-size", type=int, default=512, help="Side depth and masks are resized to for lifting and raytracing.")
     parser.add_argument("--mask-thresh", type=float, default=0.5)
+    parser.add_argument("--no-split", action="store_true", help="Save each mosaic whole instead of in parts of at most 32 rows.")
     args = parser.parse_args()
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu  # read when CUDA first initializes, which none of the imports above does
     main(args)
