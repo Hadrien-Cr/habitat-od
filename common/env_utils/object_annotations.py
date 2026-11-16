@@ -74,6 +74,15 @@ def strip_ceiling(scene: trimesh.Scene) -> trimesh.Scene:
     return scene
 
 
+def asset_frame_rotation(up: mn.Vector3, front: mn.Vector3) -> np.ndarray:
+    """4x4 rotation taking an asset's (up, front) frame onto habitat's world (geo.UP, geo.FRONT) frame."""
+    source = np.stack([front, up, np.cross(front, up)])
+    target = np.stack([habitat_sim.geo.FRONT, habitat_sim.geo.UP, np.cross(habitat_sim.geo.FRONT, habitat_sim.geo.UP)])
+    rotation = np.eye(4)
+    rotation[:3, :3] = target.T @ source
+    return rotation
+
+
 def stage_world_mesh(sim: habitat_sim.Simulator) -> Optional[trimesh.Trimesh]:
     """The stage's (the scene's static architectural shell) render mesh in world coordinates, ceiling stripped
     (strip_ceiling), or None without a render asset on disk."""
@@ -83,6 +92,7 @@ def stage_world_mesh(sim: habitat_sim.Simulator) -> Optional[trimesh.Trimesh]:
     loaded = trimesh.load(stage.render_asset_fullpath, process=False)
     mesh = strip_ceiling(loaded).to_geometry() if isinstance(loaded, trimesh.Scene) else loaded
     mesh.apply_scale(np.array(stage.scale))
+    mesh.apply_transform(asset_frame_rotation(stage.orient_up, stage.orient_front))
     mesh.apply_translation(np.array(stage.origin))
     return mesh
 

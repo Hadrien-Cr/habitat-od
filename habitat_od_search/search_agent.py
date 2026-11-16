@@ -1,5 +1,5 @@
-"""Detic-driven single-target object-search agent: scores every step's rgb against the episode's target
-embedding, fuses the best detection's mask into the agent's own depth-built EstimatedMap's goal_score grid,
+"""Detic-driven single-target object-search agent: scores every step's rgb against the episode's TargetQuery
+(a text embedding, a bank of region embeddings of example views, or both), fuses the best detection's mask into the agent's own depth-built EstimatedMap's goal_score grid,
 and asks goal_policy.select_action for the next action -- home-robot's ObjectNavAgent shape (detect -> update
 map -> plan -> act), on this repo's own frontier/path primitives.
 """
@@ -24,6 +24,7 @@ from common.vision.detector import Detector
 from common.hybrid_exploration.plotting import draw_goal_map
 
 _DETECTION_COLOR = (255, 0, 255)  # RGB -- magenta, the single target class predict_target scores against
+_TILE_DETECTIONS = 5
 
 def mesh_footprint(mesh: trimesh.Trimesh) -> np.ndarray:
     """(1000, 2) top-down (x, z) points sampled on mesh's surface."""
@@ -39,7 +40,15 @@ class SearchAgentConfig:
     planner_config: DiscretePlannerConfig
     reach_m: float = 1.0
     use_gt_detections: bool = False  # act()'s gt_instances (all scored 1.0) instead of the detector's
+    query: str = "text_cat"  # habitat_od_search/query_bank.py's query name, e.g. "text_full", "web" or "web+text_cat"
 
+
+@dataclass(frozen=True)
+class TargetQuery:
+    """Detector.predict_target's query for one episode's target: a (D,) CLIP text embedding, a (K, D) bank of region
+    embeddings of example views, or both."""
+    text_embedding: Optional[torch.Tensor]
+    region_embeddings: Optional[torch.Tensor]
 
 
 class SearchAgent(BaseExplorationAgent):
@@ -74,7 +83,7 @@ class SearchAgent(BaseExplorationAgent):
         self.detector = detector
         self.camera = camera
         self.config = config
-        self.target_embedding = None
+        self.query = None
         self.target_label = None
         self._goal_map = None
         self.step_count = 0
@@ -84,14 +93,14 @@ class SearchAgent(BaseExplorationAgent):
 
 
     def reset(
-        self, start_state: habitat_sim.AgentState, floor_height: float, target_embedding: torch.Tensor, target_label: str,
+        self, start_state: habitat_sim.AgentState, floor_height: float, query: TargetQuery, target_label: str,
         navmesh_bounds: Optional[Tuple[np.ndarray, np.ndarray]] = None,
     ) -> None:
         super().reset(start_state, floor_height, navmesh_bounds)
         assert self.estimated_map is not None, "BaseExplorationAgent.reset() must be called first"
         assert self.planner is not None, "Call reset() first"
 
-        self.target_embedding = target_embedding
+        self.query = query
         self.target_label = target_label
         self._goal_map = None
         self.step_count = 0
@@ -103,19 +112,18 @@ class SearchAgent(BaseExplorationAgent):
         gt_instances: Optional[Instances] = None,
     ) -> Tuple[str, Optional[StopReason]]:
         assert self.estimated_map is not None, "Call reset() first"
-        assert self.target_embedding is not None, "Call reset() first"
+        assert self.query is not None, "Call reset() first"
         assert self.planner is not None, "Call reset() first"
 
         self.step_count += 1
         agent_state = self.ref_frame_state(agent_state)
         position, heading = self.observe(agent_state, depth, self.camera)
-        self.estimated_map.decay_goal_score()
 
         if self.config.use_gt_detections:
             assert gt_instances is not None, "use_gt_detections needs act()'s gt_instances"
             instances, best_score = gt_instances, 1.0 if len(gt_instances) else 0.0
         else:
-            instances, best_score = self.detector.predict_target(rgb[:, :, :3], self.target_embedding)
+            instances, best_score = self.detector.predict_target(rgb[:, :, :3], self.query.text_embedding, self.query.region_embeddings)
 
         self.last_instances = instances
         self.last_rgb = rgb[:, :, :3]
@@ -127,6 +135,9 @@ class SearchAgent(BaseExplorationAgent):
             self.estimated_map.mark_goal(
                 depth, agent_state.sensor_states["depth"], instances.pred_masks[best_idx], best_score, self.camera, self.floor_height,
             )
+        else:
+            # Decaying on detected frames too let each heading's slightly different mask evict the other's goal cells.
+            self.estimated_map.decay_goal_score()
 
         if self.step_count >= self.config.max_steps:
             return "stop", StopReason.MAX_STEPS
@@ -157,13 +168,14 @@ class SearchAgent(BaseExplorationAgent):
 
 
     def detections_tile(self) -> Tuple[str, np.ndarray]:
-        """(label, RGB) tile of the last act() rgb frame with predict_target's detections (boxes/masks/scores)
-        drawn on it -- so the goal_score updates driving navigation stay visible, not just their effect."""
+        """(label, RGB) tile of the last act() rgb frame with predict_target's _TILE_DETECTIONS best detections
+        (boxes/masks/scores) drawn on it -- so the goal_score updates driving navigation stay visible, not just their effect."""
         label = f"observation\n{self.target_label}"
         if self.last_rgb is None or self.last_instances is None or len(self.last_instances) == 0:
             rgb = np.zeros((1, 1, 3), dtype=np.uint8) if self.last_rgb is None else self.last_rgb
             return label, rgb
-        return segmentation_tile(self.last_rgb, self.last_instances, self._detection_style, label)
+        best = self.last_instances[self.last_instances.scores.argsort(descending=True)[:_TILE_DETECTIONS]]
+        return segmentation_tile(self.last_rgb, best, self._detection_style, label)
 
     def goal_score_image(self) -> Optional[np.ndarray]:
         """estimated_map.goal_score (float32, each cell 0-1), for BaseExplorationAgent.map_image() to blend

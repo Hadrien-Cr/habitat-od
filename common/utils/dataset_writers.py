@@ -1,50 +1,58 @@
-"""Splits pooling several scenes, each in its own folder <split>/: every frame as <split>/images/<scene>_<frame>.jpg, plus
-<split>/<split>.json and <split>/<split>_mosaic.png, _MOSAIC_RECORDS of the split's records read back from that json and
-drawn in random order. Each scene is written on its own (write_scene), its records to its shard
-<split>/scenes/<scene>.json; merge then pools every shard written so far into <split>.json, so scenes can be written by
-parallel processes, each merging under locked() once its scene is done.
+"""Splits pooling several scenes, each in its own folder <split>/: every frame as <images_dir>/<scene>_<frame>.jpg, a
+folder the dataset's splits share (collect.py's datasets/<run_name>/images/), plus <split>/<split>.json and
+<split>/<split>_mosaic.png, _MOSAIC_RECORDS of the split's records read back from that json and drawn in random order.
+Each scene is written on its own (write_scene), its records to its shard <split>/scenes/<scene>.json, so scenes can be
+written by parallel processes; merge, run once they are all done (habitat_embodied_sl/merge.py), pools every shard into
+<split>.json.
 
 ObjectViewsWriter writes a train split of object views: {"info", "frames": {"<scene>_<frame>": {"height", "width"}},
 "retrieved_objects": {"<scene>/<object>": {"gt_class", "views": [{"frame", "mask" (RLE)}]}}}, read by ObjectViewsDataset.
 CocoFramesWriter writes a COCO instance-segmentation split of fully annotated frames, each annotation also carrying its
 simulator object_id; its image, annotation and category ids start at 1 (category id = class index + 1), as COCOeval
 treats annotation id 0 as unmatched and detectron2 expects categories in [1, #categories]."""
-import fcntl
 import json
-import os
-from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterator, List, Tuple
+from typing import Dict, List, Tuple, Union
 
 import numpy as np
 from detectron2.data import DatasetMapper
 from detectron2.data.datasets import load_coco_json
 from detectron2.structures import Instances
+from omegaconf import DictConfig, OmegaConf
 from PIL import Image
 from pycocotools import mask as mask_util
 
+from common import constants
 from common.env_utils.vocab_constants import make_colors
-from common.utils.ground_truth_recovery import encoded_masks
-from common.utils.object_views_dataset import IMAGES_DIR, ObjectViewsDataset, batches_mosaic
-from common.utils.retrieval import RetrievedView, SegmentationStyle
+from common.utils.coco_utils import encoded_masks, json_rle, write_json
+from common.utils.object_views_dataset import ObjectViewsDataset, batches_mosaic
+from common.utils.retrieval import RetrievedView, SegmentationStyle, ViewSelection
 
 _MOSAIC_RECORDS = 32
 _MOSAIC_COLUMNS = 8
 _JPEG_QUALITY = 95
 SCENES_DIR = "scenes"
+IMAGES_DIR = "images"
+OBJECT_DS_DIR = "object_ds"
+VARIANTS = ("pseudo", "gt", "gt++")
 
 
 def frame_key(scene: str, frame_id: int) -> str:
     return f"{scene}_{frame_id}"
 
 
-def _json_rle(rle: dict) -> dict:
-    return dict(rle, counts=rle["counts"].decode("ascii"))
+def frame_scene(file_name: str) -> str:
+    """The scene of a frame image named after its frame_key."""
+    return Path(file_name).stem.rsplit("_", 1)[0]
 
 
-def _save_frame(split_dir: Path, key: str, rgb: np.ndarray) -> None:
-    path = split_dir / IMAGES_DIR / f"{key}.jpg"
+def _save_frame(images_dir: Path, key: str, rgb: np.ndarray) -> None:
+    """Saves rgb as images_dir/<key>.jpg unless another split of the dataset already did (collect.py flushes a scene's
+    frames before recollecting it)."""
+    path = images_dir / f"{key}.jpg"
+    if path.exists():
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(rgb).save(path, quality=_JPEG_QUALITY)
 
@@ -57,27 +65,9 @@ def scene_shard_path(split_dir: Path, scene: str) -> Path:
     return split_dir / SCENES_DIR / f"{scene}.json"
 
 
-def _write_json(path: Path, content: dict) -> None:
-    """content as json at path, written to a temporary file first so a concurrent merge never reads it half written."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp")
-    with open(temporary, "w") as file:
-        json.dump(content, file)
-    os.replace(temporary, path)
-
-
 def _scene_shards(split_dir: Path) -> List[dict]:
-    """Every scene's shard written to split_dir so far, in scene name order."""
+    """Every scene's shard written to split_dir, in scene name order."""
     return [json.loads(path.read_text()) for path in sorted((split_dir / SCENES_DIR).glob("*.json"))]
-
-
-@contextmanager
-def locked(lock_path: Path) -> Iterator[None]:
-    """Holds an exclusive lock on lock_path for the block, so parallel processes writing one dataset merge one at a time."""
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(lock_path, "w") as lock_file:
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
-        yield
 
 
 def _annotations(ground_truth: Instances) -> List[dict]:
@@ -85,7 +75,7 @@ def _annotations(ground_truth: Instances) -> List[dict]:
     rles = encoded_masks(ground_truth.gt_masks)
     return [
         {
-            "category_id": class_id + 1, "segmentation": _json_rle(rle), "bbox": mask_util.toBbox(rle).tolist(), "area": float(mask_util.area(rle)),
+            "category_id": class_id + 1, "segmentation": json_rle(rle), "bbox": mask_util.toBbox(rle).tolist(), "area": float(mask_util.area(rle)),
             "iscrowd": 0, "object_id": info["object_id"],
         }
         for rle, class_id, info in zip(rles, ground_truth.gt_classes.tolist(), ground_truth.infos)
@@ -106,6 +96,7 @@ def _save_mosaic(records: List[dict], categories: list, split_dir: Path, rng: np
 class ObjectViewsWriter:
     split_dir: Path
     info: dict
+    images_dir: Path
 
     def write_scene(self, scene: str, views: List[RetrievedView]) -> None:
         """Writes the frames of the scene's views, and each view's mask under its object to the scene's shard."""
@@ -113,19 +104,21 @@ class ObjectViewsWriter:
         for view in views:
             key = frame_key(scene, view.frame_id)
             if key not in frames:
-                _save_frame(self.split_dir, key, view.rgb)
+                _save_frame(self.images_dir, key, view.rgb)
                 frames[key] = {"height": view.rgb.shape[0], "width": view.rgb.shape[1]}
             entry = objects.setdefault(f"{scene}/{view.object_id}", {"gt_class": view.class_id, "views": []})
-            entry["views"].append({"frame": key, "mask": _json_rle(encoded_masks(view.mask[None])[0])})
-        _write_json(scene_shard_path(self.split_dir, scene), {"frames": frames, "retrieved_objects": objects})
+            entry["views"].append({"frame": key, "mask": json_rle(encoded_masks(view.mask[None])[0])})
+        write_json(scene_shard_path(self.split_dir, scene), {"frames": frames, "retrieved_objects": objects})
 
     def merge(self, rng: np.random.Generator) -> None:
-        """<split>.json pooling every scene's shard written so far, then its mosaic."""
+        """<split>.json pooling every scene's shard, then its mosaic; nothing without any shard."""
         shards = _scene_shards(self.split_dir)
+        if not shards:
+            return
         frames = {key: frame for shard in shards for key, frame in shard["frames"].items()}
         objects = {key: entry for shard in shards for key, entry in shard["retrieved_objects"].items()}
-        _write_json(split_json_path(self.split_dir), {"info": self.info, "frames": frames, "retrieved_objects": objects})
-        _save_mosaic(ObjectViewsDataset.from_json(split_json_path(self.split_dir)).records, self.info["categories"], self.split_dir, rng)
+        write_json(split_json_path(self.split_dir), {"info": self.info, "frames": frames, "retrieved_objects": objects})
+        _save_mosaic(ObjectViewsDataset.from_json(split_json_path(self.split_dir), self.images_dir).records, self.info["categories"], self.split_dir, rng)
 
 
 @dataclass(frozen=True)
@@ -133,6 +126,7 @@ class CocoFramesWriter:
     split_dir: Path
     info: dict
     categories: list
+    images_dir: Path
 
     def write_scene(self, scene: str, frames: List[Tuple[int, np.ndarray, Instances]]) -> None:
         """Writes each (frame id, rgb, ground-truth instances) of the scene as an image, and the scene's shard of them, one
@@ -140,25 +134,23 @@ class CocoFramesWriter:
         images, annotations = [], []
         for frame_id, rgb, ground_truth in frames:
             key = frame_key(scene, frame_id)
-            _save_frame(self.split_dir, key, rgb)
+            _save_frame(self.images_dir, key, rgb)
             annotations += [{"image": len(images), **annotation} for annotation in _annotations(ground_truth)]
             images.append({"file_name": f"{key}.jpg", "height": rgb.shape[0], "width": rgb.shape[1]})
-        _write_json(scene_shard_path(self.split_dir, scene), {"images": images, "annotations": annotations})
+        write_json(scene_shard_path(self.split_dir, scene), {"images": images, "annotations": annotations})
 
     def merge(self, rng: np.random.Generator) -> None:
-        """<split>.json pooling every scene's shard written so far, then its mosaic. Categories are written alphabetically
-        (COCOEvaluator's per-category AP table follows category id order), with annotations' category_id remapped from
-        self.categories' original class-index order to match."""
+        """<split>.json pooling every scene's shard, then its mosaic; nothing without any shard. Categories keep
+        self.categories' order, the train sets' (ObjectViewsWriter) class order, so a class index means the same class in both."""
+        shards = _scene_shards(self.split_dir)
+        if not shards:
+            return
         json_path = split_json_path(self.split_dir)
-        images, annotations = _pooled_frames(_scene_shards(self.split_dir))
-        old_ids_by_name = sorted(enumerate(self.categories, start=1), key=lambda pair: pair[1])
-        old_to_new_id = {old_id: new_id for new_id, (old_id, _) in enumerate(old_ids_by_name, start=1)}
-        sorted_classes = [name for _, name in old_ids_by_name]
-        categories = [{"id": new_id, "name": name} for new_id, name in enumerate(sorted_classes, start=1)]
-        annotations = [{**annotation, "category_id": old_to_new_id[annotation["category_id"]]} for annotation in annotations]
-        _write_json(json_path, {"info": self.info, "categories": categories, "images": images, "annotations": annotations})
-        records = load_coco_json(str(json_path), str(self.split_dir / IMAGES_DIR), dataset_name=str(json_path))
-        _save_mosaic(records, sorted_classes, self.split_dir, rng)
+        images, annotations = _pooled_frames(shards)
+        categories = [{"id": category_id, "name": name} for category_id, name in enumerate(self.categories, start=1)]
+        write_json(json_path, {"info": self.info, "categories": categories, "images": images, "annotations": annotations})
+        records = load_coco_json(str(json_path), str(self.images_dir), dataset_name=str(json_path))
+        _save_mosaic(records, self.categories, self.split_dir, rng)
 
 
 def _pooled_frames(shards: List[dict]) -> Tuple[List[dict], List[dict]]:
@@ -172,3 +164,16 @@ def _pooled_frames(shards: List[dict]) -> Tuple[List[dict], List[dict]]:
             for index, annotation in enumerate(shard["annotations"])
         ]
     return images, annotations
+
+
+def dataset_writers(cfg: DictConfig, classes: list) -> Dict[str, Union[CocoFramesWriter, ObjectViewsWriter]]:
+    """{split: its writer} of collect.py's datasets/<run_name>/: train/ (the train frames' full ground truth), test/, and
+    every variant's <variant>/object_ds/, all over classes, their frames in the shared images/."""
+    root = constants.DATASET_ROOT / cfg.run_name
+    retrieval = {**asdict(ViewSelection(k=cfg.collection.k_retrieval)), "min_mesh_visibility_fraction": cfg.object_params.min_mesh_visibility_fraction}
+    test_info = {"evaluation": OmegaConf.to_container(cfg.evaluation), "frontier_agent": OmegaConf.to_container(cfg.frontier_agent)}
+    return {
+        "train": CocoFramesWriter(root / "train", {"collection": OmegaConf.to_container(cfg.collection)}, classes, root / IMAGES_DIR),
+        "test": CocoFramesWriter(root / "test", test_info, classes, root / IMAGES_DIR),
+        **{variant: ObjectViewsWriter(root / variant / OBJECT_DS_DIR, {"categories": classes, "retrieval": retrieval}, root / IMAGES_DIR) for variant in VARIANTS},
+    }

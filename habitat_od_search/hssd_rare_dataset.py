@@ -1,7 +1,8 @@
 """Loads IMPRINT's HSSD-rare ObjectNav episodes (third_party/IMPRINT/dataset/hssd_rare_eps/<scene_id>.json.gz,
 habitat-lab's standard ObjectNavDatasetV1 shape) for habitat_od_search's evaluator. object_category on each episode
 and goal is a fine-grained HSSD instance string (e.g. "table, Metal 25\" 2 Tier Accent Table"), rarity-tiered by its
-main category (the text before the first comma) against third_party/IMPRINT/dataset/main_cat_split.json."""
+main category (the text before the first comma) against third_party/IMPRINT/dataset/main_cat_split.json. An
+episode's object synonyms are the scene's other objects of that main category, by hssd-hab's own objects.csv."""
 import gzip
 import json
 from functools import lru_cache
@@ -10,13 +11,16 @@ from pathlib import Path
 from typing import Dict, List
 
 import numpy as np
+import pandas as pd
 from habitat.tasks.nav.nav import NavigationEpisode, NavigationGoal  # type: ignore
 
+from common.env_utils.object_annotations import HABITAT_DATA
 from common.utils.pose_utils import get_yaw, quaternion_from_rpy
 
 IMPRINT_ROOT = Path(__file__).resolve().parents[1] / "third_party" / "IMPRINT"
 HSSD_RARE_EPISODES_DIR = IMPRINT_ROOT / "dataset" / "hssd_rare_eps"
 MAIN_CAT_SPLIT_PATH = IMPRINT_ROOT / "dataset" / "main_cat_split.json"
+HSSD_OBJECTS_CSV = Path(str(HABITAT_DATA)) / "scene_datasets" / "hssd-hab" / "semantics" / "objects.csv"
 _YAW_SNAP_RAD = np.pi / 4
 
 
@@ -86,6 +90,13 @@ def available_scenes() -> List[str]:
 def main_category(object_category: str) -> str:
     """object_category's coarse rarity-tier category: the text before its first comma."""
     return object_category.split(",", 1)[0].strip()
+
+
+@lru_cache(maxsize=None)
+def template_main_categories() -> Dict[str, str]:
+    """{HSSD object template id: its objects.csv main_category} -- the column IMPRINT prefixes fine categories with."""
+    objects = pd.read_csv(HSSD_OBJECTS_CSV, usecols=["id", "main_category"]).dropna()
+    return dict(zip(objects["id"], objects["main_category"]))
 
 
 @lru_cache(maxsize=None)

@@ -4,28 +4,17 @@ COCOEvaluator. Detic's zero-shot classifier is reset to the CLIP text embeddings
 `a <class>`. Results go to <test-dir>/inference/<config-file's stem>/.
 
 Usage:
-  PYTHONPATH=. python evaluate.py --test-dir datasets/smoke_sl/test \
+  PYTHONPATH=. python evaluate.py --test-dir datasets/procthor_medium/test \
       --config-file third_party/Detic/configs/Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.yaml \
       MODEL.WEIGHTS models/Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.pth
 """
-import json
 from pathlib import Path
 
-from detectron2.data.datasets import register_coco_instances  # type: ignore
 from detectron2.engine import default_argument_parser, default_setup, launch  # type: ignore
 
-from common.utils.dataset_writers import split_json_path
-from common.utils.object_views_dataset import IMAGES_DIR
-from common.vision.detic import Vocabulary, build_vocabulary_model, detic_cfg
+from common.env_utils.dataset_registry import register_dataset
+from common.vision.detic import Vocabulary, build_vocabulary_model, dataset_vocabulary, detic_cfg
 from train_net import do_test  # type: ignore  # Detic's, importable once common.vision.detic is
-
-
-def register_test_split(test_dir: Path) -> Vocabulary:
-    """Registers test_dir's COCO json as <run_name>_<split>; returns its categories as a Vocabulary of the same name."""
-    name = f"{test_dir.parent.name}_{test_dir.name}"
-    register_coco_instances(name, {}, str(split_json_path(test_dir)), str(test_dir / IMAGES_DIR))
-    categories = json.loads(split_json_path(test_dir).read_text())["categories"]
-    return Vocabulary(name, tuple(category["name"] for category in categories))
 
 
 def setup(args, vocabulary: Vocabulary):
@@ -41,14 +30,14 @@ def setup(args, vocabulary: Vocabulary):
 
 
 def main(args):
-    vocabulary = register_test_split(Path(args.test_dir))
+    vocabulary = dataset_vocabulary(register_dataset(Path(args.test_dir)))
     cfg = setup(args, vocabulary)
     return do_test(cfg, build_vocabulary_model(cfg, vocabulary))
 
 
 if __name__ == "__main__":
     parser = default_argument_parser()
-    parser.add_argument("--test-dir", default="datasets/smoke_sl/test", help="A COCO split folder: <split>.json and images/.")
+    parser.add_argument("--test-dir", default="datasets/procthor_medium/test", help="A COCO split folder: <split>.json, its images in ../images/.")
     args = parser.parse_args()
     launch(
         main,

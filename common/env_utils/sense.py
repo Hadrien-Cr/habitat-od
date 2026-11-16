@@ -348,6 +348,15 @@ def visible_object_ids(obs: dict) -> set:
     return {info["object_id"] for info in obs["bbsgt"]["instances"].infos if _is_visible(info)}
 
 
+def object_id_image(obs: dict) -> np.ndarray:
+    """(H, W) int32 object id of every pixel of obs' bbsgt instances, filtered ones included; -1 where there is none."""
+    instances = obs["bbsgt"]["instances"]
+    image = np.full(instances.image_size, -1, dtype=np.int32)
+    for mask, info in zip(instances.pred_masks.reshape(len(instances), *instances.image_size).numpy(), instances.infos):
+        image[mask] = info["object_id"]
+    return image
+
+
 def target_instances(obs: dict, object_ids: set) -> Instances:
     """obs' bbsgt detections of object_ids that pass the area and visibility filters, as single-class (class 0) predictions
     scored 1.0 -- ground-truth stand-ins for Detector.predict_target's output."""

@@ -1,5 +1,5 @@
-"""Train set of object views, read from an ObjectViewsWriter train.json (common/utils/dataset_writers.py): one detectron2
-record per view, its frame's image left on disk and its mask as RLE, the record's single annotation labelled with its
+"""Train set of object views, read from an ObjectViewsWriter json (common/utils/dataset_writers.py): one detectron2
+record per view, its frame's image left on disk in the dataset's images folder and its mask as RLE, the record's single annotation labelled with its
 object's class. Views are drawn with replacement at N_c ** -temperature, N_c the number of objects of their class, and mapped
 to model inputs by a detectron2 DatasetMapper."""
 import json
@@ -19,8 +19,6 @@ from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from common.utils.plot_utils import rows_mosaic
 from common.utils.retrieval import SegmentationStyle, segmentation_tile
 
-IMAGES_DIR = "images"
-
 
 class ObjectViewsDataset(Dataset):
     records: List[dict]
@@ -29,11 +27,11 @@ class ObjectViewsDataset(Dataset):
         self.records = records
 
     @classmethod
-    def from_json(cls, json_path: Path) -> "ObjectViewsDataset":
-        """One record per view of every object of json_path, its image under the images folder next to it."""
+    def from_json(cls, json_path: Path, images_dir: Path) -> "ObjectViewsDataset":
+        """One record per view of every object of json_path, its image in images_dir."""
         data = json.loads(json_path.read_text())
         return cls([
-            _view_record(json_path.parent / IMAGES_DIR, data["frames"][view["frame"]], object_key, entry["gt_class"], view)
+            _view_record(images_dir, data["frames"][view["frame"]], object_key, entry["gt_class"], view)
             for object_key, entry in data["retrieved_objects"].items() for view in entry["views"]
         ])
 

@@ -1,26 +1,20 @@
-"""Registers an already-built COCO dataset directory (common/utils/dataset_writers.py shape:
-dataset_root/<split_name>.json + dataset_root/images/) with detectron2."""
+"""Registers an already-built COCO split directory (common/utils/dataset_writers.py shape:
+<split dir>/<split_name>.json, its images in the dataset's images folder next to the split directory) with detectron2."""
 from pathlib import Path
-from typing import Optional
 
 from detectron2.data import DatasetCatalog  # type: ignore
 from detectron2.data.datasets import register_coco_instances  # type: ignore
 
-from common.utils.object_views_dataset import IMAGES_DIR
+from common.utils.dataset_writers import IMAGES_DIR, split_json_path
 
 
-def register_dataset(dataset_root: Path, split_name: str, name: Optional[str] = None) -> str:
-    """Registers `dataset_root/<split_name>.json` with detectron2, under catalog key `name`
-    (defaults to `split_name`). Idempotent: a `name` already in `DatasetCatalog` is left as-is,
-    so callers must pick a fresh name whenever the underlying JSON changes. `name` lets several
-    datasets that all use the fixed on-disk split_name "val" register under distinct catalog
-    entries instead of colliding under one shared "val"."""
-    name = name or split_name
+def register_dataset(split_dir: Path) -> str:
+    """Registers split_dir's <split>.json with detectron2 as <its parent directory's name>_<its name>, e.g.
+    procthor_medium_test, so the splits of different datasets don't collide. Idempotent: a name already in DatasetCatalog
+    is left as-is."""
+    name = f"{split_dir.parent.name}_{split_dir.name}"
     if name not in DatasetCatalog:
-        json_file = str(dataset_root / f"{split_name}.json")
-        image_root = str(dataset_root / IMAGES_DIR)
-        register_coco_instances(name, {}, json_file, image_root)
-        # Forces the otherwise-lazy loader so thing_classes is populated
-        # before pretrain.py's NUM_CLASSES lookup runs.
+        register_coco_instances(name, {}, str(split_json_path(split_dir)), str(split_dir.parent / IMAGES_DIR))
+        # Forces the otherwise-lazy loader so thing_classes is populated before it is read.
         DatasetCatalog.get(name)
     return name

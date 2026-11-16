@@ -23,6 +23,16 @@ from centernet.config import add_centernet_config  # type: ignore  # noqa: E402
 from detic.config import add_detic_config  # type: ignore  # noqa: E402
 from detic.modeling.utils import reset_cls_test  # type: ignore  # noqa: E402
 from detic.modeling.text.text_encoder import build_text_encoder  # type: ignore  # noqa: E402
+from detic.modeling.backbone import timm as detic_timm  # type: ignore  # noqa: E402
+
+
+def _create_timm_resnet(variant: str, out_indices: List[int], pretrained: bool) -> nn.Module:
+    """Detic's create_timm_resnet without its edit of timm's default_cfgs (immutable since timm 0.9), which only sets
+    pretrained download urls: Detic's TIMM backbone always builds it with pretrained=False."""
+    return detic_timm.CustomResNet(out_indices=out_indices, **detic_timm.model_params[variant])
+
+
+detic_timm.create_timm_resnet = _create_timm_resnet
 
 def get_clip_embeddings(vocabulary, prompt='a ', text_encoder=None) -> torch.Tensor:
     if text_encoder is None:
@@ -90,8 +100,18 @@ def build_vocabulary_model(cfg: CfgNode, vocabulary: Vocabulary) -> nn.Module:
     """cfg's model loaded from its MODEL.WEIGHTS, its zero-shot classifier reset to vocabulary's CLIP text embeddings."""
     model = build_model(cfg)
     DetectionCheckpointer(model).load(cfg.MODEL.WEIGHTS)
-    reset_cls_test(model, vocabulary.clip_embeddings(), len(vocabulary.classes))
+    reset_vocabulary(model, vocabulary)
     return model
+
+
+def dataset_vocabulary(dataset_name: str) -> Vocabulary:
+    """The registered dataset's thing classes, as a Vocabulary of its name."""
+    return Vocabulary(dataset_name, tuple(MetadataCatalog.get(dataset_name).thing_classes))
+
+
+def reset_vocabulary(model: nn.Module, vocabulary: Vocabulary) -> None:
+    """model's zero-shot classifier, at every cascade stage, reset to vocabulary's CLIP text embeddings."""
+    reset_cls_test(model, vocabulary.clip_embeddings(), len(vocabulary.classes))
 
 
 LVIS = Vocabulary("lvis", tuple(category["name"] for category in sorted(LVIS_CATEGORIES, key=lambda category: category["id"])))

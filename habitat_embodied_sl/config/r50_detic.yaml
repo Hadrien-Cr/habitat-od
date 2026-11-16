@@ -1,0 +1,17 @@
+# CustomFT_Detic on Detic's R50 LVIS+COCO+IN-21k checkpoint (same architecture as the BoxSup base), the source model of
+# every r50_* config and of adapt.py's baselines. Relative paths resolve against third_party/Detic
+# (common/vision/detic.py::detic_cfg); ROI_HEADS.NUM_CLASSES is set from the test set's classes.
+_BASE_: "../../common/vision/config/BoxSup-C2_L_CLIP_R5021k_640b64_4x.yaml"
+MODEL:
+  META_ARCHITECTURE: "CustomFT_Detic"
+  MASK_ON: False  # boxes only: evaluation is bbox AP, and pasting every detection's mask costs time and disk
+  WEIGHTS: "models/Detic_LCOCOI21k_CLIP_R5021k_640b32_4x_ft4x_max-size.pth"
+  ROI_HEADS:
+    NAME: "PositiveOnlyDeticCascadeROIHeads"
+    SCORE_THRESH_TEST: 0.02
+  ROI_BOX_HEAD:
+    ZEROSHOT_WEIGHT_PATH: "rand"
+    USE_FED_LOSS: False
+SOLVER:
+  IMS_PER_BATCH: 4
+  BASE_LR: 0.0001

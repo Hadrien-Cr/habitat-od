@@ -5,12 +5,20 @@ seed: 0
 save_visuals: False
 # Saves each scene's ground-truth mesh (stage + every placed object, ceiling stripped) once as meshes/<scene_id>.glb.
 save_mesh: False
+# Saves each step's rgb and ground-truth object-id image to frames/, for tune_threshold.py.
+save_frames: False
 
 # Empty: every scene with a saved third_party/IMPRINT/dataset/hssd_rare_eps/<scene_id>.json.gz (see
 # habitat_od_search/hssd_rare_dataset.py::available_scenes).
 scenes: []
+# Skips the first first_episode selected episodes (numbered across scenes), e.g. to tune on episodes an evaluation of
+# the first ones never runs.
+first_episode: 0
 max_episodes: null
 min_island_area_m2: 10.0
+max_island_area_m2: 100.0
+# At most this many episodes of the same object category in a scene, the first ones in the dataset's order.
+max_episodes_per_category: 5
 
 object_params:
   env_name: "HSSD-HAB"
@@ -32,3 +40,9 @@ agent:
   reach_m: 2.0
   # Ground-truth detections of the episode's goal objects (scored 1.0) instead of Detic's.
   use_gt_detections: False
+  # The detector's query (habitat_od_search/query_bank.py): at most one text part -- text_cat (the episode's main
+  # category, e.g. "table") or text_full (its whole fine-grained object_category, e.g. 'table, Metal 25" 2 Tier Accent
+  # Table') -- and at most one bank part -- gt_views or web, built by build_query_banks.py -- joined by "+", e.g.
+  # web+text_cat. Bank queries score by cosine similarity, so tune confidence_thresh/goal_score_thresh with
+  # tune_threshold.py.
+  query: text_cat

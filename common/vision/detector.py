@@ -39,8 +39,9 @@ ObjectViews = Dict[int, Dict[int, Tuple[np.ndarray, np.ndarray]]]
 
 class Detector:
     """Wraps a Detic checkpoint for class-agnostic single-frame inference; its zero-shot classifier is left random and
-    unused, `vocabulary`'s classes are the ones classify_objects classifies among. predict_target instead resets the
-    classifier to a single live target class, for Detic's own background-competed scoring (see predict_target)."""
+    unused, `vocabulary`'s classes are the ones classify_objects classifies among. predict_target instead scores a single
+    live target, by Detic's own background-competed scoring against a text embedding and/or by region-embedding similarity
+    to example views of it."""
 
     def __init__(
         self, config_file: str, weights_path: str, vocabulary: Vocabulary, sam_checkpoint: Optional[str], score_thresh: float = 0.4,
@@ -83,10 +84,11 @@ class Detector:
         return boxes, [torch.stack([scores, torch.zeros_like(scores)], dim=1) for scores in objectness]
 
     def _backbone(self, rgb: np.ndarray) -> Tuple[dict, ImageList, Transform]:
-        """Backbone features of rgb (RGB order, flipped to the BGR DefaultPredictor expects), its preprocessed images and resize transform."""
-        bgr = rgb[:, :, ::-1]
-        transform = self._predictor.aug.get_transform(bgr)
-        image = torch.as_tensor(transform.apply_image(bgr).astype("float32").transpose(2, 0, 1))
+        """Backbone features of rgb (RGB order, flipped when the model's INPUT.FORMAT is BGR, as DefaultPredictor does), its
+        preprocessed images and resize transform."""
+        model_input = rgb if self._predictor.input_format == "RGB" else rgb[:, :, ::-1]
+        transform = self._predictor.aug.get_transform(model_input)
+        image = torch.as_tensor(transform.apply_image(model_input).astype("float32").transpose(2, 0, 1))
         images = self._predictor.model.preprocess_image([{"image": image}])
         return self._predictor.model.backbone(images.tensor), images, transform
 
@@ -156,19 +158,37 @@ class Detector:
         # return without_parts(result, self.min_part_containment)
         return result
 
-    def predict_target(self, rgb: np.ndarray, embedding: torch.Tensor) -> Tuple[Instances, float]:
-        """Detic's own single-class zero-shot inference against the caller-supplied (D,) embedding (e.g. a class's
-        CLIP text embedding): the classifier is reset to [embedding, implicit all-zero background] (reset_cls_test,
-        skipped when embedding is unchanged from the last call), so a region scores high only if it beats every
-        other region AND the background class on softmax probability -- unlike predict's class-agnostic objectness,
-        this naturally yields 0 or very few detections instead of dozens of generic object proposals. Returns
-        (Instances with pred_boxes/scores/pred_masks, image-sized, on CPU; the best score, or 0.0 without any
-        instance). The caller owns the embedding (and its vocabulary, if any)."""
+    def predict_target(
+        self, rgb: np.ndarray, text_embedding: Optional[torch.Tensor] = None, region_embeddings: Optional[torch.Tensor] = None,
+    ) -> Tuple[Instances, float]:
+        """Single-target detection, scored by whichever query is given: a (D,) text embedding alone runs Detic's own
+        zero-shot inference against it (_text_detections); a (K, D) bank of region embeddings alone scores every
+        class-agnostic predict box by its highest cosine similarity to the bank; both re-score the text detections by
+        that similarity instead. Returns (Instances with pred_boxes/scores/pred_masks/region_features, image-sized, on
+        CPU; the best score, or 0.0 without any instance)."""
+        assert text_embedding is not None or region_embeddings is not None, "predict_target needs a text or region embedding"
+        result = self.predict(rgb) if text_embedding is None else self._text_detections(rgb, text_embedding)
+        if region_embeddings is not None and len(result) > 0:
+            result.scores = (result.region_features @ F.normalize(region_embeddings.float(), dim=1).T).max(dim=1).values
+        return result, result.scores.max().item() if len(result) > 0 else 0.0
+
+    def _text_detections(self, rgb: np.ndarray, embedding: torch.Tensor) -> Instances:
+        """Detic's own single-class zero-shot inference (CustomRCNN.inference, unrolled to keep its backbone features)
+        against the (D,) embedding: the classifier is reset to [embedding, implicit all-zero background]
+        (reset_cls_test, skipped when embedding is unchanged from the last call), so a region scores high only if it
+        beats every other region AND the background class on softmax probability -- unlike predict's class-agnostic
+        objectness, this naturally yields 0 or very few detections. Each detection also carries its region embedding."""
         if self._target_embedding is None or not torch.equal(self._target_embedding, embedding):
             reset_cls_test(self._predictor.model, embedding[:, None].to(self._device), 1)
             self._target_embedding = embedding
+        height, width = rgb.shape[:2]
+        model = self._predictor.model
         with torch.no_grad():
-            result = self._predictor(rgb[:, :, ::-1])["instances"].to("cpu")
+            features, images, _ = self._backbone(rgb)
+            proposals, _ = model.proposal_generator(images, features, None)
+            instances, _ = model.roi_heads(images, features, proposals)
+            instances[0].region_features = self._region_embeddings(features, instances[0].pred_boxes)
+            result = detector_postprocess(instances[0], height, width, mask_threshold=self.mask_thresh).to("cpu")
         if self.masker is not None and len(result) > 0:
             result.pred_masks = self.masker.masks(rgb, result.pred_boxes.tensor)
-        return result, result.scores.max().item() if len(result) > 0 else 0.0
+        return result

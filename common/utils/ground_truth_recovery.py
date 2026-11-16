@@ -9,6 +9,7 @@ import torch
 from detectron2.structures import Instances
 from pycocotools import mask as mask_util
 
+from common.utils.coco_utils import encoded_masks
 from common.utils.eval_utils import GroundTruthObjects
 from common.utils.image_memory import ImageMemory
 from common.utils.projection_utils import viewing_angles
@@ -19,6 +20,7 @@ from common.utils.retrieval import RetrievedView, ViewSelection, greedy_coverage
 class GroundTruthView:
     frame_id: int
     object_id: int
+    class_id: int
     visibility: float
     rle: dict
 
@@ -31,15 +33,23 @@ class GroundTruthAnnotation:
     views: List[GroundTruthView]
 
 
-def encoded_masks(masks: torch.Tensor) -> List[dict]:
-    """RLE of each of the (N, H, W) masks."""
-    return mask_util.encode(np.asfortranarray(masks.permute(1, 2, 0).numpy().astype(np.uint8)))
-
-
 def encoded_views(frame_id: int, instances: Instances) -> List[GroundTruthView]:
     """One GroundTruthView per ground-truth instance of the frame (bbsgt infos), its mask RLE-encoded."""
     rles = encoded_masks(instances.gt_masks)
-    return [GroundTruthView(frame_id, info["object_id"], info["visibility_fraction"], rle) for info, rle in zip(instances.infos, rles)]
+    return [
+        GroundTruthView(frame_id, info["object_id"], class_id, info["visibility_fraction"], rle)
+        for info, class_id, rle in zip(instances.infos, instances.gt_classes.tolist(), rles)
+    ]
+
+
+def ground_truth_frame(views: List[GroundTruthView], image_size: tuple) -> Instances:
+    """One frame's ground truth from its views (encoded_views), as sense.ground_truth_instances gave it: masks, classes and
+    object ids."""
+    ground_truth = Instances(image_size)
+    ground_truth.gt_masks = torch.from_numpy(mask_util.decode([view.rle for view in views])).permute(2, 0, 1).bool()
+    ground_truth.gt_classes = torch.tensor([view.class_id for view in views], dtype=torch.long)
+    ground_truth.infos = [{"object_id": view.object_id} for view in views]
+    return ground_truth
 
 
 def recover_drop_fp(views: List[RetrievedView], matches: Dict[int, int]) -> List[RetrievedView]:

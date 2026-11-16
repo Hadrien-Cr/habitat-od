@@ -1,0 +1,3 @@
+# mean_teacher.py's Mean-Teacher on the embodied-SL reference's settings, on the gt++ variant's frames (the others' superset)
+# without its labels
+_BASE_: "r50_procthor8_embodied_sl_gt++.yaml"

@@ -9,7 +9,7 @@ habitat_od_search/logs/enhanced_detector/<scene_id>/<category>/:
   target also lands off-center, where the wide field of view stretches it as in exploration frames). Up to _N_VIEWS
   views where it passes the ground-truth area/visibility filters, spread over that order, are kept: a crop each in
   gt_crops/, the Detic region embedding of its ground-truth box (Detector.box_embeddings) in gt_features.npz, and
-  a gt_views.png mosaic of the crops.
+  gt_views.png / gt_frames.png mosaics of the crops and of the boxed frames.
 - Collected boxes: the scene is rebuilt with every object, and _N_POSES_PER_ANCHOR random poses are drawn around each of
   _N_ANCHORS anchors: object_anchors (every object of the target's class, or _N_ANCHORS k-means centroids of them when
   there are more), filled up by covering_anchors (farthest-point picks among random navigable points) when fewer --
@@ -24,8 +24,8 @@ habitat_od_search/logs/enhanced_detector/<scene_id>/<category>/:
 - Matching: query_matches.png ranks the collected region embeddings, as their crops, for the gt views' mean and max
   ensemble (normalized mean embedding; first tile, the mean crop; and each collected box's highest similarity to any
   of them; first tile, the pixel-wise max crop), every web image, the web images' own mean and max ensemble, and
-  Detic's own text embedding of the full category string (Vocabulary.clip_embeddings; first tile blank), _TOP_K per
-  row.
+  Detic's own text embedding of the full category string (Vocabulary.clip_embeddings; first tile blank; scored
+  sigmoid(_TEXT_TEMPERATURE * cosine), as Detic's own classifier is, instead of the raw cosine), _TOP_K per row.
   save_threshold_matches saves one query_matches_thresh<threshold>.png per _SIMILARITY_THRESHOLDS value instead: every
   row lists every collected box at or above that threshold (as Detector.predict_target would flag it), ranked by
   similarity and capped at _MAX_COLS - 1 per row.
@@ -55,6 +55,7 @@ from habitat_sim.utils.common import quat_from_angle_axis
 from icrawler.builtin import BingImageCrawler
 from omegaconf import DictConfig, OmegaConf
 from scipy.cluster.vq import kmeans2
+from scipy.special import expit
 from PIL import Image
 from tqdm import tqdm
 
@@ -87,7 +88,8 @@ _CROP_SIZE = 512
 _FRAME_SIZE = 1024
 _TOP_K = 5
 _SIMILARITY_THRESHOLDS = (0.5, 0.6, 0.7, 0.8, 0.9)
-_MAX_COLS = 32
+_TEXT_TEMPERATURE = 15.0
+_MAX_COLS = 15
 _N_SCRAPED = 8
 _UP = np.array([0.0, 1.0, 0.0])
 _RIGHT = np.array([1.0, 0.0, 0.0])
@@ -184,16 +186,30 @@ def goal_views(env: ExplorationEnv, goal_id: int, mesh: trimesh.Trimesh, floor_y
     return views
 
 
+def boxed_frame(rgb: np.ndarray, box: List[int]) -> np.ndarray:
+    """rgb with the xyxy box drawn on it, letterboxed into a _FRAME_SIZE square."""
+    boxed = cv2.rectangle(rgb.copy(), tuple(box[:2]), tuple(box[2:]), _BOX_COLOR, max(rgb.shape[:2]) // 100)
+    return letterboxed(boxed, _FRAME_SIZE, _FRAME_SIZE)
+
+
 def save_features(path: Path, named_features: List[Tuple[str, np.ndarray]]) -> None:
     """Saves (name, (D,) embedding) pairs to the .npz path as a names array and an (N, D) features array."""
     np.savez(path, names=np.array([name for name, _ in named_features]), features=np.stack([feature for _, feature in named_features]))
 
 
 def save_gt_views(cfg: DictConfig, target: Target, detector: Detector, scene_dir: Path) -> None:
-    """Removes every object but target's from its scene, then saves each goal object's spread goal_views to scene_dir:
-    one object_crop each in gt_crops/, its box's detector region embedding in gt_features.npz, and every goal's
-    crops' mosaic as gt_views.png."""
+    """save_cleared_scene_views of target in a fresh env of its scene, closed even when a goal has no view."""
     env, habitat_cfg = build_env(target.scene_id, cfg.seed, cfg.agent.max_steps, cfg.object_params, cfg.agent.input_image_size)
+    try:
+        save_cleared_scene_views(env, habitat_cfg, target, detector, scene_dir)
+    finally:
+        env.close()
+
+
+def save_cleared_scene_views(env: ExplorationEnv, habitat_cfg: DictConfig, target: Target, detector: Detector, scene_dir: Path) -> None:
+    """Removes every object but target's from env's scene, then saves each goal object's spread goal_views to scene_dir:
+    one object_crop each in gt_crops/, its box's detector region embedding in gt_features.npz, and every goal's
+    crops' and boxed_frames' mosaics as gt_views.png and gt_frames.png."""
     env.reset(episode=target.episode)
     handles = {obj.object_id: obj.handle for obj in get_all_objects(env.get_sim()) if obj.handle in target.goal_handles}
     meshes = goal_meshes(env, set(handles))
@@ -204,7 +220,7 @@ def save_gt_views(cfg: DictConfig, target: Target, detector: Detector, scene_dir
     camera_height = agent_cfg.sim_sensors.rgb_sensor.position[1]
     crops_dir = scene_dir / "gt_crops"
     crops_dir.mkdir(parents=True, exist_ok=True)
-    named_features, crops = [], []
+    named_features, crops, frames = [], [], []
     for goal_id, _, mesh in meshes:
         views = goal_views(env, goal_id, mesh, floor_y, camera_height)
         assert views, f"{handles[goal_id]} is visible from none of its camera poses"
@@ -213,10 +229,11 @@ def save_gt_views(cfg: DictConfig, target: Target, detector: Detector, scene_dir
             name = f"{handles[goal_id]}_view{index:02d}"
             crops.append((label, object_crop(rgb, box)))
             Image.fromarray(crops[-1][1]).save(crops_dir / f"{name}.png")
+            frames.append((label, boxed_frame(rgb, box)))
             named_features.append((name, detector.box_embeddings(rgb, np.array([box]))[0].numpy()))
     save_features(scene_dir / "gt_features.npz", named_features)
     make_mosaic(crops).save(scene_dir / "gt_views.png")
-    env.close()
+    make_mosaic(frames).save(scene_dir / "gt_frames.png")
 
 
 def save_box_crops(detector: Detector, rgb: np.ndarray, crops_dir: Path, pose: int) -> List[Tuple[str, np.ndarray]]:
@@ -300,8 +317,8 @@ def ensemble_rows(name: str, queries: List[Tuple[str, np.ndarray]], query_embedd
 
 def query_rows(scene_dir: Path, category: str) -> Tuple[List[Tuple[str, np.ndarray]], np.ndarray, List[Tuple[str, np.ndarray]]]:
     """Every query (gt views' mean/max ensembles, scraped web crops and their mean/max ensembles, category's text) as
-    (name, crop) tiles, their (Q, M) similarities to collected_features.npz's region embeddings, and those embeddings'
-    own (name, crop) tiles."""
+    (name, crop) tiles, their (Q, M) similarities to collected_features.npz's region embeddings (the text's as
+    sigmoid(_TEXT_TEMPERATURE * cosine)), and those embeddings' own (name, crop) tiles."""
     gt, gt_embeddings = load_named_features(scene_dir / "gt_features.npz", scene_dir / "gt_crops")
     web_scraped, web_scraped_embeddings = load_named_features(scene_dir / "scraped_features.npz", scene_dir / "scraped_crops")
     collected, collected_embeddings = load_named_features(scene_dir / "collected_features.npz", scene_dir / "collected_crops")
@@ -316,7 +333,7 @@ def query_rows(scene_dir: Path, category: str) -> Tuple[List[Tuple[str, np.ndarr
         gt_similarities,
         web_scraped_embeddings @ collected_embeddings.T,
         web_similarities,
-        text_embedding / np.linalg.norm(text_embedding) @ collected_embeddings.T,
+        expit(_TEXT_TEMPERATURE * (text_embedding / np.linalg.norm(text_embedding) @ collected_embeddings.T)),
     ])
     return queries, similarities, collected
 
@@ -416,7 +433,7 @@ def save_scraped_views(scene_dir: Path, detector: Detector, category: str) -> No
     """Downloads up to _N_SCRAPED Bing Images results for the full category string to scene_dir/scraped_imgs/<category>/
     (download_google_images), then saves each image's largest_target_box for category's main category text embedding as
     an object_crop in scraped_crops/ and its region embedding in scraped_features.npz, and mosaics of every crop
-    (scraped_views.png) and of every image with its box drawn, fitted into a _FRAME_SIZE square (scraped_frames.png)."""
+    (scraped_views.png) and of every image's boxed_frame (scraped_frames.png)."""
     download_google_images(category, _N_SCRAPED, str(scene_dir / "scraped_imgs"))
     coarse = main_category(category)
     target_embedding = Vocabulary(f"search_{coarse}", (coarse,)).clip_embeddings()[:, 0]
@@ -429,8 +446,7 @@ def save_scraped_views(scene_dir: Path, detector: Detector, category: str) -> No
         crops.append((path.stem, object_crop(rgb, box)))
         Image.fromarray(crops[-1][1]).save(crops_dir / f"{path.stem}.png")
         named_features.append((path.stem, feature))
-        boxed = cv2.rectangle(rgb.copy(), tuple(box[:2]), tuple(box[2:]), _BOX_COLOR, max(rgb.shape[:2]) // 100)
-        frames.append((path.stem, letterboxed(boxed, _FRAME_SIZE, _FRAME_SIZE)))
+        frames.append((path.stem, boxed_frame(rgb, box)))
     save_features(scene_dir / "scraped_features.npz", named_features)
     make_mosaic(crops).save(scene_dir / "scraped_views.png")
     make_mosaic(frames).save(scene_dir / "scraped_frames.png")

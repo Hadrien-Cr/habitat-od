@@ -1,0 +1,5 @@
+# Hyperparameters of habitat_embodied_sl/adapt.py's methods (NORM), on r50_detic.yaml's source model and procthor8's test set
+test_batch_size: 4    # norm: test frames of one scene per batch (Yoo et al.); source scores one frame at a time
+prior_strength: 128   # norm: N, the source statistics' weight in images (Yoo et al.)
+source_layers:        # norm: name suffixes of the BatchNorm layers kept at their source statistics, in student and teacher
+  - bottom_up.base.bn1  # the ResNet stem's, as Yoo et al.

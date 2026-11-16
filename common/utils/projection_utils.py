@@ -1,7 +1,7 @@
 import logging
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -9,12 +9,12 @@ import open3d as o3d
 import torch
 import torch.nn.functional as F
 import trimesh
+from threadpoolctl import ThreadpoolController
 from detectron2.structures import Instances
 from scipy import ndimage
 from scipy.spatial.kdtree import KDTree
 
 from common.env_utils.visibility_utils import mesh_visibility_fraction
-from common.utils.plot_utils import plot_semantic_2d_map
 
 log = logging.getLogger(__name__)
 
@@ -28,6 +28,8 @@ _MAX_WALLS = 3
 _MIN_RAYTRACED_FRACTION = 5e-4
 _FOOTPRINT_CLOSING_ITERATIONS = 2
 _KDTREE_WORKERS = 16  # workers=-1 starts one thread per core (192 here) per query, slower than 16 on a 640x640 frame
+_DBSCAN_THREADS = 8  # Open3D's DBSCAN otherwise starts one OpenMP thread per core for each detection's few hundred points
+_OPENMP = ThreadpoolController()
 TOPDOWN_MAP_SCALE = 8
 
 
@@ -179,7 +181,8 @@ def voxel_merge(clouds: List[Tuple[np.ndarray, np.ndarray]], voxel_size: float) 
 
 def dbscan_labels(points: np.ndarray, eps: float, min_points: int) -> np.ndarray:
     """Open3D DBSCAN cluster id of every point, -1 for noise."""
-    return np.array(o3d.geometry.PointCloud(o3d.utility.Vector3dVector(points)).cluster_dbscan(eps=eps, min_points=min_points))
+    with _OPENMP.limit(limits=_DBSCAN_THREADS, user_api="openmp"):
+        return np.array(o3d.geometry.PointCloud(o3d.utility.Vector3dVector(points)).cluster_dbscan(eps=eps, min_points=min_points))
 
 
 def largest_cluster_mask(points: np.ndarray, eps: float, min_points: int) -> np.ndarray:
@@ -231,28 +234,6 @@ def filled_footprint(pixels: np.ndarray, shape: tuple) -> np.ndarray:
     return ndimage.binary_fill_holes(ndimage.binary_closing(mask, iterations=_FOOTPRINT_CLOSING_ITERATIONS) | mask)
 
 
-def estimated_semantic_topdown(resolved: "ResolvedObjects", agent, classes: list, colors: list) -> np.ndarray:
-    """RGB top-down map of resolved's (world) objects, by class, over the agent's own explored-and-free belief map, in
-    its reference frame -- the fully agent-side counterpart to gt_semantic_topdown, built from EstimatedMap alone (no
-    ground truth)."""
-    estimated_map = agent.estimated_map
-    navigable = estimated_map.explored & ~estimated_map.obstacles.astype(bool)
-    pixels = estimated_map.to_pixels(agent.ref_frame_points(resolved.resolved_points))
-    inside = ((pixels >= 0) & (pixels < np.array(navigable.shape))).all(axis=1)
-    pixels, infos = pixels[inside], resolved.resolved_infos[inside]
-    object_classes = dict(zip(infos[:, 1], infos[:, 0]))
-    object_footprints = [
-        (object_classes[object_id], filled_footprint(pixels[infos[:, 1] == object_id], navigable.shape))
-        for object_id in object_classes
-    ]
-    image = plot_semantic_2d_map(
-        navigable, object_footprints, dict(enumerate(colors)), dict(enumerate(classes)),
-        meters_per_grid_pixel=estimated_map.meters_per_pixel, scale=TOPDOWN_MAP_SCALE, explored=estimated_map.explored,
-        text_color = (0, 0, 0)
-    )
-    return np.array(image)
-
-
 def mesh_footprint_on_grid(mesh: trimesh.Trimesh, shape: tuple, to_pixels) -> np.ndarray:
     """Top-down silhouette of mesh on a (shape) grid, via to_pixels (world xyz -> row, col): the union of
     its triangles' floor projections."""
@@ -262,19 +243,6 @@ def mesh_footprint_on_grid(mesh: trimesh.Trimesh, shape: tuple, to_pixels) -> np
     for triangle in triangles:
         cv2.fillConvexPoly(mask, triangle, 1) # type: ignore
     return mask > 0
-
-
-def gt_semantic_topdown(
-    meshes: List[Tuple[int, int, trimesh.Trimesh]], navigable: np.ndarray, to_pixels, meters_per_pixel: float, classes: list, colors: list,
-) -> np.ndarray:
-    """RGB top-down map of the silhouette of every (object id, class, world mesh) of meshes, by class, over the
-    ground-truth navmesh (navigable, e.g. env_base.gt_navigable_mask) -- entirely ground truth, no agent state."""
-    footprints = [(class_id, mesh_footprint_on_grid(mesh, navigable.shape, to_pixels)) for _, class_id, mesh in meshes]
-    image = plot_semantic_2d_map(
-        navigable, footprints, dict(enumerate(colors)), dict(enumerate(classes)), meters_per_grid_pixel=meters_per_pixel, scale=TOPDOWN_MAP_SCALE,
-        text_color = (255, 255, 255)
-    )
-    return np.array(image)
 
 
 def instance_masks_and_classes(instances: Instances) -> Tuple[torch.Tensor, torch.Tensor]:

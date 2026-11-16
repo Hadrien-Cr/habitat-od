@@ -17,13 +17,15 @@ Two entry points, both launched from the repo root with `PYTHONPATH=.`:
 - **`pretrain.py`** -- trains a plain detectron2 COCO architecture from scratch or a COCO
   checkpoint (e.g. `BoxSup-C2_L_CLIP_SwinB_896b32_4x`), on `coco_testbench`'s local COCO copy or
   any registered COCO dataset. Supports multi-GPU via `--num-gpus`.
-- **`train.py`** -- fine-tunes `habitat_embodied_sl/meta_arch.py`'s `CustomFT_Detic` on an
+- **`habitat_embodied_sl/main.py`** -- fine-tunes `habitat_embodied_sl/meta_arch.py`'s `CustomFT_Detic` on an
   `ObjectViewsDataset` (one of `habitat_embodied_sl/collect.py`'s collection train variants:
-  `pseudo`, `pseudo_gt_classes`, `recovered`), scored against that run's written test set (e.g.
-  `datasets/smoke_sl/test`). Single-GPU only.
+  `pseudo`, `gt`, `gt++`), scored against that run's written test set (e.g.
+  `datasets/procthor_medium/test`), also once before training (`InitialEvalHook`, logged at iteration 0). Each evaluation also saves its confusion matrix as `eval/<dataset>/confusion_matrix_iter<N>.png` (`ConfusionMatrixWriter`). Before
+  training it also logs to TensorBoard a bar chart of the train and test sets' annotation counts per class, each stacked by scene, then both stacked
+  (`ClassCountsWriter`, image `class_counts`, also saved as `class_counts.png` in the run's log folder). Single-GPU only.
 
 Both score against their test set via a training-time `EvalHook`. Dataset registration, the
-evaluator-wired `Trainer`, periodic TensorBoard image logging (`PeriodicImageWriter`), and
+evaluator-wired `Trainer`, periodic TensorBoard image logging (`PeriodicImageWriter`: ground truth as shaded boxes and one-class-per-box predictions as outlined boxes, on one frame under `images/`, on test frames, plus train frames for `main.py`), and
 final-checkpoint reporting are shared by both via `common/utils/detectron_trainer.py`.
 
 - **`evaluate.py`** -- standalone evaluation of a Detic config/checkpoint against a COCO test
@@ -31,14 +33,11 @@ final-checkpoint reporting are shared by both via `common/utils/detectron_traine
   `train_net.py` `do_test` and `COCOEvaluator`. Resets Detic's zero-shot classifier to the CLIP
   text embeddings of the split's categories.
 
-`habitat_embodied_sl/config/smoke_sl_ft.yaml` is a 100-iteration overlay on
-`finetune_detic_swinb.yaml` (same model/data shape, `SOLVER.MAX_ITER`/`WARMUP_ITERS`/
-`CHECKPOINT_PERIOD` and `TEST.EVAL_PERIOD` scaled down to fit), to check `train.py`'s fine-tuning
-loop runs end-to-end on `smoke_sl`'s small train/test split in minutes:
+`habitat_embodied_sl/config/r50_procthor8_embodied_sl_gt++.yaml` (the reference R50 fine-tune on the `gt++` variant, 1,000 iterations)
+and `config/procthor8_collection.yaml` are `main.py`'s defaults:
 
 ```bash
-PYTHONPATH=. python train.py --config smoke_sl.yaml \
-    --config-file habitat_embodied_sl/config/smoke_sl_ft.yaml --variant pseudo
+PYTHONPATH=. python habitat_embodied_sl/main.py
 ```
 
 # Object search (`habitat_od_search`)

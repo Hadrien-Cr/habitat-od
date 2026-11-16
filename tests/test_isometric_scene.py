@@ -1,7 +1,7 @@
 """
 Renders one isometric rgb|(rgb+semantic overlay) snapshot of an entire scene per dataset.
 
-Covers one HSSD-HAB, one Gibson-Semantic, one MP3D and two ProcTHOR-hab scenes on a raw
+Covers two scenes each of HSSD-HAB, Gibson-Semantic, MP3D and ProcTHOR-hab on a raw
 habitat_sim.Simulator (no habitat-lab Env/task). Each scene is skipped independently if its data
 isn't present.
 
@@ -40,11 +40,10 @@ _GIBSON_CONFIG = f"{HABITAT_DATA}/scene_datasets/gibson_semantic/gibson_semantic
 _PROCTHOR_CONFIG = f"{HABITAT_DATA}/scene_datasets/ai2thor-hab/ai2thor-hab/ai2thor-hab.scene_dataset_config.json" if HABITAT_DATA else None
 _MP3D_CONFIG = f"{HABITAT_DATA}/scene_datasets/mp3d/mp3d.scene_dataset_config.json" if HABITAT_DATA else None
 
-_HSSD_SCENE = "102816756"
-_GIBSON_SCENE = "Corozal"
-_MP3D_SCENE = "17DRP5sb8fy"
-_PROCTHOR_SCENE = "ProcTHOR-Train-0"
-_PROCTHOR_SCENE_2 = "ProcTHOR-Train-6340"  # multi-room house, exercises the ceiling-stripping across several rooms at once
+_HSSD_SCENES = ["102816756", "102344022"]
+_GIBSON_SCENES = ["Corozal", "Collierville"]
+_MP3D_SCENES = ["17DRP5sb8fy", "1LXtFkjw3qL"]
+_PROCTHOR_SCENES = ["ProcTHOR-Train-0", "ProcTHOR-Train-6340"]  # 6340 is multi-room, exercises ceiling-stripping across several rooms
 
 _RESOLUTION = [900, 900]
 _HFOV_DEG = 90.0
@@ -214,67 +213,57 @@ def _strip_ceiling_dataset_config(procthor_config: str, scene_id: str, out_dir: 
     not _HSSD_CONFIG or not os.path.exists(_HSSD_CONFIG),
     reason="requires HABITAT_DATA pointing at a real hssd-hab dataset (see INSTALL.MD)",
 )
-def test_hssd_isometric_scene():
-    sim = _load_sim(_HSSD_CONFIG, _HSSD_SCENE)
+@pytest.mark.parametrize("scene", _HSSD_SCENES)
+def test_hssd_isometric_scene(scene):
+    sim = _load_sim(_HSSD_CONFIG, scene)
     img = _isometric_rgb_and_overlay(sim)
     sim.close()
 
     os.makedirs(_TESTDUMP_DIR, exist_ok=True)
-    img.save(os.path.join(_TESTDUMP_DIR, f"hssd_{_HSSD_SCENE}_isometric.png"))
+    img.save(os.path.join(_TESTDUMP_DIR, f"hssd_{scene}_isometric.png"))
 
 
 @pytest.mark.skipif(
     not _GIBSON_CONFIG or not os.path.exists(_GIBSON_CONFIG),
     reason="requires HABITAT_DATA pointing at a real gibson_semantic dataset (see INSTALL.MD)",
 )
-def test_gibson_isometric_scene():
-    sim = _load_sim(_GIBSON_CONFIG, _GIBSON_SCENE)
+@pytest.mark.parametrize("scene", _GIBSON_SCENES)
+def test_gibson_isometric_scene(scene):
+    sim = _load_sim(_GIBSON_CONFIG, scene)
     img = _isometric_rgb_and_overlay(sim)
     sim.close()
 
     os.makedirs(_TESTDUMP_DIR, exist_ok=True)
-    img.save(os.path.join(_TESTDUMP_DIR, f"gibson_{_GIBSON_SCENE}_isometric.png"))
+    img.save(os.path.join(_TESTDUMP_DIR, f"gibson_{scene}_isometric.png"))
 
 
 @pytest.mark.skipif(
     not _MP3D_CONFIG or not os.path.exists(_MP3D_CONFIG),
     reason="requires HABITAT_DATA pointing at a real mp3d dataset (see INSTALL.MD)",
 )
-def test_mp3d_isometric_scene():
-    sim = _load_sim(_MP3D_CONFIG, _MP3D_SCENE)
+@pytest.mark.parametrize("scene", _MP3D_SCENES)
+def test_mp3d_isometric_scene(scene):
+    sim = _load_sim(_MP3D_CONFIG, scene)
     img = _isometric_rgb_and_overlay(sim)
     sim.close()
 
     os.makedirs(_TESTDUMP_DIR, exist_ok=True)
-    img.save(os.path.join(_TESTDUMP_DIR, f"mp3d_{_MP3D_SCENE}_isometric.png"))
+    img.save(os.path.join(_TESTDUMP_DIR, f"mp3d_{scene}_isometric.png"))
 
 
 @pytest.mark.skipif(
     not _PROCTHOR_CONFIG or not os.path.exists(_PROCTHOR_CONFIG),
     reason="requires HABITAT_DATA pointing at a real ai2thor-hab/ProcTHOR dataset (see INSTALL.MD)",
 )
-def test_procthor_isometric_scene():
-    dataset_config, scene_id = _strip_ceiling_dataset_config(_PROCTHOR_CONFIG, _PROCTHOR_SCENE, _PROCTHOR_NOCEIL_DIR)
+@pytest.mark.parametrize("scene", _PROCTHOR_SCENES)
+def test_procthor_isometric_scene(scene):
+    dataset_config, scene_id = _strip_ceiling_dataset_config(_PROCTHOR_CONFIG, scene, _PROCTHOR_NOCEIL_DIR)
     sim = _load_sim(dataset_config, scene_id)
     img = _isometric_rgb_and_overlay(sim)
     sim.close()
 
     os.makedirs(_TESTDUMP_DIR, exist_ok=True)
-    img.save(os.path.join(_TESTDUMP_DIR, f"procthor_{_PROCTHOR_SCENE}_isometric.png"))
-
-
-@pytest.mark.skipif(
-    not _PROCTHOR_CONFIG or not os.path.exists(_PROCTHOR_CONFIG),
-    reason="requires HABITAT_DATA pointing at a real ai2thor-hab/ProcTHOR dataset (see INSTALL.MD)",
-)
-def test_procthor_isometric_scene_multiroom():
-    dataset_config, scene_id = _strip_ceiling_dataset_config(_PROCTHOR_CONFIG, _PROCTHOR_SCENE_2, _PROCTHOR_NOCEIL_DIR)
-    sim = _load_sim(dataset_config, scene_id)
-    img = _isometric_rgb_and_overlay(sim)
-    sim.close()
-
-    os.makedirs(_TESTDUMP_DIR, exist_ok=True)
-    img.save(os.path.join(_TESTDUMP_DIR, f"procthor_{_PROCTHOR_SCENE_2}_isometric.png"))
+    img.save(os.path.join(_TESTDUMP_DIR, f"procthor_{scene}_isometric.png"))
 
 
 if __name__ == "__main__":

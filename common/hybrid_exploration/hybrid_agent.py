@@ -12,7 +12,7 @@ from common.hybrid_exploration.exploration_map import EstimatedMap, MapConfig
 from common.hybrid_exploration.object_tracker import ObjectTracker
 from common.hybrid_exploration.object_viewpoints import Candidate, ObjectBelief, footprint, sector_positions
 from common.hybrid_exploration.plotting import draw_goal_map, draw_in_view, draw_objects
-from common.utils.concept_graph import FrameDetections
+from common.utils.concept_graph import ProcessedFrame
 from common.utils.projection_utils import DepthCamera
 
 _VISITED_COLOR = (0, 0, 255)  # BGR -- red, matching BaseExplorationAgent's trajectory color
@@ -87,7 +87,7 @@ class HybridFrontierAgent(BaseExplorationAgent):
         self._goal_map = None
         self._successive_collisions = 0
 
-    def update_detections(self, frame: FrameDetections) -> None:
+    def update_detections(self, frame: ProcessedFrame) -> None:
         """Tracks frame's lifted (world) detections; the tracked objects, in the reference frame, become the ones to inspect."""
         self.tracker.update(frame)
         self.objects = {

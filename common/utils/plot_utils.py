@@ -1,11 +1,15 @@
 import json
+from itertools import combinations
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Union
 
 from matplotlib.pyplot import text
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.text import Text
 from PIL import Image, ImageDraw
+from scipy.cluster.hierarchy import fcluster, leaves_list, linkage
+from sklearn.manifold import TSNE
 import cv2
 from detectron2.utils.visualizer import Visualizer as DetVisualizer
 from detectron2.utils.visualizer import ColorMode
@@ -18,6 +22,7 @@ from common.hybrid_exploration.plotting import plot_occupancy
 # Fixed-order categorical hues (validated for CVD/contrast) -- reused as-is,
 # never cycled per-key, so the same slot always means the same series.
 _SERIES_COLORS = ["#2a78d6", "#008300", "#e87ba4", "#eda100"]
+_CLUSTER_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"]
 _TILE_BORDER_COLOR = (255, 255, 0)
 _TILE_BORDER_THICKNESS = 2
 
@@ -88,6 +93,168 @@ def plot_metrics(metrics_json: Path, out_path: Path, keys: Optional[list[str]] =
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
     return out_path
+
+
+def class_ap_history(metrics_json: Path) -> tuple[list[int], dict[str, np.ndarray]]:
+    """(each evaluation's iteration, {class: its AP50 at each evaluation}) of a run's metrics_json."""
+    evaluations = [record for record in load_metrics(metrics_json) if "bbox/AP" in record]
+    class_keys = [key for key in evaluations[0] if key.startswith("bbox/AP50-")]
+    aps = {key[len("bbox/AP50-"):]: np.array([evaluation[key] for evaluation in evaluations]) for key in class_keys}
+    return [evaluation["iteration"] for evaluation in evaluations], aps
+
+
+def plot_class_ap(iterations: list[int], class_aps: dict[str, np.ndarray], out_path: Path) -> Path:
+    """Heatmap of each class's AP50 (row) at each evaluation (column), written in its cell, rows sorted by their change
+    since the first."""
+    ordered = sorted(class_aps.items(), key=lambda item: item[1][-1] - item[1][0])
+    fig, ax = plt.subplots(figsize=(2.5 + 0.6 * len(iterations), 0.22 * len(ordered) + 1.2))
+    values = np.stack([aps for _, aps in ordered])
+    image = ax.imshow(values, cmap="viridis", vmin=0, vmax=100, aspect="auto")
+    _annotate_cells(image, values, fontsize=6)
+    ax.set_xticks(np.arange(len(iterations)), iterations, fontsize=7)
+    ax.set_yticks(np.arange(len(ordered)), [f"{name} ({aps[-1] - aps[0]:+.1f})" for name, aps in ordered], fontsize=7)
+    ax.set_xlabel("iteration")
+    fig.colorbar(image, ax=ax, label="AP50")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    return out_path
+
+
+def plot_box_areas(split_areas: dict[str, np.ndarray], out_path: Path) -> Path:
+    """Each split's histogram of box side sqrt(area), with COCO's small/medium/large bounds and shares."""
+    fig, ax = plt.subplots(figsize=(6, 3.5))
+    bins = np.geomspace(4, 2048, 40)
+    for index, (split, areas) in enumerate(split_areas.items()):
+        shares = np.histogram(areas, bins=[0, 32 ** 2, 96 ** 2, np.inf])[0] / len(areas)
+        label = f"{split} ({len(areas)}): " + "/".join(f"{share:.0%}" for share in shares) + " S/M/L"
+        ax.hist(np.sqrt(areas), bins=bins, density=True, histtype="step", linewidth=2, color=_SERIES_COLORS[index], label=label)
+    for bound in (32, 96):
+        ax.axvline(bound, color="gray", linestyle="--", linewidth=1)
+    ax.set_xscale("log")
+    ax.set_xlabel("box side sqrt(area), pixels")
+    ax.legend(fontsize=7)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    return out_path
+
+
+def plot_embedding_tsne(embeddings: np.ndarray, names: list[str], out_path: Path) -> Path:
+    """t-SNE of embeddings' (N, D) rows by cosine distance, each point labelled by its name (labels pushed apart until
+    none overlap) and colored by its group in the cosine Ward tree cut into len(_CLUSTER_COLORS) groups."""
+    points = TSNE(perplexity=min(15, len(names) - 1), metric="cosine", init="pca", random_state=0).fit_transform(embeddings)
+    groups = fcluster(_cosine_linkage(embeddings), len(_CLUSTER_COLORS), criterion="maxclust")
+    fig, ax = plt.subplots(figsize=(16, 16))
+    for group in np.unique(groups):
+        ax.scatter(*points[groups == group].T, s=24, zorder=4, color=_CLUSTER_COLORS[group - 1], label=f"group {group} ({(groups == group).sum()})")
+    ax.legend(loc="upper left", fontsize=8, title="cosine Ward group", title_fontsize=8)
+    labels = [
+        ax.annotate(name, point, xytext=(0, 4), textcoords="offset points", fontsize=7, ha="center", va="bottom", annotation_clip=False,
+                    arrowprops=dict(arrowstyle="-", linewidth=0.5, color="0.6", shrinkA=0, shrinkB=5))
+        for point, name in zip(points, names)
+    ]
+    ax.set_xticks([])
+    ax.set_yticks([])
+    _separate_labels(fig, labels)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+def _separate_labels(fig, labels: list, max_steps: int = 500) -> None:
+    """Shifts each overlapping pair of labels apart along the axis they overlap least on, until no two text boxes overlap."""
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    points_per_pixel = 72 / fig.dpi
+    for _ in range(max_steps):
+        boxes = [Text.get_window_extent(label, renderer) for label in labels]
+        pairs = [(first, second) for first, second in combinations(range(len(labels)), 2) if boxes[first].overlaps(boxes[second])]
+        if not pairs:
+            return
+        for first, second in pairs:
+            shift = _separating_shift(boxes[first], boxes[second]) * points_per_pixel / 2
+            labels[first].xyann = tuple(np.add(labels[first].xyann, -shift))
+            labels[second].xyann = tuple(np.add(labels[second].xyann, shift))
+
+
+def _separating_shift(first, second) -> np.ndarray:
+    """The pixel shift moving second off first along the axis they overlap least on, with a 1-pixel margin."""
+    overlap = np.array([min(first.x1, second.x1) - max(first.x0, second.x0), min(first.y1, second.y1) - max(first.y0, second.y0)]) + 1
+    direction = np.where(np.array([second.x0 + second.x1 - first.x0 - first.x1, second.y0 + second.y1 - first.y0 - first.y1]) >= 0, 1, -1)
+    axis = int(np.argmin(overlap))
+    return np.eye(2)[axis] * overlap[axis] * direction[axis]
+
+
+def plot_similarity_triangle(embeddings: np.ndarray, names: list[str], out_path: Path) -> Path:
+    """Lower triangle of embeddings' (N, D) rows' pairwise cosine similarity × 100, written in each cell and colored over
+    its off-diagonal range, rows ordered by the cosine Ward tree's leaves so similar ones form blocks along the diagonal."""
+    order = leaves_list(_cosine_linkage(embeddings))
+    names = [names[index] for index in order]
+    unit = embeddings[order] / np.linalg.norm(embeddings[order], axis=1, keepdims=True)
+    similarity = np.ma.masked_where(np.triu(np.ones((len(names), len(names)), dtype=bool)), 100 * unit @ unit.T)
+    fig, ax = plt.subplots(figsize=(0.2 * len(names) + 3, 0.2 * len(names) + 2))
+    image = ax.imshow(similarity, cmap="Blues", interpolation="nearest")
+    _annotate_cells(image, similarity, fontsize=3.5)
+    ax.set_xticks(np.arange(len(names)), names, rotation=90, fontsize=6)
+    ax.set_yticks(np.arange(len(names)), names, fontsize=6)
+    ax.spines[["top", "right"]].set_visible(False)
+    fig.colorbar(image, ax=ax, shrink=0.5, label="cosine similarity × 100")
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
+    return out_path
+
+
+def _annotate_cells(image, values: np.ndarray, fontsize: float) -> None:
+    """Writes each unmasked, non-NaN cell's value, rounded, at its center, in black or white by its color's luminance."""
+    for (row, column), value in np.ndenumerate(np.ma.filled(values.astype(float), np.nan)):
+        if np.isnan(value):
+            continue
+        red, green, blue, _ = image.cmap(image.norm(value))
+        color = "black" if 0.299 * red + 0.587 * green + 0.114 * blue > 0.5 else "white"
+        image.axes.text(column, row, f"{value:.0f}", ha="center", va="center", fontsize=fontsize, color=color)
+
+
+def _cosine_linkage(embeddings: np.ndarray) -> np.ndarray:
+    """Ward linkage of embeddings' L2-normalized rows, whose Euclidean distance is monotonic in their cosine distance."""
+    return linkage(embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True), method="ward")
+
+
+def plot_class_counts(counts: dict[str, dict[str, np.ndarray]], classes: list[str]) -> np.ndarray:
+    """RGB image of one horizontal bar chart per split of its count per class, stacked by scene, then one of
+    every split's total stacked, side by side on a shared class axis."""
+    fig, axes = plt.subplots(1, len(counts) + 1, figsize=(5 * (len(counts) + 1), 0.18 * len(classes) + 1), sharey=True, squeeze=False)
+    totals = {
+        split: _stacked_barh(ax, scene_counts, plt.get_cmap("BuPu" if split == "train" else "GnBu")(np.linspace(0.5, 1.0, len(scene_counts))))
+        for ax, (split, scene_counts) in zip(axes.flat, counts.items())
+    }
+    _stacked_barh(axes[0, -1], totals, _SERIES_COLORS)
+    titles = [*counts, " + ".join(counts)]
+    for ax, title, total in zip(axes.flat, titles, [*totals.values(), sum(totals.values())]):
+        ax.set_title(f"{title} ({int(total.sum())})", fontsize=9)
+        ax.set_xlabel("count")
+        ax.grid(True, axis="x", alpha=0.3)
+    axes[0, 0].set_yticks(np.arange(len(classes)), classes, fontsize=7)
+    axes[0, 0].set_ylim(len(classes) - 0.5, -0.5)
+    fig.tight_layout()
+    fig.canvas.draw()
+    image = np.asarray(fig.canvas.buffer_rgba())[:, :, :3].copy()
+    plt.close(fig)
+    return image
+
+
+def _stacked_barh(ax, series_counts: dict[str, np.ndarray], colors: list) -> np.ndarray:
+    """Draws series_counts on ax as horizontal bars stacked per class, with a legend; returns their per-class total."""
+    stacked = np.zeros(len(next(iter(series_counts.values()))))
+    for index, (series, counts) in enumerate(series_counts.items()):
+        ax.barh(np.arange(len(stacked)), counts, left=stacked, color=colors[index % len(colors)], label=series)
+        stacked = stacked + counts
+    ax.legend(fontsize=6, loc="lower right")
+    return stacked
+
 
 def plot_al_history(history: list[dict], out_path: Path) -> Path:
     rounds, maps = [], []
@@ -267,6 +434,21 @@ def plot_segmentation_gt(rgb: np.ndarray, gt_instances, classes: list[str], colo
     return im
 
 
+def plot_boxes_overlay(rgb: np.ndarray, gt_instances, pred_instances, metadata: Metadata, scale: float) -> Image.Image:
+    """rgb resized by scale, gt_instances' boxes shaded and labelled `gt=<class>` under them, pred_instances' boxes
+    outlined and labelled `<class> <score>` inside their top, each in its class's metadata.thing_colors."""
+    visualizer = DetVisualizer(rgb, scale=scale)
+    for (x1, y1, x2, y2), class_id in zip(gt_instances.gt_boxes.tensor.tolist(), gt_instances.gt_classes.tolist()):
+        color = np.array(metadata.thing_colors[class_id]) / 255
+        visualizer.draw_polygon([[x1, y1], [x2, y1], [x2, y2], [x1, y2]], color, edge_color=color, alpha=0.35)
+        visualizer.draw_text(f"gt={metadata.thing_classes[class_id]}", (x1, y2), color=color, horizontal_alignment="left")
+    for box, class_id, score in zip(pred_instances.pred_boxes.tensor.tolist(), pred_instances.pred_classes.tolist(), pred_instances.scores.tolist()):
+        color = np.array(metadata.thing_colors[class_id]) / 255
+        visualizer.draw_box(box, alpha=1.0, edge_color=color)
+        visualizer.draw_text(f"{metadata.thing_classes[class_id]} {score:.2f}", (box[0], box[1]), color=color, horizontal_alignment="left")
+    return Image.fromarray(visualizer.output.get_image())
+
+
 def plot_segmentation(
     rgb: np.ndarray, 
     pred_instances, 
@@ -413,6 +595,9 @@ def chunked(items: list, size: Optional[int]) -> list[list]:
     """items in consecutive chunks of at most size each, or one chunk of them all without size."""
     step = size or max(len(items), 1)
     return [items[start:start + step] for start in range(0, len(items), step)]
+
+
+MAX_MOSAIC_ROWS = 32
 
 
 def save_mosaic_parts(mosaics: list[Image.Image], out_path: Path) -> None:

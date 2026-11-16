@@ -55,7 +55,7 @@ def explored_frames(scene: str, cfg: DictConfig, classes: list, image_size: int)
     evaluation, object_params, frontier_agent = cfg.evaluation, cfg.object_params, cfg.frontier_agent
     env, habitat_cfg = build_env(scene, cfg.seed, frontier_agent.steps, object_params, image_size)
     rng = np.random.default_rng(cfg.seed)
-    agent = build_agent("fbe", rng, env, habitat_cfg, frontier_agent.visibility_dist_m, str(constants.DATASET_ROOT / cfg.run_name / "planner_dumps"), scene)
+    agent = build_agent("fbe", rng, env, habitat_cfg, frontier_agent.visibility_dist_m, str(constants.DATASET_ROOT / cfg.run_name / scene), "planner")
     obs = env.reset(env.episodes[0], rng=rng)
     agent.reset(env.get_agent_state(), env.get_agent_state().position[1] - env.navmesh_floor_offset())
     vocabulary = resolve_classes(object_params.env_name, object_params.vocab_name)

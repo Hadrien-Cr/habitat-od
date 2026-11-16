@@ -218,28 +218,22 @@ CLASS_LABELS_COCO80 = [
 ]
 
 PROCTHOR_NATIVE_VOCAB = "PROCTHOR100"
-# ProcTHOR-hab's native categories (configs/object_semantic_id_mapping.json, in its id order), its state and size
-# variants (AppleSliced, SoapBottleFilled, PaintingSmall, ...) folded into their base class
+# ProcTHOR-hab's native categories (configs/object_semantic_id_mapping.json, in its id order), its state and size variants
 PROCTHOR_VARIANT_SUFFIXES = ("Sliced", "Cracked", "Filled", "Full", "Dirty", "Empty", "Small", "Medium", "Large")
 
-# PROCTHOR100: the subset of ProcTHOR-hab's native categories that are ever actually placed
-# by the procedural generator across all 12000 ProcTHOR scenes (Train+Val+Test) - the other
-# ~54 native categories (e.g. cabinet, mirror, shelf) exist in object_semantic_id_mapping.json
-# and are placed by iTHOR/RoboTHOR/ArchitecTHOR's hand-authored scenes, but never by ProcTHOR's
-# generator itself. CLIP tokenizes a run-together CamelCase name into meaningless subwords, so
-# the vocabulary is spaced lowercase.
+# PROCTHOR100: the subset of ProcTHOR-hab's native categories with (occurence in 12000 procthor scenes > 0)
 CLASS_LABELS_PROCTHOR100 = [
-    "unknown", "apple", "tomato", "bread", "sink", "pot", "pan", "knife", "fork", "spoon", "bowl", "toaster",
-    "coffee machine", "microwave", "fridge", "egg", "chair", "lettuce", "potato", "mug", "plate", "dining table",
-    "counter top", "garbage can", "cup", "butter knife", "statue", "television", "house plant", "tissue box",
-    "vacuum cleaner", "painting", "laptop", "remote control", "box", "newspaper", "key chain", "cell phone",
-    "credit card", "cloth", "candle", "toilet", "plunger", "toilet paper", "soap bottle", "soap bar", "spray bottle",
-    "bed", "book", "alarm clock", "pen", "pencil", "watch", "arm chair", "baseball bat", "basket ball", "faucet",
-    "boots", "bottle", "dish sponge", "floor lamp", "kettle", "laundry hamper", "ottoman", "paper towel roll",
-    "pepper shaker", "salt shaker", "safe", "sofa", "spatula", "teddy bear", "tennis racket", "vase", "dresser",
-    "desk", "side table", "pillow", "cart", "desk lamp", "window", "ladle", "wine bottle", "tv stand", "coffee table",
-    "shelving unit", "dog bed", "dumbbell", "table top decor", "room decor", "stool", "garbage bag", "desktop",
-    "doorway", "washing machine", "clothes dryer", "doorframe",
+    "unknown", "alarm clock", "apple", "arm chair", "baseball bat", "basket ball", "bed", "book", "boots", "bottle",
+    "bowl", "box", "bread", "butter knife", "candle", "cart", "cell phone", "chair", "cloth", "clothes dryer",
+    "coffee machine", "coffee table", "counter top", "credit card", "cup", "desk", "desk lamp", "desktop",
+    "dining table", "dish sponge", "dog bed", "doorframe", "doorway", "dresser", "dumbbell", "egg", "faucet",
+    "floor lamp", "fork", "fridge", "garbage bag", "garbage can", "house plant", "kettle", "key chain", "knife",
+    "ladle", "laptop", "laundry hamper", "lettuce", "microwave", "mug", "newspaper", "ottoman", "painting", "pan",
+    "paper towel roll", "pen", "pencil", "pepper shaker", "pillow", "plate", "plunger", "pot", "potato",
+    "remote control", "room decor", "safe", "salt shaker", "shelving unit", "side table", "sink", "soap bar",
+    "soap bottle", "sofa", "spatula", "spoon", "spray bottle", "statue", "stool", "table top decor", "teddy bear",
+    "television", "tennis racket", "tissue box", "toaster", "toilet", "toilet paper", "tomato", "tv stand",
+    "vacuum cleaner", "vase", "washing machine", "watch", "window", "wine bottle",
 ]
 
 PROCTHOR_NATIVE_TO_CLASS = {

@@ -14,7 +14,7 @@ from common.agents.base_exploration_agent import BaseExplorationAgent
 from common.hybrid_exploration.discrete_planner import DiscretePlanner
 from common.hybrid_exploration.exploration_map import EstimatedMap, MapConfig
 from common.hybrid_exploration.hybrid_agent import HybridFrontierAgent
-from common.utils.plot_utils import chunked, centered_crop, letterboxed, make_mosaic, rows_mosaic, save_mosaic_parts, save_tile
+from common.utils.plot_utils import MAX_MOSAIC_ROWS, chunked, centered_crop, letterboxed, make_mosaic, rows_mosaic, save_mosaic_parts, save_tile
 from common.utils.projection_utils import DepthCamera
 
 
@@ -117,9 +117,9 @@ def exploration_snapshot(
         ("ground truth", np.ascontiguousarray(gt_map)),
     ]])
 
-def save_predictions_mosaic(prediction_tiles: list, out_dir: Path, max_rows: Optional[int] = None) -> None:
+def save_predictions_mosaic(prediction_tiles: list, out_dir: Path, max_rows: Optional[int] = MAX_MOSAIC_ROWS) -> None:
     """out_dir/predictions_mosaic.png of every step's prediction tile, _PREDICTION_COLS per row, split into parts of at
-    most max_rows rows (save_mosaic_parts)."""
+    most max_rows rows (save_mosaic_parts), unsplit when max_rows is None."""
     parts = chunked(prediction_tiles, max_rows and max_rows * _PREDICTION_COLS)
     save_mosaic_parts([make_mosaic(tiles, N_cols=_PREDICTION_COLS) for tiles in parts], out_dir / "predictions_mosaic.png")
 

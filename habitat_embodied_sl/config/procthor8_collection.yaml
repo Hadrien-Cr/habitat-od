@@ -1,6 +1,8 @@
 # Collection config for habitat_embodied_sl/collect.py (see ../README.md): writes datasets/<run_name>/<variant>/.
-# collection_procthor_medium.yaml's settings on its 2-room ProcTHOR-Train-5 house alone, for quick checks of the pipeline.
-run_name: procthor_small
+# Collected one collect.py call per scene (../README.md, Running): the first 8 ProcTHOR-Train houses of 2 to 3 rooms
+# (counted from their stage's room names), ProcTHOR-Train-5, -6, -9, -11, -14, -26, -30 and -32, into the train sets,
+# ProcTHOR-Val-0 to -7 into the test set.
+run_name: procthor_medium
 seed: 0
 
 object_params:
@@ -14,12 +16,10 @@ object_params:
 collection:
   steps_per_scene: 1000
   k_retrieval: 10
-  scenes: ["ProcTHOR-Train-5"]
 
 evaluation:
   frames_per_scene: 50
   downsampling: 4
-  scenes: []
 
 frontier_agent:
   visibility_dist_m: 3.0

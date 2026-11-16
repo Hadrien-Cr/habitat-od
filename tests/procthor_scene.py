@@ -1,5 +1,5 @@
 """
-ProcTHOR-hab's ProcTHOR-Train-0, the first collection scene of habitat_embodied_sl/config/collection_procthor.yaml, on a
+ProcTHOR-hab's ProcTHOR-Train-0, a ProcTHOR-Train scene as in habitat_embodied_sl/config/procthor8_collection.yaml, on a
 raw habitat_sim.Simulator shared by the tests: rgb, semantic and depth cameras, lit and sky-painted as ExplorationEnv
 does, its navmesh recomputed (ProcTHOR-hab ships none) and its objects labelled with setup_semantic_labels' object_id *
 1000 + class_id semantic ids. The recomputed navmesh also covers the roof; every agent run starts from the same

@@ -16,7 +16,7 @@ from common.hybrid_exploration.ground_truth_map import GroundTruthMapTracker
 from common.utils.plot_utils import save_gif
 from common.vision.detic import Vocabulary, get_clip_embeddings, build_text_encoder # type: ignore
 from common.vision.detector import Detector
-from habitat_od_search.search_agent import SearchAgent, SearchAgentConfig, DiscretePlannerConfig
+from habitat_od_search.search_agent import SearchAgent, SearchAgentConfig, DiscretePlannerConfig, TargetQuery
 from habitat.tasks.nav.nav import TopDownMap
 from procthor_scene import CLASSES, DEPTH_CAMERA, MAP_CONFIG, TURN_ANGLE_DEG, floor_height, procthor_sim, start_state
 
@@ -66,7 +66,7 @@ def test_exploration_gif() -> None:
         text_encoder.eval()
         target_embedding = get_clip_embeddings([_TARGET_OBJECT], text_encoder=text_encoder)[:, 0]
 
-        agent.reset(sim.get_agent(0).get_state(), floor_height=floor_height(sim, start.position), target_embedding=target_embedding, target_label=_TARGET_OBJECT)
+        agent.reset(sim.get_agent(0).get_state(), floor_height=floor_height(sim, start.position), query=TargetQuery(target_embedding, None), target_label=_TARGET_OBJECT)
 
         ground_truth = GroundTruthMapTracker(sim.pathfinder, start.position, fov_deg=MAP_CONFIG.fov_deg, visibility_dist_m=MAP_CONFIG.visibility_dist_m)
         ground_truth.set_object_footprints(annotated_object_meshes(sim, annotation, CLASSES))

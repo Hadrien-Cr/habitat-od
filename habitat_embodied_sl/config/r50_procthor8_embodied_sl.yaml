@@ -1,0 +1,15 @@
+# Embodied SL's reference fine-tune of r50_detic.yaml by main.py, the base of one config per train variant of
+# procthor8_collection.yaml (r50_procthor8_embodied_sl_<variant>.yaml, naming it in DATASETS.TRAIN): AdamW (the base's)
+# with the student backbone at a tenth of the learning rate, training frames at the test scale (the base's 800) and never
+# flipped, 1,000 iterations evaluated every 500
+_BASE_: "r50_detic.yaml"
+SEED: 0
+SOLVER:
+  BACKBONE_MULTIPLIER: 0.1
+  MAX_ITER: 1000
+  WARMUP_ITERS: 100
+  CHECKPOINT_PERIOD: 1000
+TEST:
+  EVAL_PERIOD: 500
+INPUT:
+  RANDOM_FLIP: "none"

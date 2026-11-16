@@ -170,6 +170,19 @@ def view_tree(frame: FrameDetections, voxel_size: float) -> KDTree:
     return KDTree(downsample_points(frame.view_points, voxel_size))
 
 
+@dataclass(frozen=True)
+class ProcessedFrame:
+    """A frame's processed_detections and its view_tree, computed once for every consumer of the frame (ConceptGraphMemory,
+    the hybrid agent's ObjectTracker)."""
+
+    detections: List[ConceptGraphObject]
+    view_tree: KDTree
+
+
+def processed_frame(frame: FrameDetections, config: ConceptGraphConfig) -> ProcessedFrame:
+    return ProcessedFrame(processed_detections(frame, config), view_tree(frame, config.downsample_voxel_size))
+
+
 def match_similarities(
     detections: List[ConceptGraphObject], objects: List[ConceptGraphObject], frame_view_tree: KDTree, config: ConceptGraphConfig,
 ) -> torch.Tensor:
@@ -218,14 +231,16 @@ class ConceptGraphMemory:
         return ConceptGraphResolvedObjects(self.config.downsample_voxel_size)
 
     def __add__(self, frame: FrameDetections) -> "ConceptGraphMemory":
+        return self.add_processed(processed_frame(frame, self.config))
+
+    def add_processed(self, frame: ProcessedFrame) -> "ConceptGraphMemory":
         """Matches each detection to its most similar object, merging it there or adding it as a new object, then merges overlapping objects."""
-        processed = processed_detections(frame, self.config)
-        if not processed:
+        if not frame.detections:
             return self
         if self.objects:
-            self._match_into_objects(processed, view_tree(frame, self.config.downsample_voxel_size))
+            self._match_into_objects(frame.detections, frame.view_tree)
         else:
-            self.objects.extend(processed)
+            self.objects.extend(frame.detections)
         self.objects = self._merge_overlapping(self.objects)
         return self
 

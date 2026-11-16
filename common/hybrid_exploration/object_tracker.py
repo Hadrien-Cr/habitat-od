@@ -1,12 +1,12 @@
-"""The objects HybridFrontierAgent inspects, tracked across frames from lifted detections (concept_graph.py's
-FrameDetections) with ConceptGraphMemory's own per-detection denoising and match score (3D IoU with the object's part in
+"""The objects HybridFrontierAgent inspects, tracked across frames from lifted detections already denoised as
+ConceptGraphMemory does (concept_graph.py's ProcessedFrame, shared with it), with its match score (3D IoU with the object's part in
 view + region-embedding similarity). Unlike ConceptGraphMemory, tracked objects are never merged with each other or
 dropped, so each keeps its id, the key of the agent's seen sectors."""
 from dataclasses import dataclass, field
 from typing import Dict, List
 
 from common.hybrid_exploration.object_viewpoints import ObjectBelief
-from common.utils.concept_graph import ConceptGraphConfig, ConceptGraphObject, FrameDetections, match_similarities, processed_detections, view_tree
+from common.utils.concept_graph import ConceptGraphConfig, ConceptGraphObject, ProcessedFrame, match_similarities
 
 _FULL_CONFIDENCE_DETECTIONS = 5
 
@@ -16,16 +16,16 @@ class ObjectTracker:
     config: ConceptGraphConfig = field(default_factory=ConceptGraphConfig)
     objects: List[ConceptGraphObject] = field(default_factory=list)
 
-    def update(self, frame: FrameDetections) -> None:
+    def update(self, frame: ProcessedFrame) -> None:
         """Merges each of frame's detections into its best-matching tracked object, tracking it as a new one (of at least
         min_points_threshold points) when none matches."""
-        detections = processed_detections(frame, self.config)
+        detections = frame.detections
         if not detections:
             return
         if not self.objects:
             self.objects.extend(detection for detection in detections if len(detection.points) >= self.config.min_points_threshold)
             return
-        similarities = match_similarities(detections, self.objects, view_tree(frame, self.config.downsample_voxel_size), self.config)
+        similarities = match_similarities(detections, self.objects, frame.view_tree, self.config)
         for detection, detection_similarities in zip(detections, similarities):
             best_object = int(detection_similarities.argmax())
             if detection_similarities[best_object] > 0:

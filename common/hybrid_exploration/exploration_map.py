@@ -39,9 +39,10 @@ class MapConfig:
     min_frontier_dist_m: float = 0.5  # frontier cells this close to the agent are excluded -- reveal_fog_of_war's
     # FOV cone has its apex at the agent's own position, which (before it has moved anywhere) is itself explored
     # but surrounded by unexplored space on most sides, so it would otherwise qualify as a "frontier" and make
-    # DiscretePlanner's closest-goal collapse to the agent's current position (distance 0, no real target)
+    # DiscretePlanner's closest-goal collapse to the agent's current position (distance 0, no real target); kept,
+    # along with fragments under min_frontier_size_m, when excluding them would leave no frontier at all (reveal)
     lift_image_size: int = 512  # goal-mask depth/mask resize before mark_goal's own back-projection
-    score_decay: float = 0.9  # mark_goal's running per-cell score, aged by this factor each step within in_view
+    score_decay: float = 0.9  # mark_goal's running per-cell score, aged by this factor within in_view on steps without a detection
     planning_margin_m: float = 2.0  # planning_window's growth past explored/goal cells, for paths skirting just outside
     # them -- FMM's cost grows with the window's area, the whole map's being mostly unknown space far from any goal
     # concept-graphs' own per-detection denoising (ConceptGraphConfig), reused by mark_goal to drop a mask's
@@ -139,13 +140,16 @@ class EstimatedMap:
         previous_explored = self.explored
         self.explored = previous_explored | self.in_view
         
-        if not np.array_equal(previous_explored, self.explored) or not np.array_equal(self._frontier_obstacles, self.obstacles):
-            frontier_pixels = detect_frontier_waypoints(
-                self.free(), self.explored, self.pixels(self.config.area_thresh_m ** 2), self.obstacles,
-                self.to_pixel(position), self.pixels(self.config.min_frontier_dist_m),
-            )
-            self.frontier_pixels = without_small_frontiers(frontier_pixels, self.obstacles.shape, self.pixels(self.config.min_frontier_size_m))
-            self._frontier_obstacles = self.obstacles.copy()
+        if np.array_equal(previous_explored, self.explored) and np.array_equal(self._frontier_obstacles, self.obstacles):
+            return
+        detect_args = (self.free(), self.explored, self.pixels(self.config.area_thresh_m ** 2), self.obstacles, self.to_pixel(position))
+        frontier_pixels = without_small_frontiers(
+            detect_frontier_waypoints(*detect_args, self.pixels(self.config.min_frontier_dist_m)),
+            self.obstacles.shape, self.pixels(self.config.min_frontier_size_m),
+        )
+        # Both filters can wipe out the frontier being approached, ending exploration with a doorway still open.
+        self.frontier_pixels = frontier_pixels if len(frontier_pixels) else detect_frontier_waypoints(*detect_args, 0)
+        self._frontier_obstacles = self.obstacles.copy()
 
     def observe_obstacles(self, depth: np.ndarray, sensor_state, camera: DepthCamera, floor_height: float) -> None:
         """Marks obstacles at every in-range depth point above floor_height + max_climb_m (lower ones -- floor,

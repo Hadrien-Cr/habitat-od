@@ -1,0 +1,5 @@
+# Verbatim copy of third_party/Detic/configs/BoxSup-C2_L_CLIP_R5021k_640b64_4x.yaml; its relative paths resolve against third_party/Detic (common/vision/detic.py::detic_cfg).
+_BASE_: "Base-C2_L_R5021k_640b64_4x.yaml"
+MODEL:
+  ROI_BOX_HEAD:
+    USE_ZEROSHOT_CLS: True
