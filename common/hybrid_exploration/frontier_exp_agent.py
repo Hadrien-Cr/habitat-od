@@ -118,14 +118,14 @@ def exploration_snapshot(
     ]])
 
 def save_predictions_mosaic(prediction_tiles: list, out_dir: Path, max_rows: Optional[int] = MAX_MOSAIC_ROWS) -> None:
-    """out_dir/predictions_mosaic.png of every step's prediction tile, _PREDICTION_COLS per row, split into parts of at
+    """out_dir/predictions_mosaic.jpg of every step's prediction tile, _PREDICTION_COLS per row, split into parts of at
     most max_rows rows (save_mosaic_parts), unsplit when max_rows is None."""
     parts = chunked(prediction_tiles, max_rows and max_rows * _PREDICTION_COLS)
-    save_mosaic_parts([make_mosaic(tiles, N_cols=_PREDICTION_COLS) for tiles in parts], out_dir / "predictions_mosaic.png")
+    save_mosaic_parts([make_mosaic(tiles, N_cols=_PREDICTION_COLS) for tiles in parts], out_dir / "predictions_mosaic.jpg")
 
 
 def save_exploration_visuals(agent: HybridFrontierAgent, prediction_tiles: list, out_dir: Path) -> None:
-    """predictions_mosaic.png and prediction_frames/step_<step>.png of every step, the frames saved in parallel (PIL
+    """predictions_mosaic.jpg and prediction_frames/step_<step>.png of every step, the frames saved in parallel (PIL
     releases the GIL while encoding)."""
     assert agent.estimated_map is not None, "Call reset() first"
 

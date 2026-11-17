@@ -25,7 +25,7 @@ Two entry points, both launched from the repo root with `PYTHONPATH=.`:
   (`ClassCountsWriter`, image `class_counts`, also saved as `class_counts.png` in the run's log folder). Single-GPU only.
 
 Both score against their test set via a training-time `EvalHook`. Dataset registration, the
-evaluator-wired `Trainer`, periodic TensorBoard image logging (`PeriodicImageWriter`: ground truth as shaded boxes and one-class-per-box predictions as outlined boxes, on one frame under `images/`, on test frames, plus train frames for `main.py`), and
+evaluator-wired `Trainer`, TensorBoard image logging (ground truth as shaded boxes and one-class-per-box predictions over 0.3 as outlined boxes, on one frame under `images/<set>/`: 4 frames of every test set at each evaluation, also saved as `eval/<set>/inference_samples_iter<N>.jpg`, plus 4 training views for `main.py`), and
 final-checkpoint reporting are shared by both via `common/utils/detectron_trainer.py`.
 
 - **`evaluate.py`** -- standalone evaluation of a Detic config/checkpoint against a COCO test

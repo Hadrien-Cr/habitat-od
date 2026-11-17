@@ -34,6 +34,7 @@ PREDICTIONS_JSON = "predictions.json"
 _VOLUME_RANGES = [[0.0, np.inf], [0.0, _SMALL_MAX_VOLUME_M3], [_SMALL_MAX_VOLUME_M3, _MEDIUM_MAX_VOLUME_M3], [_MEDIUM_MAX_VOLUME_M3, np.inf]]
 _VOLUME_RANGE_SIZES = ("", "s", "m", "l")
 _TOP_K = 5
+_MAX_HEATMAP_CLASSES = 60  # more is unreadable and can exceed matplotlib's 2^16-pixel figure limit (NYU's 890 classes)
 
 
 def _xywh_to_xyxy(box: list) -> list:
@@ -93,9 +94,12 @@ def _add_matches(matrix: np.ndarray, gt_classes: np.ndarray, pred_classes: np.nd
 
 
 def _save_confusion_heatmap(matrix: np.ndarray, labels: list, out_path: Path) -> None:
-    """Row-normalized heatmap of matrix, annotated with its raw counts."""
+    """Row-normalized heatmap of matrix, annotated with its raw counts, drawn for its _MAX_HEATMAP_CLASSES rows (and their
+    columns) with the most counts."""
     row_sums = matrix.sum(axis=1, keepdims=True)
     normalized = np.divide(matrix, row_sums, out=np.zeros_like(matrix, dtype=float), where=row_sums != 0)
+    kept = np.sort(np.argsort(-row_sums[:, 0], kind="stable")[:_MAX_HEATMAP_CLASSES])
+    matrix, normalized, labels = matrix[np.ix_(kept, kept)], normalized[np.ix_(kept, kept)], [labels[index] for index in kept]
 
     fig, ax = plt.subplots(figsize=(0.5 * len(labels) + 2, 0.5 * len(labels) + 2))
     im = ax.imshow(normalized, cmap="Blues", vmin=0, vmax=1)

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Optional, Union
 from matplotlib.pyplot import text
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 from matplotlib.text import Text
 from PIL import Image, ImageDraw
 from scipy.cluster.hierarchy import fcluster, leaves_list, linkage
@@ -417,7 +418,7 @@ def plot_segmentation_gt(rgb: np.ndarray, gt_instances, classes: list[str], colo
         det_visualizer.draw_text(
             f"{i}: gt={classes[class_id]} {filter_reason(info)}",
             font_size=font_size,
-            position=(x1, min(y2, rgb.shape[0]-1.5*font_size)),
+            position=(x1, min(y2-1.5*font_size, rgb.shape[0])),
             horizontal_alignment="left",
             color="#{:02x}{:02x}{:02x}".format(*colors[class_id])
         )
@@ -435,12 +436,13 @@ def plot_segmentation_gt(rgb: np.ndarray, gt_instances, classes: list[str], colo
 
 
 def plot_boxes_overlay(rgb: np.ndarray, gt_instances, pred_instances, metadata: Metadata, scale: float) -> Image.Image:
-    """rgb resized by scale, gt_instances' boxes shaded and labelled `gt=<class>` under them, pred_instances' boxes
-    outlined and labelled `<class> <score>` inside their top, each in its class's metadata.thing_colors."""
+    """rgb resized by scale, gt_instances' boxes shaded, dash-outlined and labelled `gt=<class>` under them, pred_instances'
+    boxes outlined and labelled `<class> <score>` inside their top, each in its class's metadata.thing_colors."""
     visualizer = DetVisualizer(rgb, scale=scale)
     for (x1, y1, x2, y2), class_id in zip(gt_instances.gt_boxes.tensor.tolist(), gt_instances.gt_classes.tolist()):
         color = np.array(metadata.thing_colors[class_id]) / 255
-        visualizer.draw_polygon([[x1, y1], [x2, y1], [x2, y2], [x1, y2]], color, edge_color=color, alpha=0.35)
+        visualizer.output.ax.add_patch(Rectangle((x1, y1), x2 - x1, y2 - y1, facecolor=color, edgecolor="none", alpha=0.35))
+        visualizer.draw_box([x1, y1, x2, y2], alpha=1.0, edge_color=color, line_style="--")
         visualizer.draw_text(f"gt={metadata.thing_classes[class_id]}", (x1, y2), color=color, horizontal_alignment="left")
     for box, class_id, score in zip(pred_instances.pred_boxes.tensor.tolist(), pred_instances.pred_classes.tolist(), pred_instances.scores.tolist()):
         color = np.array(metadata.thing_colors[class_id]) / 255
@@ -549,6 +551,9 @@ def _framed_tile(img: np.ndarray, label: str, tile_color: Optional[tuple[int, in
     return img
 
 
+MAX_MOSAIC_SIDE = 16384  # JPEG holds at most 65,500 pixels a side; larger mosaics aren't viewable anyway
+
+
 def make_mosaic(
     list_fnames_images: list[tuple[str, np.ndarray]],
     target_size: int = 1_000_000,
@@ -556,7 +561,8 @@ def make_mosaic(
     tile_colors: Optional[list[Optional[tuple[int, int, int]]]] = None,
     row_sizes: Optional[list[int]] = None,
 ) -> Image.Image:
-    """Grid of the labelled, yellow-bordered tiles, N_cols per row, or row_sizes[i] tiles on row i (padded to the longest row) when given."""
+    """Grid of the labelled, yellow-bordered tiles, N_cols per row, or row_sizes[i] tiles on row i (padded to the longest row) when
+    given, scaled (aspect kept) to at least target_size pixels and at most MAX_MOSAIC_SIDE a side."""
     n =  len(list_fnames_images)
     processed_images = [
         _framed_tile(img, filename, tile_colors[i] if tile_colors else None)
@@ -571,15 +577,10 @@ def make_mosaic(
 
     final_mosaic = np.vstack(rows)
 
-    downscale_factor = np.ceil(np.sqrt(target_size / (final_mosaic.shape[0] * final_mosaic.shape[1])))
-    final_mosaic = cv2.resize(
-        final_mosaic,
-        (
-            int(final_mosaic.shape[1] * downscale_factor),
-            int(final_mosaic.shape[0] * downscale_factor),
-        ),
-    )
-    return Image.fromarray(final_mosaic)
+    upscale = np.ceil(np.sqrt(target_size / (final_mosaic.shape[0] * final_mosaic.shape[1])))
+    scale = min(upscale, MAX_MOSAIC_SIDE / max(final_mosaic.shape[:2]))
+    size = (int(final_mosaic.shape[1] * scale), int(final_mosaic.shape[0] * scale))
+    return Image.fromarray(cv2.resize(final_mosaic, size, interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR))
 
 
 def rows_mosaic(rows: list[list[tuple[str, np.ndarray]]]) -> Optional[Image.Image]:
@@ -589,6 +590,7 @@ def rows_mosaic(rows: list[list[tuple[str, np.ndarray]]]) -> Optional[Image.Imag
 
 
 PNG_COMPRESS_LEVEL = 1  # PIL's default zlib level 6 encodes ~2x slower for files only ~1.5x smaller
+MOSAIC_JPEG_QUALITY = 90
 
 
 def chunked(items: list, size: Optional[int]) -> list[list]:
@@ -601,11 +603,11 @@ MAX_MOSAIC_ROWS = 32
 
 
 def save_mosaic_parts(mosaics: list[Image.Image], out_path: Path) -> None:
-    """A single mosaic to out_path, several each to out_path's stem suffixed with its index."""
+    """A single mosaic to out_path, several each to out_path's stem suffixed with its index, in out_path's format (PNG or JPEG)."""
     paths = [out_path] if len(mosaics) == 1 else [out_path.with_name(f"{out_path.stem}_{index:02d}{out_path.suffix}") for index in range(len(mosaics))]
     out_path.parent.mkdir(parents=True, exist_ok=True)
     for mosaic, path in zip(mosaics, paths):
-        mosaic.save(path, compress_level=PNG_COMPRESS_LEVEL)
+        mosaic.save(path, compress_level=PNG_COMPRESS_LEVEL, quality=MOSAIC_JPEG_QUALITY)
 
 
 def save_tile(tile: tuple, out_path: Path) -> None:

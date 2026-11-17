@@ -14,6 +14,7 @@ from detectron2.data.datasets.lvis import get_lvis_instances_meta, register_lvis
 from detectron2.data.datasets.lvis_v1_categories import LVIS_CATEGORIES  # type: ignore
 from detectron2.modeling import build_model  # type: ignore
 from torch import nn
+from torchvision.ops import boxes as torchvision_boxes
 
 DETIC_ROOT = Path(__file__).resolve().parents[2] / "third_party" / "Detic"
 METADATA_DIR = Path(__file__).resolve().parents[2] / "datasets" / "metadata"
@@ -33,6 +34,18 @@ def _create_timm_resnet(variant: str, out_indices: List[int], pretrained: bool) 
 
 
 detic_timm.create_timm_resnet = _create_timm_resnet
+_torchvision_batched_nms = torchvision_boxes.batched_nms
+
+
+def _batched_nms(boxes: torch.Tensor, scores: torch.Tensor, idxs: torch.Tensor, iou_threshold: float) -> torch.Tensor:
+    """torchvision's batched_nms, in one NMS kernel for GPU boxes: past 5,000 boxes it loops over the classes instead, one GPU
+    sync each, about 10 s a frame with NYU's 890 classes. CPU boxes keep torchvision's choice."""
+    if boxes.is_cuda:
+        return torchvision_boxes._batched_nms_coordinate_trick(boxes, scores, idxs, iou_threshold)
+    return _torchvision_batched_nms(boxes, scores, idxs, iou_threshold)
+
+
+torchvision_boxes.batched_nms = _batched_nms
 
 def get_clip_embeddings(vocabulary, prompt='a ', text_encoder=None) -> torch.Tensor:
     if text_encoder is None:

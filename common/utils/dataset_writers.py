@@ -1,6 +1,6 @@
 """Splits pooling several scenes, each in its own folder <split>/: every frame as <images_dir>/<scene>_<frame>.jpg, a
 folder the dataset's splits share (collect.py's datasets/<run_name>/images/), plus <split>/<split>.json and
-<split>/<split>_mosaic.png, _MOSAIC_RECORDS of the split's records read back from that json and drawn in random order.
+<split>/<split>_mosaic.jpg, _MOSAIC_RECORDS of the split's records read back from that json and drawn in random order.
 Each scene is written on its own (write_scene), its records to its shard <split>/scenes/<scene>.json, so scenes can be
 written by parallel processes; merge, run once they are all done (habitat_embodied_sl/merge.py), pools every shard into
 <split>.json.
@@ -27,6 +27,7 @@ from common import constants
 from common.env_utils.vocab_constants import make_colors
 from common.utils.coco_utils import encoded_masks, json_rle, write_json
 from common.utils.object_views_dataset import ObjectViewsDataset, batches_mosaic
+from common.utils.plot_utils import MOSAIC_JPEG_QUALITY
 from common.utils.retrieval import RetrievedView, SegmentationStyle, ViewSelection
 
 _MOSAIC_RECORDS = 32
@@ -83,13 +84,13 @@ def _annotations(ground_truth: Instances) -> List[dict]:
 
 
 def _save_mosaic(records: List[dict], categories: list, split_dir: Path, rng: np.random.Generator) -> None:
-    """split_dir/<split>_mosaic.png of _MOSAIC_RECORDS of records in random order, mapper-mapped, _MOSAIC_COLUMNS a row."""
+    """split_dir/<split>_mosaic.jpg of _MOSAIC_RECORDS of records in random order, mapper-mapped, _MOSAIC_COLUMNS a row."""
     mapper = DatasetMapper(is_train=True, augmentations=[], image_format="RGB", use_instance_mask=True, instance_mask_format="bitmask")
     style = SegmentationStyle(categories, make_colors(len(categories), seed=0, ctype=0))
     mapped = [mapper(records[index]) for index in rng.permutation(len(records))[:_MOSAIC_RECORDS]]
     mosaic = batches_mosaic([mapped[start:start + _MOSAIC_COLUMNS] for start in range(0, len(mapped), _MOSAIC_COLUMNS)], style)
     if mosaic is not None:
-        mosaic.save(split_dir / f"{split_dir.name}_mosaic.png")
+        mosaic.save(split_dir / f"{split_dir.name}_mosaic.jpg", quality=MOSAIC_JPEG_QUALITY)
 
 
 @dataclass(frozen=True)

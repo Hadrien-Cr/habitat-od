@@ -6,7 +6,7 @@ import contextlib
 import io
 import json
 from collections import defaultdict
-from itertools import chain, islice, zip_longest
+from itertools import chain, zip_longest
 from pathlib import Path
 from typing import Optional
 
@@ -19,7 +19,7 @@ from detectron2.engine import DefaultTrainer, HookBase  # type: ignore
 from detectron2.evaluation import COCOEvaluator  # type: ignore
 from detectron2.evaluation.testing import flatten_results_dict  # type: ignore
 from detectron2.structures import Boxes, BoxMode, Instances  # type: ignore
-from detectron2.utils.events import get_event_storage  # type: ignore
+from detectron2.utils.events import EventStorage, get_event_storage  # type: ignore
 from PIL import Image
 from pycocotools.cocoeval import COCOeval
 from tabulate import tabulate
@@ -28,10 +28,10 @@ from torchvision.ops import batched_nms, nms
 from common.env_utils.vocab_constants import make_colors
 from common.env_utils.dataset_registry import register_dataset
 from common.utils.eval_utils import compute_confusion_matrix, mean_precision
-from common.utils.plot_utils import make_mosaic, plot_boxes_overlay, plot_class_counts
+from common.utils.plot_utils import MOSAIC_JPEG_QUALITY, make_mosaic, plot_boxes_overlay, plot_class_counts
 
 COCO_ROOT = Path(__file__).resolve().parents[2] / "coco_testbench" / "datasets" / "coco"
-IMAGE_LOG_SAMPLES = 16
+IMAGE_LOG_SAMPLES = 4
 IMAGE_LOG_HEIGHT = 512
 DISPLAY_SCORE_THRESH = 0.3  # predictions kept in logged images and confusion matrices; AP uses SCORE_THRESH_TEST
 DISPLAY_NMS_IOU = 0.5
@@ -77,12 +77,12 @@ def _predicted_instances(results: list, image_size: tuple, dataset_to_contiguous
     return predictions
 
 
-def _evaluation_iteration() -> int:
-    """The training iteration an evaluation runs at, 0 outside training (no event storage)."""
+def _event_storage() -> Optional[EventStorage]:
+    """The training's event storage, None outside training."""
     try:
-        return get_event_storage().iter
+        return get_event_storage()
     except AssertionError:
-        return 0
+        return None
 
 
 class ClassAP50Evaluator(COCOEvaluator):
@@ -90,20 +90,22 @@ class ClassAP50Evaluator(COCOEvaluator):
     IoU 0.5 to 0.95, whose stricter thresholds mostly measure box tightness (frozen when fine-tuning CustomFT_Detic), and
     the class-agnostic "AP50 agnostic" and "recall50 agnostic" (agnostic_ap50_recall50, named as eval_utils' 3D metrics),
     without the NaNs of classes or sizes the dataset has no box of. Each evaluation also saves, over DISPLAY_SCORE_THRESH,
-    its confusion matrix <output_dir>/confusion_matrix_iter<iteration>.png and inference_samples_iter<iteration>.jpg
-    (_save_inference_samples)."""
+    its confusion matrix <output_dir>/confusion_matrix_iter<iteration>.png and inference_samples_iter<iteration>.jpg, whose
+    tiles also go to TensorBoard during training (_save_inference_samples)."""
 
     def evaluate(self, img_ids=None):
         results = super().evaluate(img_ids)
         if results and self._output_dir:
-            out_dir, iteration = Path(self._output_dir), _evaluation_iteration()
+            storage = _event_storage()
+            out_dir, iteration = Path(self._output_dir), storage.iter if storage else 0
             predictions_json = out_dir / "coco_instances_results.json"
             compute_confusion_matrix(predictions_json, Path(self._metadata.json_file), out_dir / f"confusion_matrix_iter{iteration:05d}.png", score_threshold=DISPLAY_SCORE_THRESH)
-            self._save_inference_samples(predictions_json, out_dir / f"inference_samples_iter{iteration:05d}.jpg")
+            self._save_inference_samples(predictions_json, out_dir / f"inference_samples_iter{iteration:05d}.jpg", storage)
         return results
 
-    def _save_inference_samples(self, predictions_json: Path, out_path: Path) -> None:
-        """Mosaic of IMAGE_LOG_SAMPLES of the dataset's frames, evenly spaced, each its sample_overlay of predictions_json's detections."""
+    def _save_inference_samples(self, predictions_json: Path, out_path: Path, storage: Optional[EventStorage]) -> None:
+        """Mosaic of IMAGE_LOG_SAMPLES of the dataset's frames, evenly spaced, each its sample_overlay of predictions_json's
+        detections; each tile also put to storage, when training, as images/<dataset>/<frame>."""
         records = DatasetCatalog.get(self._metadata.name)
         samples = [records[index] for index in np.linspace(0, len(records) - 1, min(IMAGE_LOG_SAMPLES, len(records))).astype(int)]
         image_results = defaultdict(list)
@@ -114,7 +116,9 @@ class ClassAP50Evaluator(COCOEvaluator):
             rgb = detection_utils.read_image(sample["file_name"], format="RGB")
             predictions = _predicted_instances(image_results[sample["image_id"]], rgb.shape[:2], self._metadata.thing_dataset_id_to_contiguous_id)
             tiles.append((Path(sample["file_name"]).stem, np.array(sample_overlay(sample, rgb, predictions, self._metadata))))
-        make_mosaic(tiles).save(out_path, quality=90)
+        make_mosaic(tiles).save(out_path, quality=MOSAIC_JPEG_QUALITY)
+        for frame, tile in tiles if storage else []:
+            storage.put_image(f"images/{self._metadata.name}/{frame}", tile.transpose(2, 0, 1))
 
     def _derive_coco_results(self, coco_eval, iou_type, class_names=None):
         results = super()._derive_coco_results(coco_eval, iou_type)
@@ -214,21 +218,11 @@ class ClassCountsWriter(HookBase):
 
 class Trainer(DefaultTrainer):
     """DefaultTrainer with build_evaluator wired in, for pretrain.py/habitat_embodied_sl/main.py's own training-time
-    EvalHook. build_hooks additionally appends PeriodicImageWriter, to log predictions on image_log_samples to
-    TensorBoard alongside the default scalar writers."""
+    EvalHook, whose evaluator also logs each test set's sample predictions to TensorBoard."""
 
     @classmethod
     def build_evaluator(cls, cfg, dataset_name):
         return build_evaluator(cfg, dataset_name)
-
-    def build_hooks(self):
-        hooks = super().build_hooks()
-        hooks.insert(-1, PeriodicImageWriter(self.cfg, self.model, self.image_log_samples()))
-        return hooks
-
-    def image_log_samples(self) -> dict:
-        """{split: samples PeriodicImageWriter logs predictions on}: the first IMAGE_LOG_SAMPLES of cfg.DATASETS.TEST[0]."""
-        return {"test": list(islice(DatasetCatalog.get(self.cfg.DATASETS.TEST[0]), IMAGE_LOG_SAMPLES))}
 
 
 def register_coco(split: str) -> str:

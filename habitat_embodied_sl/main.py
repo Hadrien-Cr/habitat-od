@@ -19,7 +19,7 @@ Key methods:
                                             SOLVER.BACKBONE_MULTIPLIER apply (detectron2's own is SGD only).
 ObjectViewsTrainer.test scores every test set in its own vocabulary: the collection's, then each --static-test-dirs
 set (e.g. common/env_utils/nyu_depth_v2.py's), the classifier reset to its classes' CLIP embeddings meanwhile.
-Dataset registration, the evaluator-wired Trainer base, PeriodicImageWriter, and
+Dataset registration, the evaluator-wired Trainer base (each evaluation's sample predictions logged to TensorBoard), and
 final-checkpoint reporting are shared with pretrain.py via common/utils/detectron_trainer.py. After training,
 write_run_analysis adds per-class and box-size plots and tables to the run's logs.
 
@@ -44,7 +44,7 @@ from omegaconf import OmegaConf
 
 from common import constants
 from common.utils.detectron_trainer import (
-    IMAGE_LOG_SAMPLES, ClassCountsWriter, InitialEvalHook, Trainer, register_single_dataset, report_results,
+    IMAGE_LOG_SAMPLES, ClassCountsWriter, InitialEvalHook, PeriodicImageWriter, Trainer, register_single_dataset, report_results,
 )
 from common.utils.dataset_writers import IMAGES_DIR, OBJECT_DS_DIR, VARIANTS, frame_scene, split_json_path
 from common.utils.object_views_dataset import ObjectViewsDataset, balanced_loader
@@ -88,7 +88,8 @@ class ObjectViewsTrainer(Trainer):
         return cycle(balanced_loader(self.train_dataset, cfg.SOLVER.IMS_PER_BATCH, mapper))
 
     def build_hooks(self):
-        """Trainer's hooks plus, before training, the loaded weights' test scores and each split's class counts."""
+        """Trainer's hooks plus, before training, the loaded weights' test scores and each split's class counts, and the
+        predictions on IMAGE_LOG_SAMPLES training views (fixed seed) logged to TensorBoard at every evaluation."""
         hooks = super().build_hooks()
         split_annotations = {
             "train": [(record["object_key"].split("/")[0], record["annotations"][0]["category_id"]) for record in self.train_dataset.records],
@@ -99,14 +100,10 @@ class ObjectViewsTrainer(Trainer):
         }
         hooks.insert(-1, ClassCountsWriter(split_annotations, list(self.vocabulary.classes)))
         hooks.insert(-1, InitialEvalHook())
-        return hooks
-
-    def image_log_samples(self) -> dict:
-        """Trainer's test samples plus IMAGE_LOG_SAMPLES train views drawn at random (fixed seed), each its frame and the
-        one object box it labels."""
         records = self.train_dataset.records
-        indices = np.random.default_rng(0).choice(len(records), size=IMAGE_LOG_SAMPLES, replace=False)
-        return {**super().image_log_samples(), "train": [records[index] for index in indices]}
+        views = [records[index] for index in np.random.default_rng(0).choice(len(records), size=IMAGE_LOG_SAMPLES, replace=False)]
+        hooks.insert(-1, PeriodicImageWriter(self.cfg, self.model, {"train_views": views}))
+        return hooks
 
 
 def with_test_dataset(cfg, dataset_name: str):

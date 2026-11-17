@@ -81,8 +81,8 @@ come from, out of it; they belong with the code that builds them (`common/env_ut
   traversable cells (obstacles dilated by a 3-cell disk, `DiscretePlannerConfig.obs_dilation_selem_radius`) and ends
   closest to the goal on that FMM distance (the smallest turn on ties). The step's labelled detector-prediction tile
   (`segmentation_tile`) is kept and, once exploration ends, saved as one
-  `datasets/<run_name>/<scene>/predictions_mosaic.png` (`save_predictions_mosaic`, 5 tiles per row; split into
-  `predictions_mosaic_<part>.png` of at most 32 rows each unless `--no-split`), along with the last step's 3-tile
+  `datasets/<run_name>/<scene>/predictions_mosaic.jpg` (`save_predictions_mosaic`, 5 tiles per row; split into
+  `predictions_mosaic_<part>.jpg` of at most 32 rows each unless `--no-split`), along with the last step's 3-tile
   (observation, belief map cropped to the 5 x 5 m around the agent, ground truth) snapshot,
   `datasets/<run_name>/<scene>/exploration_snapshot.png`.
 - (1.6) **Ground truth:** the step's ground-truth instances come from the `bbsgt` sensor, filtered by
@@ -218,10 +218,10 @@ rerun it after recollecting a scene. The dataset then holds:
 | `<scene>/predictions.json`, `<scene>/ground_truth.json`, `<scene>/estimated_topdown.png`, `<scene>/ground_truth_topdown.png` | each collection scene's classified objects and its annotated objects as single-scene COCO datasets on the agent's map grid (4.5), and their top-down maps by class |
 | `map_eval/metrics.json`, `map_eval/confusion_matrix.png` | `evaluate_maps.py`'s scores of every collection scene's map, pooled (4.6) |
 | `<variant>/semantic_topdown_maps/<scene>.png` | each collection scene's resolved objects the variant keeps, by their class in the variant, on the agent's top-down map; objects `recover_add_fn` adds have no points to draw |
-| `<variant>/retrieval_mosaics/<scene>.png` | each collection scene's objects in the variant, one row of its retrieved views per object, tiles at half resolution (`_TILE_DOWNSCALE`); objects recovery relabelled (5.3.2) or added (5.3.3) are bordered red. Split into `<scene>_<part>.png` of at most 32 objects each (`MAX_MOSAIC_ROWS`) unless `--no-split` |
-| `<variant>/retrieval_mosaics/<scene>_first_views.png` | the same objects, one row of each object's first retrieved view (its highest-gain one, 5.1) at full resolution, bordered red as above |
+| `<variant>/retrieval_mosaics/<scene>.jpg` | each collection scene's objects in the variant, one row of its retrieved views per object, tiles at half resolution (`_TILE_DOWNSCALE`); objects recovery relabelled (5.3.2) or added (5.3.3) are bordered red. Split into `<scene>_<part>.jpg` of at most 32 objects each (`MAX_MOSAIC_ROWS`) unless `--no-split` |
+| `<variant>/retrieval_mosaics/<scene>_first_views.jpg` | the same objects, one row of each object's first retrieved view (its highest-gain one, 5.1) at full resolution, bordered red as above |
 | `<variant>/object_ds/scenes/<scene>.json`, `train/scenes/<scene>.json`, `test/scenes/<scene>.json` | one scene's records of the split, which merging pools into its json: `frames` and `retrieved_objects` for an object-view set; `images` and `annotations` (each pointing at its image by its index in the shard, ids assigned when pooled) for the COCO sets |
-| `<variant>/object_ds/object_ds_mosaic.png`, `train/train_mosaic.png`, `test/test_mosaic.png` | 32 records of the split, read back from its json and drawn in random order, each its frame with its annotations' boxes and classes |
+| `<variant>/object_ds/object_ds_mosaic.jpg`, `train/train_mosaic.jpg`, `test/test_mosaic.jpg` | 32 records of the split, read back from its json and drawn in random order, each its frame with its annotations' boxes and classes |
 
 ## Files
 
@@ -229,6 +229,7 @@ rerun it after recollecting a scene. The dataset then holds:
 |---|---|
 | `collect.py` | one scene's run, written to its own shard of each split: for a `train` scene, exploration loop and `SceneMapper`, resolve → foreground → size-masked classify, retrieval and recovery into the variants' object views, and its frames' full ground truth into the train set; for a `test` scene, its frames into the test set. The layout (`images/`, splits, variants) and the writers are `common/utils/dataset_writers.py`'s |
 | `evaluate_maps.py` | scores every collection scene's `predictions.json` against its `ground_truth.json`, pooled, into `map_eval/` (4.6) |
+| `run.sh` | runs one after another, on `GPU`, the source and NORM baselines (`adapt.py`), Mean-Teacher and embodied SL on each variant (`main.py`), each scored on the procthor8 test and train sets and NYU Depth V2, into `outputs/procthor8_runs/<run>.log` |
 | `merge.py` | pools every split's per-scene shards into its json and mosaic (`train/train.json`, `test/test.json`, `<variant>/object_ds/object_ds.json`), once every scene's `collect.py` call is done |
 | `evaluation_set.py` | a test scene's frontier exploration and CLIP-diverse frame selection |
 | `config/procthor8_collection.yaml` | the collection config (`run_name` `procthor_medium`, `seed`, `object_params`, `collection` and `evaluation` budgets): the first 8 ProcTHOR-Train houses of 2 to 4 rooms, 1000 steps each, and ProcTHOR-Val-0 to -7 for the test set; train houses ProcTHOR-Train-5, -6, -9, -11, -14, -26, -30 and -32; collected one scene per call (Running) |
