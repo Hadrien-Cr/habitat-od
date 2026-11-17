@@ -435,19 +435,30 @@ def plot_segmentation_gt(rgb: np.ndarray, gt_instances, classes: list[str], colo
     return im
 
 
+def _label_font_size(visualizer: DetVisualizer, box_height: float) -> float:
+    """detectron2's overlay_instances label size, growing with the box's height relative to the image, its floor halved:
+    0.3 to 1 times the visualizer's default size."""
+    height_ratio = box_height / np.sqrt(visualizer.output.height * visualizer.output.width)
+    return float(np.clip((height_ratio - 0.02) / 0.08 + 1, 0.6, 2) * 0.5 * visualizer._default_font_size)
+
+
 def plot_boxes_overlay(rgb: np.ndarray, gt_instances, pred_instances, metadata: Metadata, scale: float) -> Image.Image:
     """rgb resized by scale, gt_instances' boxes shaded, dash-outlined and labelled `gt=<class>` under them, pred_instances'
-    boxes outlined and labelled `<class> <score>` inside their top, each in its class's metadata.thing_colors."""
+    boxes outlined and labelled `<class> <score>` inside their top, each in its class's metadata.thing_colors, labels sized by
+    their box (_label_font_size); each set drawn largest box first, so smaller boxes and their labels stay on top."""
     visualizer = DetVisualizer(rgb, scale=scale)
+    gt_instances = gt_instances[gt_instances.gt_boxes.area().argsort(descending=True)]
+    pred_instances = pred_instances[pred_instances.pred_boxes.area().argsort(descending=True)]
     for (x1, y1, x2, y2), class_id in zip(gt_instances.gt_boxes.tensor.tolist(), gt_instances.gt_classes.tolist()):
         color = np.array(metadata.thing_colors[class_id]) / 255
         visualizer.output.ax.add_patch(Rectangle((x1, y1), x2 - x1, y2 - y1, facecolor=color, edgecolor="none", alpha=0.35))
         visualizer.draw_box([x1, y1, x2, y2], alpha=1.0, edge_color=color, line_style="--")
-        visualizer.draw_text(f"gt={metadata.thing_classes[class_id]}", (x1, y2), color=color, horizontal_alignment="left")
+        visualizer.draw_text(f"gt={metadata.thing_classes[class_id]}", (x1, y2), color=color, horizontal_alignment="left", font_size=_label_font_size(visualizer, y2 - y1))
     for box, class_id, score in zip(pred_instances.pred_boxes.tensor.tolist(), pred_instances.pred_classes.tolist(), pred_instances.scores.tolist()):
         color = np.array(metadata.thing_colors[class_id]) / 255
         visualizer.draw_box(box, alpha=1.0, edge_color=color)
-        visualizer.draw_text(f"{metadata.thing_classes[class_id]} {score:.2f}", (box[0], box[1]), color=color, horizontal_alignment="left")
+        label = f"{metadata.thing_classes[class_id]} {score:.2f}"
+        visualizer.draw_text(label, (box[0], box[1]), color=color, horizontal_alignment="left", font_size=_label_font_size(visualizer, box[3] - box[1]))
     return Image.fromarray(visualizer.output.get_image())
 
 
