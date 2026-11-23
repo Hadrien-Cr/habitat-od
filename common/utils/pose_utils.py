@@ -142,6 +142,11 @@ def sensor_pose_matrix(sensor_state) -> np.ndarray:
     return T
 
 
+def points_in_frame(points: np.ndarray, position: np.ndarray, rotation: quaternion.quaternion) -> np.ndarray:
+    """(N, 3) world points in the frame at position and rotation."""
+    return quaternion.rotate_vectors(rotation.inverse(), np.asarray(points) - position)
+
+
 def get_l2_distance(x1, x2, y1, y2):
     return ((x1 - x2) ** 2 + (y1 - y2) ** 2) ** 0.5
 

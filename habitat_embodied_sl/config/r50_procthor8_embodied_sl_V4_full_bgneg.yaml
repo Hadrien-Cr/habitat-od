@@ -1,0 +1,6 @@
+# r50_procthor8_embodied_sl_V4_full.yaml with Detic's own cascade ROI heads, which also train on background proposals:
+# sound on V4_full only, where every object of a frame is labelled
+_BASE_: "r50_procthor8_embodied_sl_V4_full.yaml"
+MODEL:
+  ROI_HEADS:
+    NAME: "DeticCascadeROIHeads"

@@ -34,7 +34,7 @@ Every crop is the max(w, h) square centered on its box (shifted inward at the fr
 stretched), resized to _CROP_SIZE x _CROP_SIZE; crops are for display only, every embedding comes from the box itself.
 
 Usage:
-  export HABITAT_DATA=$HOME/habitat_data/data BASE_DIR=$(pwd) PYTHONNOUSERSITE=1
+  export BASE_DIR=$(pwd) PYTHONNOUSERSITE=1  # HABITAT_DATA already exported, see INSTALL.MD
   PYTHONPATH=. python habitat_od_search/enhanced_detector.py --scene 102344094 [--category "table_lamp, TABLE LAMP-PORTER"]
 """
 import argparse

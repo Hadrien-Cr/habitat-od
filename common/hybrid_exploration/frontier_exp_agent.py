@@ -1,7 +1,6 @@
 import math
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Tuple
 
 import cv2
 import habitat_sim
@@ -13,8 +12,7 @@ from common.agents.abstract_agent import StopReason
 from common.agents.base_exploration_agent import BaseExplorationAgent
 from common.hybrid_exploration.discrete_planner import DiscretePlanner
 from common.hybrid_exploration.exploration_map import EstimatedMap, MapConfig
-from common.hybrid_exploration.hybrid_agent import HybridFrontierAgent
-from common.utils.plot_utils import MAX_MOSAIC_ROWS, chunked, centered_crop, letterboxed, make_mosaic, rows_mosaic, save_mosaic_parts, save_tile
+from common.utils.plot_utils import MAX_MOSAIC_ROWS, chunked, centered_crop, letterboxed, make_mosaic, rows_mosaic, save_mosaic_parts
 from common.utils.projection_utils import DepthCamera
 
 
@@ -92,7 +90,6 @@ class FrontierExplorationAgent(BaseExplorationAgent):
 
 _SNAPSHOT_TILE_SIZE = 1024
 _BELIEF_CROP_M = 12.0
-_SAVE_WORKERS = 8
 _PREDICTION_COLS = 5
 
 
@@ -117,21 +114,8 @@ def exploration_snapshot(
         ("ground truth", np.ascontiguousarray(gt_map)),
     ]])
 
-def save_predictions_mosaic(prediction_tiles: list, out_dir: Path, max_rows: Optional[int] = MAX_MOSAIC_ROWS) -> None:
-    """out_dir/predictions_mosaic.jpg of every step's prediction tile, _PREDICTION_COLS per row, split into parts of at
-    most max_rows rows (save_mosaic_parts), unsplit when max_rows is None."""
-    parts = chunked(prediction_tiles, max_rows and max_rows * _PREDICTION_COLS)
-    save_mosaic_parts([make_mosaic(tiles, N_cols=_PREDICTION_COLS) for tiles in parts], out_dir / "predictions_mosaic.jpg")
-
-
-def save_exploration_visuals(agent: HybridFrontierAgent, prediction_tiles: list, out_dir: Path) -> None:
-    """predictions_mosaic.jpg and prediction_frames/step_<step>.png of every step, the frames saved in parallel (PIL
-    releases the GIL while encoding)."""
-    assert agent.estimated_map is not None, "Call reset() first"
-
-    frame_paths = [out_dir / "prediction_frames" / f"step_{step:04d}.png" for step in range(len(prediction_tiles))]
-    with ThreadPoolExecutor(_SAVE_WORKERS) as pool:
-        frames_saved = pool.map(save_tile, prediction_tiles, frame_paths)
-        save_predictions_mosaic(prediction_tiles, out_dir)
-        list(frames_saved)
-
+def save_steps_mosaic(step_tiles: list, out_path: Path, max_rows: Optional[int] = MAX_MOSAIC_ROWS) -> None:
+    """out_path, a mosaic of every step's tile (its predictions or ground truth), _PREDICTION_COLS per row, split into
+    parts of at most max_rows rows (save_mosaic_parts), unsplit when max_rows is None."""
+    parts = chunked(step_tiles, max_rows and max_rows * _PREDICTION_COLS)
+    save_mosaic_parts([make_mosaic(tiles, N_cols=_PREDICTION_COLS) for tiles in parts], out_path)

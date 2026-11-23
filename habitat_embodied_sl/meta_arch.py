@@ -1,10 +1,10 @@
 """Detic's box-supervised GeneralizedRCNN (CustomRCNN's box path) for fine-tuning on the single-box object views
-habitat_embodied_sl/collect.py writes, registered as MODEL.META_ARCHITECTURE "CustomFT_Detic" (example config:
+habitat_embodied_sl/build_dataset.py writes, registered as MODEL.META_ARCHITECTURE "CustomFT_Detic" (example config:
 config/r50_detic.yaml). Proposals, in training and inference, come from a frozen teacher copy of the initial
 backbone and proposal generator, so localization stays the loaded checkpoint's; training returns the student ROI heads'
 losses on them, each weighted by CustomFT_Detic.LOSS_WEIGHTS. Each view labels one object of its frame, so the ROI heads (PositiveOnlyDeticCascadeROIHeads)
 learn from proposals matched to a ground-truth box only, and unlabeled objects aren't pushed to background. The classifier
-is reset to the CLIP text embeddings of the collection config's kept classes, as collect.py's Detector classifies among.
+is reset to the CLIP text embeddings of the collection config's kept classes, as build_dataset.py's Detector classifies among.
 
 Trained by habitat_embodied_sl/main.py (its ObjectViewsTrainer builds CustomFT_Detic and feeds it an
 ObjectViewsDataset variant's balanced_loader).

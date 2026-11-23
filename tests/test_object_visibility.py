@@ -57,7 +57,7 @@ os.system(f"rm -rf {_TESTDUMP_DIR}")
 @pytest.fixture(scope="module")
 def sim():
     backend_cfg = habitat_sim.SimulatorConfiguration()
-    backend_cfg.scene_id = "data/scene_datasets/habitat-test-scenes/apartment_1.glb"
+    backend_cfg.scene_id = os.path.join(os.environ.get("HABITAT_DATA", ""), "scene_datasets", "habitat-test-scenes", "apartment_1.glb")
     backend_cfg.enable_physics = True
 
     semantic_spec = habitat_sim.CameraSensorSpec()

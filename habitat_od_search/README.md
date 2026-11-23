@@ -192,14 +192,46 @@ threshold when frame precision is low.
 On the episodes the runs share, per subset (overall, with / without object synonyms): each run's success, its
 difference to the first run with a 95% paired bootstrap interval, and McNemar's exact p-value.
 
+## Static retrieval (`static_retrieval.py`)
+
+Patch-feature retrieval of one scene's first episode's object category, with IMPRINT's HSSD-rare text query. There's
+no evaluation, only visualizations.
+
+1. **Patch features:** `common/vision/siglip.py` encodes each frame with SigLIP (`google/siglip-base-patch16-256`)
+   into a 16 x 16 grid of patch embeddings in the text embeddings' space. Each patch token goes through the pooling
+   head's value, output and MLP layers as if the head attended to it alone (MaskCLIP's dense-feature trick).
+2. **Map:** a `FrontierExplorationAgent` explores the scene from its first episode's start, until it stops or runs out
+   of `--max-steps` (500). The embeddings go on a ground-truth top-down map (`GroundTruthMapTracker`, its navmesh at
+   0.05 m per pixel), the query's goal objects as its footprints. Each step, the depth image is sampled on a 128 x 128
+   grid and back-projected (`object_points`). Only points between 0.2 m and 2 m above the floor are written, which
+   drops the floor (and floor-level objects such as rugs) and the ceiling. Each point lands on one map pixel and
+   carries either:
+   - by default, the embedding of the patch its image pixel lies in;
+   - with `--mask-pooling`, the embedding of its ground-truth object's segment (`object_id_image`): the mean of the
+     patch embeddings the segment overlaps, weighted by overlap. Pixels of no object (walls) form one segment. No
+     embedding then bleeds across an object boundary.
+
+   A pixel's embedding is the mean over its points. The embeddings, each frame's and each point's row into them, and
+   the ground-truth map are cached as `feature_map_<max_steps>steps.npz`, and every frame that placed a point is saved
+   to `frames_<max_steps>steps/`.
+3. **Query:** the SigLIP text embedding of the first episode's whole fine-grained object category, as IMPRINT's
+   HSSD-rare text prompt does. A pixel's score is the mean cosine similarity of its points' embeddings to it.
+4. **Outputs**, in `logs/static_retrieval/<scene>/{patches,mask_pooling}/`:
+   - `retrieval.png`: the ground-truth map (navmesh, revealed area, trajectory, goals in blue) beside the similarity
+     heatmap, with the goals outlined in blue and the argmax pixel circled.
+   - `feature_map.png`: each pixel's mean embedding's top 3 principal components as RGB.
+   - `frames_<max_steps>steps/similarity_<step>.jpg`: each frame blended 50/50 with its patch or segment similarity to
+     the query, on one color scale across all frames.
+
 ## Running
 
 ```bash
-export HABITAT_DATA=$HOME/habitat_data/data BASE_DIR=$(pwd) PYTHONNOUSERSITE=1
+export BASE_DIR=$(pwd) PYTHONNOUSERSITE=1  # HABITAT_DATA already exported, see INSTALL.MD
 PYTHONPATH=. python habitat_od_search/main.py --config habitat_od_search/config/hssd_rare_eval.yaml \
     --config-file third_party/Detic/configs/Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.yaml \
     --checkpoint third_party/Detic/models/Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.pth
 PYTHONPATH=. python habitat_od_search/enhanced_detector.py --scene 102344094
+PYTHONPATH=. python habitat_od_search/static_retrieval.py --scene 102344094 [--mask-pooling]
 PYTHONPATH=. python habitat_od_search/build_query_banks.py --config habitat_od_search/logs/configs/tune_gt_frames_max3.yaml
 PYTHONPATH=. python habitat_od_search/tune_threshold.py --config habitat_od_search/logs/configs/tune_gt_frames_max3.yaml \
     --queries text_full web web+text_cat gt_views

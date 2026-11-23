@@ -150,7 +150,7 @@ def _render_rgb_and_overlay(sim, cam_pos, target) -> Image.Image:
 
 def _isometric_rgb_and_overlay(sim) -> Image.Image:
     """Outside diagonal-elevated camera - for open-top scan meshes (HSSD, Gibson)."""
-    lower, upper = (np.array([b.x, b.y, b.z]) for b in sim.pathfinder.get_bounds())
+    lower, upper = (np.array(b) for b in sim.pathfinder.get_bounds())
     upper = np.array([upper[0], (lower[1] + upper[1]) / 2, upper[2]])
     center, extent = (lower + upper) / 2, upper - lower
     direction = np.array([1.0, 1.0, 1.0]) / math.sqrt(3)  # classic isometric viewing direction

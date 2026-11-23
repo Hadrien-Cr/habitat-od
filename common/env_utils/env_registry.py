@@ -7,11 +7,15 @@ habitat-lab config level is which scene_dataset_config.json scenes/episodes
 resolve against -- sensor setup, agent height, task type etc. are shared.
 """
 
+import os
+
+HABITAT_DATA = os.environ.get("HABITAT_DATA", "")
+
 ENV_SCENE_DATASET_CONFIG: dict[str, str] = {
-    "HSSD-HAB": "data/scene_datasets/hssd-hab/hssd-hab.scene_dataset_config.json",
-    "MP3D": "data/scene_datasets/mp3d/mp3d.scene_dataset_config.json",
-    "Gibson-Semantic": "data/scene_datasets/gibson_semantic/gibson_semantic.scene_dataset_config.json",
-    "ProcTHOR-hab": "data/scene_datasets/ai2thor-hab/ai2thor-hab/ai2thor-hab.scene_dataset_config.json",
+    "HSSD-HAB": os.path.join(HABITAT_DATA, "scene_datasets/hssd-hab/hssd-hab.scene_dataset_config.json"),
+    "MP3D": os.path.join(HABITAT_DATA, "scene_datasets/mp3d/mp3d.scene_dataset_config.json"),
+    "Gibson-Semantic": os.path.join(HABITAT_DATA, "scene_datasets/gibson_semantic/gibson_semantic.scene_dataset_config.json"),
+    "ProcTHOR-hab": os.path.join(HABITAT_DATA, "scene_datasets/ai2thor-hab/ai2thor-hab/ai2thor-hab.scene_dataset_config.json"),
 }
 
 

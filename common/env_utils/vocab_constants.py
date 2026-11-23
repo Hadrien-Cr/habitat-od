@@ -222,11 +222,12 @@ PROCTHOR_NATIVE_VOCAB = "PROCTHOR100"
 PROCTHOR_VARIANT_SUFFIXES = ("Sliced", "Cracked", "Filled", "Full", "Dirty", "Empty", "Small", "Medium", "Large")
 
 # PROCTHOR100: the subset of ProcTHOR-hab's native categories with (occurence in 12000 procthor scenes > 0)
+# Doorframe (a bare frame, its doorless opening) left out: a doorway is the same frame with its door in it
 CLASS_LABELS_PROCTHOR100 = [
     "unknown", "alarm clock", "apple", "arm chair", "baseball bat", "basket ball", "bed", "book", "boots", "bottle",
     "bowl", "box", "bread", "butter knife", "candle", "cart", "cell phone", "chair", "cloth", "clothes dryer",
     "coffee machine", "coffee table", "counter top", "credit card", "cup", "desk", "desk lamp", "desktop",
-    "dining table", "dish sponge", "dog bed", "doorframe", "doorway", "dresser", "dumbbell", "egg", "faucet",
+    "dining table", "dish sponge", "dog bed", "doorway", "dresser", "dumbbell", "egg", "faucet",
     "floor lamp", "fork", "fridge", "garbage bag", "garbage can", "house plant", "kettle", "key chain", "knife",
     "ladle", "laptop", "laundry hamper", "lettuce", "microwave", "mug", "newspaper", "ottoman", "painting", "pan",
     "paper towel roll", "pen", "pencil", "pepper shaker", "pillow", "plate", "plunger", "pot", "potato",

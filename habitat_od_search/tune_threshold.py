@@ -13,7 +13,7 @@ Use it as agent.confidence_thresh and agent.goal_score_thresh. Per-frame (score,
 first-hit one) goes to <run_dir>/tuning/<query>.md and is printed.
 
 Usage:
-  export HABITAT_DATA=$HOME/habitat_data/data BASE_DIR=$(pwd) PYTHONNOUSERSITE=1
+  export BASE_DIR=$(pwd) PYTHONNOUSERSITE=1  # HABITAT_DATA already exported, see INSTALL.MD
   PYTHONPATH=. python habitat_od_search/tune_threshold.py --config habitat_od_search/logs/configs/tune_gt_frames_max3.yaml \
       --queries text_full web web+text_cat gt_views
 """

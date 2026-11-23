@@ -61,7 +61,9 @@ dependencies:
     - albumentations
     - connected-components-3d
     - pyntcloud
-    - transformers==4.36.2
+    - transformers==4.37.2
+    - sentencepiece
+    - icrawler
     - addict
     - yapf
     - timm

@@ -1,27 +1,30 @@
-"""Pools a collection's per-scene shards, which habitat_embodied_sl/collect.py's calls write one scene each, into
-datasets/<run_name>/train/train.json, test/test.json and every variant's <variant>/object_ds/object_ds.json, each with its
-mosaic. Run once every scene's call is done, and again after recollecting a scene; a split without any shard is skipped.
+"""Pools a dataset's per-scene shards, which habitat_embodied_sl/build_dataset.py's or collect_test.py's calls write one
+scene each, into its split's json (object_ds/object_ds.json, train/train.json or test/test.json), mosaic and class counts,
+its classes and info those of the dataset's config.yaml. Run once every scene's call is done, and again after rewriting a
+scene.
 
 Usage:
-  PYTHONPATH=. python habitat_embodied_sl/merge.py habitat_embodied_sl/config/procthor8_collection.yaml
+  PYTHONPATH=. python habitat_embodied_sl/merge.py datasets/procthor8_V2_drop_add
 """
 import argparse
+from pathlib import Path
 
 import numpy as np
-from omegaconf import OmegaConf
 
-from common.env_utils.object_annotations import kept_classes_from_args
-from common.utils.dataset_writers import dataset_writers
+from common.utils.dataset_writers import SCENES_DIR, split_writer
+from common.utils.raw_scene import load_run_config
+
+_MOSAIC_SEED = 0  # only picks which records each split's mosaic previews
 
 
-def main(config: str) -> None:
-    cfg = OmegaConf.load(config)
-    for split, writer in dataset_writers(cfg, list(kept_classes_from_args(cfg.object_params))).items():
-        writer.merge(np.random.default_rng(cfg.seed))
-        print(f"Merged {split} ({writer.split_dir}), if it has any shard")
+def main(dataset_dir: Path) -> None:
+    cfg = load_run_config(dataset_dir)
+    for split_dir in sorted(shards.parent for shards in dataset_dir.glob(f"*/{SCENES_DIR}")):
+        split_writer(split_dir, cfg).merge(np.random.default_rng(_MOSAIC_SEED))
+        print(f"Merged {split_dir}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("config", help="Collection config: run_name, budgets, object_params.")
-    main(parser.parse_args().config)
+    parser.add_argument("dataset_dir", type=Path, help="A dataset folder, datasets/<run_name>/, holding its config.yaml.")
+    main(parser.parse_args().dataset_dir)

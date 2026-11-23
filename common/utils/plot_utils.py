@@ -1,9 +1,8 @@
 import json
 from itertools import combinations
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional, Union
+from typing import Optional
 
-from matplotlib.pyplot import text
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
@@ -18,7 +17,6 @@ from detectron2.data import Metadata
 
 from common.env_utils.object_detector_sensors import FILTER_KEYS
 from common.env_utils.sense import filter_reason
-from common.hybrid_exploration.plotting import plot_occupancy
 
 # Fixed-order categorical hues (validated for CVD/contrast) -- reused as-is,
 # never cycled per-key, so the same slot always means the same series.
@@ -41,8 +39,9 @@ def plot_metrics(metrics_json: Path, out_path: Path, keys: Optional[list[str]] =
     lr, and any periodic `EvalHook` results such as `bbox/AP`) against
     `iteration`, one subplot per metric -- never dual-axis, since loss/mAP/lr
     live on incomparable scales. Defaults to every numeric key in the log
-    except `iteration`/`lr`/`time`/`data_time`/`eta_seconds`; pass `keys` to
-    restrict to a subset (e.g. `["bbox/AP", "bbox/AP50"]`).
+    except `iteration`/`lr`/`time`/`data_time`/`eta_seconds` and per-class
+    `bbox/AP50-<class>` scores; pass `keys` to restrict to a subset (e.g.
+    `["bbox/AP", "bbox/AP50"]`).
 
     When `cfg.DATASETS.TEST` has more than one dataset (e.g. val + train),
     detectron2 prefixes eval keys with the dataset name (`"<dataset>/bbox/AP"`);
@@ -55,7 +54,8 @@ def plot_metrics(metrics_json: Path, out_path: Path, keys: Optional[list[str]] =
 
     if keys is None:
         skip = {"iteration", "lr", "time", "data_time", "eta_seconds"}
-        keys = sorted({k for r in records for k in r} - skip)
+        # one panel per class would outgrow matplotlib's 2^16 px limit on large static vocabularies
+        keys = sorted({k for r in records for k in r if "/AP50-" not in k} - skip)
 
     # key -> (series_label, metric_name); a key like "<dataset>/bbox/AP" (2+
     # slashes) is an eval metric for a specific dataset in a multi-dataset
@@ -224,27 +224,21 @@ def _cosine_linkage(embeddings: np.ndarray) -> np.ndarray:
     return linkage(embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True), method="ward")
 
 
-def plot_class_counts(counts: dict[str, dict[str, np.ndarray]], classes: list[str]) -> np.ndarray:
-    """RGB image of one horizontal bar chart per split of its count per class, stacked by scene, then one of
-    every split's total stacked, side by side on a shared class axis."""
-    fig, axes = plt.subplots(1, len(counts) + 1, figsize=(5 * (len(counts) + 1), 0.18 * len(classes) + 1), sharey=True, squeeze=False)
-    totals = {
-        split: _stacked_barh(ax, scene_counts, plt.get_cmap("BuPu" if split == "train" else "GnBu")(np.linspace(0.5, 1.0, len(scene_counts))))
-        for ax, (split, scene_counts) in zip(axes.flat, counts.items())
-    }
-    _stacked_barh(axes[0, -1], totals, _SERIES_COLORS)
-    titles = [*counts, " + ".join(counts)]
-    for ax, title, total in zip(axes.flat, titles, [*totals.values(), sum(totals.values())]):
-        ax.set_title(f"{title} ({int(total.sum())})", fontsize=9)
-        ax.set_xlabel("count")
-        ax.grid(True, axis="x", alpha=0.3)
-    axes[0, 0].set_yticks(np.arange(len(classes)), classes, fontsize=7)
-    axes[0, 0].set_ylim(len(classes) - 0.5, -0.5)
+def plot_class_counts(scene_counts: dict[str, np.ndarray], classes: list[str], title: str, out_path: Path) -> Path:
+    """Horizontal bar chart of a split's count per class, stacked by scene, on a log scale, saved to out_path."""
+    fig, ax = plt.subplots(figsize=(6, 0.18 * len(classes) + 1))
+    total = _stacked_barh(ax, scene_counts, plt.get_cmap("GnBu")(np.linspace(0.5, 1.0, len(scene_counts))))
+    ax.set_title(f"{title} ({int(total.sum())})", fontsize=9)
+    ax.set_xscale("log")
+    ax.set_xlim(left=0.8)  # a class with a single object still shows a bar
+    ax.set_xlabel("count (log scale)")
+    ax.grid(True, axis="x", alpha=0.3)
+    ax.set_yticks(np.arange(len(classes)), classes, fontsize=7)
+    ax.set_ylim(len(classes) - 0.5, -0.5)
     fig.tight_layout()
-    fig.canvas.draw()
-    image = np.asarray(fig.canvas.buffer_rgba())[:, :, :3].copy()
+    fig.savefig(out_path, dpi=150)
     plt.close(fig)
-    return image
+    return out_path
 
 
 def _stacked_barh(ax, series_counts: dict[str, np.ndarray], colors: list) -> np.ndarray:
@@ -578,6 +572,12 @@ def make_mosaic(
     processed_images = [
         _framed_tile(img, filename, tile_colors[i] if tile_colors else None)
         for i, (filename, img) in enumerate(list_fnames_images)
+    ]
+    # SUN RGB-D's sensors give frames of different sizes, which hstack/vstack can't join
+    tile_h, tile_w = max(img.shape[0] for img in processed_images), max(img.shape[1] for img in processed_images)
+    processed_images = [
+        np.pad(img, ((0, tile_h - img.shape[0]), (0, tile_w - img.shape[1])) + ((0, 0),) * (img.ndim - 2))
+        for img in processed_images
     ]
 
     width = max(row_sizes) if row_sizes else N_cols

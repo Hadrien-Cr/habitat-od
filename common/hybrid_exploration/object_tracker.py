@@ -1,6 +1,6 @@
 """The objects HybridFrontierAgent inspects, tracked across frames from lifted detections already denoised as
-ConceptGraphMemory does (concept_graph.py's ProcessedFrame, shared with it), with its match score (3D IoU with the object's part in
-view + region-embedding similarity). Unlike ConceptGraphMemory, tracked objects are never merged with each other or
+concept_graph.py's add_processed does (its ProcessedFrame, shared with it), with its match score (3D IoU with the object's part in
+view + region-embedding similarity). Unlike add_processed's fused objects, tracked objects are never merged with each other or
 dropped, so each keeps its id, the key of the agent's seen sectors."""
 from dataclasses import dataclass, field
 from typing import Dict, List

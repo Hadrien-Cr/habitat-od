@@ -1,7 +1,7 @@
-"""Fine-tuning entry point for habitat_embodied_sl/meta_arch.py's CustomFT_Detic on
-ObjectViewsDataset -- one of the collection config's three train variants (pseudo,
-gt, gt++; habitat_embodied_sl/collect.py), scored against its written test set
-(datasets/<run_name>/test). For a plain COCO architecture trained from scratch/a COCO checkpoint
+"""Fine-tuning entry point for habitat_embodied_sl/meta_arch.py's CustomFT_Detic on the train split its config names in
+DATASETS.TRAIN (common/env_utils/dataset_registry.py's names): one variant's dataset (habitat_embodied_sl/build_dataset.py),
+an object-view split (V1_pseudo, V2_drop_add, V3_cls_box_drop_add) or V4_full's frames with every ground-truth instance --
+scored against DATASETS.TEST, whose first split (collect_test.py's test set) gives the training classes. For a plain COCO architecture trained from scratch/a COCO checkpoint
 instead (e.g. BoxSup-C2_L_CLIP_SwinB_896b32_4x), use pretrain.py.
 
 Key methods:
@@ -9,44 +9,41 @@ Key methods:
                                             zero-shot classifier reset to the test set's classes,
                                             its teacher loaded from the checkpoint's
                                             backbone and proposal generator.
-  ObjectViewsTrainer.build_train_loader -- balanced_loader over DATASETS.TRAIN's variant's
-                                            ObjectViewsDataset, its frames resized and flipped as
+  ObjectViewsTrainer.build_train_loader -- balanced_loader over an object-view DATASETS.TRAIN
+                                            split (detectron2's shuffled loader over a split of
+                                            frames), its frames resized and flipped as
                                             cfg.INPUT's MIN_SIZE_TRAIN and RANDOM_FLIP say (test
                                             frames: MIN_SIZE_TEST), cycled past its one-epoch length
                                             since SimpleTrainer.run_step expects an infinite
                                             iterable.
   ObjectViewsTrainer.build_optimizer    -- Detic's build_custom_optimizer, so SOLVER.OPTIMIZER and
                                             SOLVER.BACKBONE_MULTIPLIER apply (detectron2's own is SGD only).
-ObjectViewsTrainer.test scores every test set in its own vocabulary: the collection's, then each --static-test-dirs
-set (e.g. common/env_utils/nyu_depth_v2.py's), the classifier reset to its classes' CLIP embeddings meanwhile.
+ObjectViewsTrainer.test scores the first DATASETS.TEST split at every evaluation, and at the last one every DATASETS.TEST
+split (e.g. procthor8's train frames and habitat_embodied_sl/nyu_depth_v2.py's set), each in its own vocabulary, the classifier
+reset to its classes' CLIP embeddings meanwhile: their initial scores are the source model's (adapt.py --method source).
 Dataset registration, the evaluator-wired Trainer base (each evaluation's sample predictions logged to TensorBoard), and
 final-checkpoint reporting are shared with pretrain.py via common/utils/detectron_trainer.py. After training,
 write_run_analysis adds per-class and box-size plots and tables to the run's logs.
 
 Single-GPU only (no launch()/--num-gpus, unlike pretrain.py).
 
-Usage (defaults: procthor8, config/r50_procthor8_embodied_sl_gt++.yaml; the config's DATASETS.TRAIN names the variant):
-  PYTHONPATH=. python habitat_embodied_sl/main.py --config habitat_embodied_sl/config/procthor8_collection.yaml \
-      --config-file habitat_embodied_sl/config/r50_procthor8_embodied_sl_gt++.yaml
+Usage (default: config/r50_procthor8_embodied_sl_V3_cls_box_drop_add.yaml, whose DATASETS name its splits):
+  PYTHONPATH=. python habitat_embodied_sl/main.py --config-file habitat_embodied_sl/config/r50_procthor8_embodied_sl_V2_drop_add.yaml
 """
 import csv
-import json
 from collections import Counter
 from itertools import cycle
 from pathlib import Path
 from typing import Callable
 
 import numpy as np
-from detectron2.data import DatasetCatalog, DatasetMapper, detection_utils  # type: ignore
+from detectron2.data import DatasetCatalog, DatasetMapper, MetadataCatalog, build_detection_train_loader, detection_utils  # type: ignore
 from detectron2.engine import default_argument_parser, default_setup  # type: ignore
 from detectron2.engine import defaults as detectron2_defaults  # type: ignore
-from omegaconf import OmegaConf
 
-from common import constants
-from common.utils.detectron_trainer import (
-    IMAGE_LOG_SAMPLES, ClassCountsWriter, InitialEvalHook, PeriodicImageWriter, Trainer, register_single_dataset, report_results,
-)
-from common.utils.dataset_writers import IMAGES_DIR, OBJECT_DS_DIR, VARIANTS, frame_scene, split_json_path
+from common.env_utils.dataset_registry import load_dataset, register_datasets
+from common.utils.detectron_trainer import IMAGE_LOG_SAMPLES, InitialEvalHook, PeriodicImageWriter, Trainer, report_results
+from common.utils.dataset_writers import frame_scene
 from common.utils.object_views_dataset import ObjectViewsDataset, balanced_loader
 from common.utils.plot_utils import (
     class_ap_history, load_metrics, plot_box_areas, plot_class_ap, plot_embedding_tsne, plot_metrics, plot_similarity_triangle,
@@ -56,7 +53,7 @@ from detic.custom_solver import build_custom_optimizer  # type: ignore
 
 import habitat_embodied_sl.meta_arch  # noqa: F401  registers CustomFT_Detic/PositiveOnlyDeticCascadeROIHeads
 
-DEFAULT_CONFIG = "habitat_embodied_sl/config/r50_procthor8_embodied_sl_gt++.yaml"
+DEFAULT_CONFIG = "habitat_embodied_sl/config/r50_procthor8_embodied_sl_V3_cls_box_drop_add.yaml"
 
 # default_setup logs the config through _highlight's terminal colour codes, which land in log.txt too
 detectron2_defaults._highlight = lambda code, filename: code
@@ -78,27 +75,25 @@ class ObjectViewsTrainer(Trainer):
     def build_optimizer(cls, cfg, model):
         return build_custom_optimizer(cfg, model)
 
-    @classmethod
-    def test(cls, cfg, model):
-        """Trainer.test of each cfg.DATASETS.TEST dataset in its own vocabulary (score_each_vocabulary)."""
+    def test(self, cfg, model):
+        """Trainer.test of the collection's test set, and at the last evaluation of every cfg.DATASETS.TEST dataset in its
+        own vocabulary (score_each_vocabulary)."""
+        if self.iter + 1 < self.max_iter:
+            return Trainer.test(with_test_dataset(cfg, cfg.DATASETS.TEST[0]), model)
         return score_each_vocabulary(cfg, model, lambda dataset_name: Trainer.test(with_test_dataset(cfg, dataset_name), model))
 
     def build_train_loader(self, cfg):
         mapper = DatasetMapper(is_train=True, augmentations=detection_utils.build_augmentation(cfg, is_train=True), image_format="RGB")
+        if not MetadataCatalog.get(cfg.DATASETS.TRAIN[0]).get("object_views"):
+            return build_detection_train_loader(
+                self.train_dataset.records, mapper=mapper, total_batch_size=cfg.SOLVER.IMS_PER_BATCH, num_workers=cfg.DATALOADER.NUM_WORKERS,
+            )
         return cycle(balanced_loader(self.train_dataset, cfg.SOLVER.IMS_PER_BATCH, mapper))
 
     def build_hooks(self):
-        """Trainer's hooks plus, before training, the loaded weights' test scores and each split's class counts, and the
-        predictions on IMAGE_LOG_SAMPLES training views (fixed seed) logged to TensorBoard at every evaluation."""
+        """Trainer's hooks plus, before training, the loaded weights' test scores, and the predictions on IMAGE_LOG_SAMPLES
+        training views (fixed seed) logged to TensorBoard at every evaluation."""
         hooks = super().build_hooks()
-        split_annotations = {
-            "train": [(record["object_key"].split("/")[0], record["annotations"][0]["category_id"]) for record in self.train_dataset.records],
-            "test": [
-                (frame_scene(record["file_name"]), annotation["category_id"])
-                for record in DatasetCatalog.get(self.cfg.DATASETS.TEST[0]) for annotation in record["annotations"]
-            ],
-        }
-        hooks.insert(-1, ClassCountsWriter(split_annotations, list(self.vocabulary.classes)))
         hooks.insert(-1, InitialEvalHook())
         records = self.train_dataset.records
         views = [records[index] for index in np.random.default_rng(0).choice(len(records), size=IMAGE_LOG_SAMPLES, replace=False)]
@@ -126,10 +121,21 @@ def score_each_vocabulary(cfg, model, score: Callable[[str], dict]) -> dict:
     return {**results[first], **{dataset_name: results[dataset_name] for dataset_name in others}}
 
 
+def object_appearances(records: list) -> list:
+    """(object key, class id) of every annotation of records: an object view's object_key, or a full frame's
+    <scene>/<object_id>."""
+    return [
+        (record.get("object_key") or f"{frame_scene(record['file_name'])}/{annotation['object_id']}", annotation["category_id"])
+        for record in records for annotation in record["annotations"]
+    ]
+
+
 def write_class_table(class_aps: dict, classes: list, train_records: list, test_records: list, out_path: Path) -> Path:
-    """CSV of each class's training objects and views, test instances, and AP50 at the first, best and last evaluation."""
-    train_objects = Counter(record["annotations"][0]["category_id"] for record in {record["object_key"]: record for record in train_records}.values())
-    train_views = Counter(record["annotations"][0]["category_id"] for record in train_records)
+    """CSV of each class's training objects and views (annotations), test instances, and AP50 at the first, best and last
+    evaluation."""
+    appearances = object_appearances(train_records)
+    train_objects = Counter(dict(appearances).values())
+    train_views = Counter(class_id for _, class_id in appearances)
     test_instances = Counter(annotation["category_id"] for record in test_records for annotation in record["annotations"])
     columns = ["class", "train_objects", "train_views", "test_instances", "ap50_initial", "ap50_best", "ap50_final", "ap50_change"]
     with open(out_path, "w", newline="") as table:
@@ -160,40 +166,34 @@ def write_run_analysis(cfg, trainer: ObjectViewsTrainer) -> None:
     print(f"Wrote box sizes to {plot_box_areas(split_areas, out_dir / 'box_areas.png')}")
 
 
-def collection_root(args) -> Path:
-    return constants.DATASET_ROOT / OmegaConf.load(args.config).run_name
-
-
 def setup(args, run_name: str):
-    """(cfg logged to logs/<run_name>, scored on the collection's test set, then its train set (the train frames' full
-    ground truth) and the static test sets; the test set's Vocabulary)."""
-    run_root = collection_root(args)
-    test_dataset = register_single_dataset(run_root / "test")
-    vocabulary = dataset_vocabulary(test_dataset)
+    """(cfg logged to logs/<run_name>, every built split registered (register_datasets) and its DATASETS.TEST loaded, its
+    classes its first test split's; that split's Vocabulary, the training classes)."""
+    register_datasets()
     cfg = detic_cfg(args.config_file, args.opts)
+    for dataset_name in cfg.DATASETS.TEST:
+        load_dataset(dataset_name)
+    vocabulary = dataset_vocabulary(cfg.DATASETS.TEST[0])
     cfg.MODEL.ROI_HEADS.NUM_CLASSES = len(vocabulary.classes)
-    static_datasets = [register_single_dataset(Path(path)) for path in args.static_test_dirs]
-    cfg.DATASETS.TEST = (test_dataset, register_single_dataset(run_root / "train"), *static_datasets)
     cfg.OUTPUT_DIR = str(Path(args.config_file).resolve().parent.parent / "logs" / run_name)
     cfg.freeze()
     default_setup(cfg, args)
     return cfg, vocabulary
 
 
-def object_views(cfg, vocabulary, run_root: Path) -> ObjectViewsDataset:
-    """The ObjectViewsDataset of the train variant cfg.DATASETS.TRAIN names, its classes those of vocabulary."""
-    if len(cfg.DATASETS.TRAIN) != 1 or cfg.DATASETS.TRAIN[0] not in VARIANTS:
-        raise ValueError(f"DATASETS.TRAIN must name one train variant of {VARIANTS}, got {cfg.DATASETS.TRAIN}")
-    object_ds_json = split_json_path(run_root / cfg.DATASETS.TRAIN[0] / OBJECT_DS_DIR)
-    if tuple(json.loads(object_ds_json.read_text())["info"]["categories"]) != vocabulary.classes:
-        raise ValueError(f"{object_ds_json}'s classes differ from the test set's, in content or order: train labels would index the wrong class")
-    return ObjectViewsDataset.from_json(object_ds_json, run_root / IMAGES_DIR)
+def train_set(cfg, vocabulary) -> ObjectViewsDataset:
+    """The records of cfg's one DATASETS.TRAIN split, object views or fully annotated frames, its classes vocabulary's."""
+    (dataset_name,) = cfg.DATASETS.TRAIN
+    dataset = ObjectViewsDataset(DatasetCatalog.get(dataset_name))
+    if tuple(MetadataCatalog.get(dataset_name).thing_classes) != vocabulary.classes:
+        raise ValueError(f"{dataset_name}'s classes differ from the test set's, in content or order: train labels would index the wrong class")
+    return dataset
 
 
 def main(args, trainer_class=ObjectViewsTrainer):
     cfg, vocabulary = setup(args, args.run_name or Path(args.config_file).stem)
 
-    trainer = trainer_class(cfg, vocabulary, object_views(cfg, vocabulary, collection_root(args)))
+    trainer = trainer_class(cfg, vocabulary, train_set(cfg, vocabulary))
     embeddings, classes = vocabulary.clip_embeddings().T.numpy(), list(vocabulary.classes)
     print(f"Wrote vocabulary t-SNE to {plot_embedding_tsne(embeddings, classes, Path(cfg.OUTPUT_DIR) / 'vocabulary_tsne.png')}")
     print(f"Wrote vocabulary similarity to {plot_similarity_triangle(embeddings, classes, Path(cfg.OUTPUT_DIR) / 'vocabulary_similarity.png')}")
@@ -212,10 +212,8 @@ def main(args, trainer_class=ObjectViewsTrainer):
 
 
 def train_argument_parser():
-    """detectron2's default_argument_parser plus the collection config, static test sets and log folder name of a run."""
+    """detectron2's default_argument_parser plus the log folder name of a run."""
     parser = default_argument_parser()
-    parser.add_argument("--config", default="habitat_embodied_sl/config/procthor8_collection.yaml", help="Collection config: run_name, budgets, object_params.")
-    parser.add_argument("--static-test-dirs", nargs="*", default=[], help="Static COCO test sets (<dir>/test.json, images in <dir>/../images/, e.g. common/env_utils/nyu_depth_v2.py's) also scored, each in its own vocabulary.")
     parser.add_argument("--run-name", help="Log folder name under logs/, defaulting to --config-file's stem.")
     return parser
 

@@ -6,8 +6,10 @@ HSSD-rare ObjectNav episodes. Ground truth comes from the simulator's semantic s
 
 # Dataset collection
 
-`habitat_embodied_sl/collect.py` explores scenes with an exploration agent, maps Detic detections into object views,
-and writes COCO train/test splits (e.g. `datasets/smoke_sl/{train,test}`). Its pipeline steps, thresholds and
+`habitat_embodied_sl/collect_train.py` explores train scenes with an exploration agent, mapping Detic detections, and records
+them raw; `habitat_embodied_sl/build_dataset.py` turns each record into one variant's dataset, its object views or fully
+annotated frames (e.g. `datasets/procthor8_V2_drop_add`), without the simulator; `habitat_embodied_sl/collect_test.py`
+collects test scenes straight into a COCO test set (e.g. `datasets/procthor8_test`). Its pipeline steps, thresholds and
 outputs are described in `habitat_embodied_sl/README.md`.
 
 # Training
@@ -17,24 +19,22 @@ Two entry points, both launched from the repo root with `PYTHONPATH=.`:
 - **`pretrain.py`** -- trains a plain detectron2 COCO architecture from scratch or a COCO
   checkpoint (e.g. `BoxSup-C2_L_CLIP_SwinB_896b32_4x`), on `coco_testbench`'s local COCO copy or
   any registered COCO dataset. Supports multi-GPU via `--num-gpus`.
-- **`habitat_embodied_sl/main.py`** -- fine-tunes `habitat_embodied_sl/meta_arch.py`'s `CustomFT_Detic` on an
-  `ObjectViewsDataset` (one of `habitat_embodied_sl/collect.py`'s collection train variants:
-  `pseudo`, `gt`, `gt++`), scored against that run's written test set (e.g.
-  `datasets/procthor_medium/test`), also once before training (`InitialEvalHook`, logged at iteration 0). Each evaluation also saves its confusion matrix as `eval/<dataset>/confusion_matrix_iter<N>.png` (`ConfusionMatrixWriter`). Before
-  training it also logs to TensorBoard a bar chart of the train and test sets' annotation counts per class, each stacked by scene, then both stacked
-  (`ClassCountsWriter`, image `class_counts`, also saved as `class_counts.png` in the run's log folder). Single-GPU only.
+- **`habitat_embodied_sl/main.py`** -- fine-tunes `habitat_embodied_sl/meta_arch.py`'s `CustomFT_Detic` on one of
+  the variant datasets `habitat_embodied_sl/build_dataset.py` writes (the object-view `V1_pseudo`, `V2_drop_add`,
+  `V3_cls_box_drop_add`, or `V4_full`'s fully annotated frames), named in its config's `DATASETS.TRAIN` and scored against
+  its `DATASETS.TEST` (e.g. `procthor8_test_test`), also once before training (`InitialEvalHook`, logged at iteration 0). Each evaluation also saves its confusion matrix as `eval/<dataset>/confusion_matrix_iter<N>.png` (`ConfusionMatrixWriter`). Single-GPU only.
 
 Both score against their test set via a training-time `EvalHook`. Dataset registration, the
 evaluator-wired `Trainer`, TensorBoard image logging (ground truth as shaded boxes and one-class-per-box predictions over 0.3 as outlined boxes, on one frame under `images/<set>/`: 4 frames of every test set at each evaluation, also saved as `eval/<set>/inference_samples_iter<N>.jpg`, plus 4 training views for `main.py`), and
 final-checkpoint reporting are shared by both via `common/utils/detectron_trainer.py`.
 
 - **`evaluate.py`** -- standalone evaluation of a Detic config/checkpoint against a COCO test
-  split written by `habitat_embodied_sl/collect.py` (e.g. `datasets/smoke_sl/test`), via Detic's own
+  split written by `habitat_embodied_sl/collect_test.py` (e.g. `datasets/procthor8_test/test`), via Detic's own
   `train_net.py` `do_test` and `COCOEvaluator`. Resets Detic's zero-shot classifier to the CLIP
   text embeddings of the split's categories.
 
-`habitat_embodied_sl/config/r50_procthor8_embodied_sl_gt++.yaml` (the reference R50 fine-tune on the `gt++` variant, 1,000 iterations)
-and `config/procthor8_collection.yaml` are `main.py`'s defaults:
+`habitat_embodied_sl/config/r50_procthor8_embodied_sl_V3_cls_box_drop_add.yaml` (the reference R50 fine-tune on the `V3_cls_box_drop_add` variant, 1,000 iterations)
+is `main.py`'s default, its `DATASETS` naming the registered splits it trains and scores on:
 
 ```bash
 PYTHONPATH=. python habitat_embodied_sl/main.py
@@ -60,7 +60,7 @@ Steps, thresholds, metrics and outputs are described in `habitat_od_search/READM
   `habitat_od_search/logs/enhanced_detector/<scene_id>/<category>/`.
 
 ```bash
-export HABITAT_DATA=$HOME/habitat_data/data BASE_DIR=$(pwd) PYTHONNOUSERSITE=1
+export BASE_DIR=$(pwd) PYTHONNOUSERSITE=1  # HABITAT_DATA already exported, see INSTALL.MD
 PYTHONPATH=. python habitat_od_search/main.py --config habitat_od_search/config/hssd_rare_eval.yaml
 PYTHONPATH=. python habitat_od_search/enhanced_detector.py --scene 102344094
 ```

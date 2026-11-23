@@ -9,6 +9,7 @@ data/
 *.pt
 *.pth
 datasets/
+raw/
 datadump/
 gibson_data/*
 !gibson_data/verified_sample/

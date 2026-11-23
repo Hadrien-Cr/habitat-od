@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import List
 
 import numpy as np
+import torch
 from pycocotools import mask as mask_util
 
 
@@ -16,8 +17,20 @@ def json_rle(rle: dict) -> dict:
     return dict(rle, counts=rle["counts"].decode("ascii"))
 
 
+def rle_from_json(rle: dict) -> dict:
+    """json_rle's inverse."""
+    return dict(rle, counts=rle["counts"].encode("ascii"))
+
+
 def decoded_mask(rle: dict) -> np.ndarray:
     return mask_util.decode(rle).astype(bool)
+
+
+def stacked_masks(rles: List[dict], image_size: tuple) -> torch.Tensor:
+    """(N, H, W) boolean masks of the RLEs, (0, H, W) for none."""
+    if not rles:
+        return torch.zeros((0, *image_size), dtype=torch.bool)
+    return torch.from_numpy(decoded_mask(rles)).permute(2, 0, 1)
 
 
 def write_json(path: Path, content) -> None:

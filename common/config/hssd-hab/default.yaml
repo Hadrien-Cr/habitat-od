@@ -19,7 +19,7 @@ habitat:
     iterator_options:
       shuffle: False
   simulator:
-    scene_dataset: "data/scene_datasets/hssd-hab/hssd-hab.scene_dataset_config.json"
+    scene_dataset: "${oc.env:HABITAT_DATA}/scene_datasets/hssd-hab/hssd-hab.scene_dataset_config.json"
     turn_angle: 45
     navmesh_include_static_objects: True
     agents:
@@ -77,9 +77,9 @@ habitat:
     # (e.g. tests) without going through collect_raw.
     type: ExplorationSynthetic
     split: train
-    data_path: data/datasets/objectnav/hssd-hab/{split}/{split}.json.gz
-    scenes_dir: data/scene_datasets/hssd-hab/scenes
-    scene_dataset_config: data/scene_datasets/hssd-hab/hssd-hab.scene_dataset_config.json
+    data_path: ${oc.env:HABITAT_DATA}/datasets/objectnav/hssd-hab/{split}/{split}.json.gz
+    scenes_dir: ${oc.env:HABITAT_DATA}/scene_datasets/hssd-hab/scenes
+    scene_dataset_config: ${oc.env:HABITAT_DATA}/scene_datasets/hssd-hab/hssd-hab.scene_dataset_config.json
     content_scenes: ["*"]
 
 object_params:

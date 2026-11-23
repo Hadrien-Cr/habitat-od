@@ -6,9 +6,8 @@ of frames; its detections scored at least PSEUDO_LABEL_THRESH become the targets
 a photometrically augmented copy of the frames (strong_augmentation, boxes unchanged). After the optimizer step,
 teacher_ema moves toward the student by EMA_MOMENTUM. Evaluation and the reported scores are teacher_ema's.
 
-Usage (defaults: procthor8, config/r50_procthor8_unsup_mean_teacher.yaml, the gt++ variant's frames):
-  PYTHONPATH=. python habitat_embodied_sl/mean_teacher.py --config habitat_embodied_sl/config/procthor8_collection.yaml \
-      --config-file habitat_embodied_sl/config/r50_procthor8_unsup_mean_teacher.yaml
+Usage (default: config/r50_procthor8_unsup_mean_teacher.yaml, the frames of its DATASETS.TRAIN split, V3_cls_box_drop_add's):
+  PYTHONPATH=. python habitat_embodied_sl/mean_teacher.py --config-file habitat_embodied_sl/config/r50_procthor8_unsup_mean_teacher.yaml
 """
 import copy
 from typing import Iterable, Iterator, List

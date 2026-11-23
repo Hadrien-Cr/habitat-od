@@ -12,7 +12,7 @@ keeps the largest DBSCAN cluster plus any smaller one attached to it. Into tests
 view's rgb.png, clusters.ply (floor in brown, walls in gray, noise in black and every other point colored by its
 DBSCAN cluster, before denoise drops everything but the kept clusters), degenerate_mask.png, denoised.ply (the points
 denoise kept) and raytraced_mask.png, the cleaned mask they raytrace in the view
-(ConceptGraphResolvedObjects.visible_objects).
+(ResolvedObjects.visible_objects).
 """
 
 import math
@@ -33,10 +33,10 @@ from scipy.spatial import KDTree
 
 from common.env_utils.object_annotations import object_world_mesh
 from common.env_utils.vocab_constants import make_colors
-from common.utils.concept_graph import ConceptGraphConfig, ConceptGraphResolvedObjects
+from common.utils.concept_graph import ConceptGraphConfig
 from common.utils.eval_utils import _box_iou_3d
 from common.utils.pose_utils import sensor_pose_matrix
-from common.utils.projection_utils import background_wall_mask, dbscan_labels, downsample_points, floor_mask, main_cluster_mask, object_points
+from common.utils.projection_utils import ResolvedObjects, background_wall_mask, dbscan_labels, downsample_points, floor_mask, main_cluster_mask, object_points
 from common.utils.retrieval import SegmentationStyle, instances_from_masks, segmentation_tile
 from common.utils.spot import fill_convex_hull
 from procthor_scene import DATASET_CONFIG, DEPTH_CAMERA, floor_height, procthor_sim
@@ -116,7 +116,7 @@ def _aligned_box(points: np.ndarray) -> np.ndarray:
 
 def _raytraced_mask(points: np.ndarray, depth: np.ndarray, pose: np.ndarray) -> torch.Tensor:
     """Mask of points raytraced in depth from pose as a single resolved object."""
-    resolved = ConceptGraphResolvedObjects()
+    resolved = ResolvedObjects(ConceptGraphConfig.downsample_voxel_size)
     resolved.resolved_points, resolved.resolved_infos, resolved.kdtree = points, np.zeros((len(points), 2), dtype=int), KDTree(points)
     masks, _, _ = resolved.visible_objects(depth, pose, DEPTH_CAMERA.hfov, DEPTH_CAMERA.min_depth, DEPTH_CAMERA.max_depth, min_mesh_visibility_fraction=0.0)
     return masks[0]

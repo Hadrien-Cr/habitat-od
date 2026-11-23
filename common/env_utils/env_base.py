@@ -1,7 +1,6 @@
 import itertools
-import os
 from dataclasses import dataclass
-from typing import Any, Optional, cast
+from typing import Any, Optional
 
 from omegaconf import read_write
 
@@ -13,12 +12,12 @@ import trimesh
 from habitat import RLEnv # type: ignore
 from habitat.config import read_write as habitat_read_write # type: ignore
 from habitat_baselines.common.baseline_registry import baseline_registry # type: ignore
-from habitat.utils.visualizations import fog_of_war, maps # type: ignore
+from habitat.utils.visualizations import maps # type: ignore
 from gym import spaces
 from hydra.core.config_store import ConfigStore
 from habitat.config.default_structured_configs import ActionConfig, ObjectDetectorGTSensorConfig # type: ignore
 from habitat.core.embodied_task import SimulatorTaskAction # type: ignore
-from habitat.tasks.nav.nav import NavigationGoal, NavigationTask, NavigationEpisode # type: ignore
+from habitat.tasks.nav.nav import NavigationTask, NavigationEpisode # type: ignore
 from habitat.utils.geometry_utils import quaternion_from_coeff # type: ignore
 from habitat_sim.utils.common import quat_rotate_vector
 
@@ -33,6 +32,7 @@ from common.env_utils.sensors import AgentCollisionSensor, AgentPositionSensor, 
 from common.hybrid_exploration.exploration_map import MapConfig
 from common.hybrid_exploration.frontier_exp_agent import DiscretePlannerConfig, FrontierExplorationAgent, FrontierExplorationConfig, obs_dilation_cells
 from common.hybrid_exploration.hybrid_agent import HybridConfig, HybridFrontierAgent
+from common.utils.concept_graph import ConceptGraphConfig
 from common.utils.plot_utils import plot_semantic_2d_map
 from common.utils.pose_utils import quaternion_from_rpy
 from common.utils.projection_utils import DepthCamera, TOPDOWN_MAP_SCALE, mesh_footprint_on_grid
@@ -449,7 +449,8 @@ def sensor_geometry(habitat_cfg: Any) -> tuple[float, DepthCamera]:
 
 def build_agent(
     agent_name: str, rng: np.random.Generator, env: ExplorationEnv, habitat_cfg: Any, visibility_dist_m: float = 3.0,
-    dump_location: str = "outputs/planner_dumps", exp_name: str = "exp",
+    dump_location: str = "outputs/planner_dumps", exp_name: str = "exp", resolution_m: float = MapConfig.resolution_m,
+    fusion_config: ConceptGraphConfig = ConceptGraphConfig(),
 ) -> Agent:
     """Call reset(position, floor_height) on the returned FrontierExplorationAgent/HybridFrontierAgent
     (BaseExplorationAgent) once an episode is active, before the first act()."""
@@ -459,13 +460,13 @@ def build_agent(
     fov, camera = sensor_geometry(habitat_cfg)
     agent_radius_m = simulator_cfg.agents.main_agent.radius
     if agent_name == "fbe":
-        map_config = MapConfig(fov, visibility_dist_m=visibility_dist_m)
+        map_config = MapConfig(fov, resolution_m=resolution_m, visibility_dist_m=visibility_dist_m)
         planner_config = DiscretePlannerConfig(simulator_cfg.turn_angle, obs_dilation_selem_radius=obs_dilation_cells(agent_radius_m, map_config.resolution_m))
         config = FrontierExplorationConfig(map_config, planner_config)
         return FrontierExplorationAgent(config, camera, rng, dump_location, exp_name)
     if agent_name == "hybrid":
-        map_config = MapConfig(fov)
+        map_config = MapConfig(fov, resolution_m=resolution_m)
         planner_config = DiscretePlannerConfig(simulator_cfg.turn_angle, obs_dilation_selem_radius=obs_dilation_cells(agent_radius_m, map_config.resolution_m))
-        config = HybridConfig(map_config, simulator_cfg.turn_angle, planner_config=planner_config)
+        config = HybridConfig(map_config, simulator_cfg.turn_angle, planner_config=planner_config, fusion=fusion_config)
         return HybridFrontierAgent(config, camera, rng, dump_location, exp_name)
     raise ValueError(f"Unknown agent {agent_name!r}")

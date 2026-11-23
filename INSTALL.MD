@@ -3,10 +3,9 @@
 Every block runs from the repository root, and none changes directory: `pip`/`git` take paths (`git -C`, `pip install -e <dir>`).
 
 ```bash
-# Environment. The configs and commands read data/... from the repo root, so the link is named data whatever HABITAT_DATA's name.
+# Environment. All data paths (configs, scripts, tests) resolve through $HABITAT_DATA; put the export in ~/.bashrc.
 export PYTHONNOUSERSITE=1 BASE_DIR=$(pwd)
-export HABITAT_DATA=<path/to/habitat/data>   # e.g. ~/habitat_data/data
-ln -s $HABITAT_DATA data
+export HABITAT_DATA=<path/to/habitat/data>
 conda env create -n habitat_od -f environment.yml
 conda activate habitat_od
 export CUDA_HOME=$CONDA_PREFIX
@@ -40,7 +39,7 @@ git -C third_party/Detic submodule update --init
 ```
 
 ```bash
-# Checkpoints. Detic Swin-B: collect.py's detector. Detic R50: the source model of every config/r50_*.yaml
+# Checkpoints. Detic Swin-B: collect_train.py's detector. Detic R50: the source model of every config/r50_*.yaml
 # (main.py, mean_teacher.py, adapt.py). SAM ViT-B: masks prompted with Detic's boxes during collection.
 mkdir -p third_party/Detic/models
 wget --no-check-certificate https://dl.fbaipublicfiles.com/detic/Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.pth -P third_party/Detic/models/
@@ -131,11 +130,15 @@ unzip -q $HABITAT_DATA/replica/nice_slam/Replica.zip 'Replica/office2/*' 'Replic
 ```
 
 ```bash
-# Embodied SL datasets and runs (habitat_embodied_sl/README.md). procthor8: collect every scene, one collect.py call each
-# (Running in that README), then pool the scenes' shards into each split's json -- or unzip a copy of datasets/procthor_medium,
-# already merged, into datasets/. NYU Depth V2's test set is converted from the .mat above.
-PYTHONPATH=. python habitat_embodied_sl/merge.py habitat_embodied_sl/config/procthor8_collection.yaml
-PYTHONPATH=. python common/env_utils/nyu_depth_v2.py datasets/nyu_depth_v2
-# Source, NORM, Mean-Teacher and embodied SL on each train variant, one after another (logs in outputs/procthor8_runs/)
-mkdir -p outputs && GPU=0 nohup bash habitat_embodied_sl/run.sh > outputs/run.log 2>&1 &
+# Embodied SL datasets and runs (habitat_embodied_sl/README.md). procthor8: record every train scene raw, one collect_train.py
+# call each, build each into every variant's dataset, one build_dataset.py call each listing them, and collect every test scene into
+# the test set, one collect_test.py call each (Running in that README), then pool each dataset's shards. NYU Depth V2's
+# test set is converted from the .mat above.
+for dataset in procthor8_V1_pseudo procthor8_V2_drop_add procthor8_V3_cls_box_drop_add procthor8_V4_full procthor8_test; do
+  PYTHONPATH=. python habitat_embodied_sl/merge.py datasets/$dataset
+done
+PYTHONPATH=. python habitat_embodied_sl/nyu_depth_v2.py datasets/nyu_depth_v2
+PYTHONPATH=. python habitat_embodied_sl/sunrgbd.py datasets/sunrgbd
+# Source, NORM, Mean-Teacher and embodied SL on each train variant, one run per GPU at a time (logs in outputs/procthor8_runs/)
+mkdir -p outputs && GPUS="1 2 3" nohup bash habitat_embodied_sl/run.sh > outputs/run.log 2>&1 &
 ```

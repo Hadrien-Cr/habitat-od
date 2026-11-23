@@ -1,32 +1,34 @@
 import itertools
 import json
 from dataclasses import dataclass, fields
-from functools import partial
 from pathlib import Path
 from typing import Dict, List, Tuple
 
 import habitat_sim
 import matplotlib.pyplot as plt
 import numpy as np
-import quaternion
+import open3d as o3d
 import trimesh
-from detectron2.utils.logger import create_small_table
 from PIL import Image
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 from tabulate import tabulate
 
 from common.hybrid_exploration.ground_truth_map import GroundTruthMapTracker
-from common.hybrid_exploration.hybrid_agent import HybridFrontierAgent
+from common.hybrid_exploration.exploration_map import MapGrid
 from common.utils.coco_utils import decoded_mask, encoded_masks, json_rle, write_json
 from common.utils.plot_utils import PNG_COMPRESS_LEVEL, plot_semantic_2d_map
-from common.utils.projection_utils import TOPDOWN_MAP_SCALE, ResolvedObjects, filled_footprint, mesh_footprint_on_grid
+from common.utils.projection_utils import TOPDOWN_MAP_SCALE, ResolvedObjects, filled_footprint, mesh_footprint_on_grid, save_labeled_ply
 from common.utils.retrieval import SegmentationStyle
 
 _IOU_THRESHOLDS = np.round(np.arange(0.25, 0.951, 0.05), 2)
 _SMALL_MAX_VOLUME_M3 = 0.01
 _MEDIUM_MAX_VOLUME_M3 = 0.25
 _WIREFRAME_RADIUS_M = 0.005
+_VIEWPOINT_SPACING_M = 0.5
+_BOX_SAMPLE_FRACTIONS = np.array(list(itertools.product((0.25, 0.5, 0.75), repeat=3)))
+_HIT_TOLERANCE_M = 0.02
+_GROUND_TRUTH_POINTS_PER_M2 = 1600  # one point per downsample voxel face (0.025 m), as dense as the fused objects
 _PREDICTED_BOX_GRID_M = 0.02
 _MIN_MATCHED_EXTENT_M = 0.05
 GROUND_TRUTH_JSON = "ground_truth.json"
@@ -119,6 +121,13 @@ def _save_confusion_heatmap(matrix: np.ndarray, labels: list, out_path: Path) ->
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
+
+
+def save_classification_confusion(true_classes: np.ndarray, predicted_classes: np.ndarray, classes: list, out_path: Path) -> None:
+    """Heatmap (_save_confusion_heatmap) of the confusion matrix of predicted_classes against true_classes, indices into classes."""
+    matrix = np.zeros((len(classes), len(classes)), dtype=np.int64)
+    np.add.at(matrix, (true_classes, predicted_classes), 1)
+    _save_confusion_heatmap(matrix, classes, out_path)
 
 
 def compute_confusion_matrix(
@@ -293,40 +302,41 @@ def _box_wireframe(box: np.ndarray, color: list) -> trimesh.Trimesh:
     return wireframe
 
 
-def save_resolved_wireframes(resolved: ResolvedObjects, classes: list, colors: list, out_path: Path) -> None:
-    """Writes a .glb with one node per resolved object, its point-extent box as a class-colored wireframe."""
-    detections = ResolvedDetections.from_resolved(resolved)
+def save_box_wireframes(objects: SceneObjects, classes: list, colors: list, out_path: Path) -> None:
+    """Writes a .glb with one node per object, its box as a class-colored wireframe."""
     trimesh.Scene({
         f"{idx}_{classes[class_id]}": _box_wireframe(box, colors[class_id])
-        for idx, (class_id, box) in enumerate(zip(detections.class_ids, detections.boxes))
+        for idx, (class_id, box) in enumerate(zip(objects.class_ids, objects.boxes))
     }).export(out_path)
 
 
-def _map_pixels(agent: HybridFrontierAgent, points: np.ndarray) -> np.ndarray:
-    """(row, col) on agent's EstimatedMap grid of (N, 3) world points."""
-    return agent.estimated_map.to_pixels(agent.ref_frame_points(points))
+def save_ground_truth_ply(meshes: List[Tuple[int, int, trimesh.Trimesh]], colors: list, out_path: Path) -> None:
+    """Writes the (object id, class, world mesh) meshes' surfaces as a .ply, _GROUND_TRUTH_POINTS_PER_M2 points per square
+    meter each colored by its class, comparable with save_resolved_ply's."""
+    samples = [(trimesh.sample.sample_surface(mesh, max(1, round(mesh.area * _GROUND_TRUTH_POINTS_PER_M2)), seed=0)[0], class_id) for _, class_id, mesh in meshes]
+    labels = np.concatenate([np.full(len(points), class_id) for points, class_id in samples])
+    save_labeled_ply(np.concatenate([points for points, _ in samples]), labels, colors, out_path)
 
 
-def _resolved_footprints(resolved: ResolvedObjects, agent: HybridFrontierAgent, object_ids: np.ndarray) -> np.ndarray:
-    """(N, H, W) filled_footprint of each of object_ids' resolved points on agent's EstimatedMap grid, empty for an object off it."""
-    shape = agent.estimated_map.explored.shape
-    pixels = _map_pixels(agent, resolved.resolved_points)
+def _resolved_footprints(resolved: ResolvedObjects, grid: MapGrid, object_ids: np.ndarray) -> np.ndarray:
+    """(N, H, W) filled_footprint of each of object_ids' resolved points on grid, empty for an object off it."""
+    shape = grid.explored.shape
+    pixels = grid.pixels(resolved.resolved_points)
     inside = ((pixels >= 0) & (pixels < np.array(shape))).all(axis=1)
     point_object_ids = resolved.resolved_infos[:, 1]
     footprints = [filled_footprint(pixels[inside & (point_object_ids == object_id)], shape) for object_id in object_ids]
     return np.array(footprints, dtype=bool).reshape(-1, *shape)
 
 
-def _ground_truth_navigable(agent: HybridFrontierAgent, pathfinder: habitat_sim.PathFinder) -> np.ndarray:
-    """The ground-truth navmesh's navigable cells (GroundTruthMapTracker's, on the world axes) resampled onto agent's EstimatedMap grid."""
-    estimated_map, (position, rotation) = agent.estimated_map, agent.ref_state
-    ground_truth = GroundTruthMapTracker(pathfinder, position, fov_deg=0.0, visibility_dist_m=0.0, resolution=estimated_map.map_pixels_size)
-    cells = np.indices(estimated_map.explored.shape).reshape(2, -1).T
-    pixels = ground_truth.to_pixels(quaternion.rotate_vectors(rotation, estimated_map.to_world(cells, 0.0)) + position)
+def _ground_truth_navigable(grid: MapGrid, pathfinder: habitat_sim.PathFinder) -> np.ndarray:
+    """The ground-truth navmesh's navigable cells (GroundTruthMapTracker's, on the world axes) resampled onto grid."""
+    ground_truth = GroundTruthMapTracker(pathfinder, grid.ref_position, fov_deg=0.0, visibility_dist_m=0.0, resolution=grid.explored.shape[0])
+    cells = np.indices(grid.explored.shape).reshape(2, -1).T
+    pixels = ground_truth.to_pixels(grid.world_points(cells))
     inside = ((pixels >= 0) & (pixels < np.array(ground_truth.navigable.shape))).all(axis=1)
     navigable = np.zeros(len(cells), dtype=bool)
     navigable[inside] = ground_truth.navigable[tuple(pixels[inside].T)]
-    return navigable.reshape(estimated_map.explored.shape)
+    return navigable.reshape(grid.explored.shape)
 
 
 def _grid_image(scene: str, meters_per_pixel: float, masks: Dict[str, np.ndarray]) -> dict:
@@ -345,25 +355,58 @@ def _scene_dataset(image: dict, objects: SceneObjects, footprints: np.ndarray, c
     }
 
 
+def navigable_viewpoints(dataset: dict, grid: MapGrid, height: float) -> np.ndarray:
+    """(N, 3) points at height above the cells of dataset's "navigable" mask (a ground_truth_dataset's, the navmesh's) on
+    grid, one every _VIEWPOINT_SPACING_M along each axis."""
+    stride = max(1, round(_VIEWPOINT_SPACING_M / grid.meters_per_pixel))
+    cells = np.argwhere(decoded_mask(dataset["images"][0]["navigable"]))
+    points = grid.world_points(cells[np.all(cells % stride == 0, axis=1)])
+    points[:, 1] = height
+    return points
+
+
+def observable_ground_truth(dataset: dict, scene_mesh: trimesh.Trimesh, viewpoints: np.ndarray, max_depth: float) -> dict:
+    """dataset without the objects none of viewpoints has in line of sight within max_depth (_in_line_of_sight), like a
+    closed fridge's contents: what no camera on the navmesh could see is not counted as missed."""
+    scene = o3d.t.geometry.RaycastingScene()
+    scene.add_triangles(o3d.core.Tensor(np.asarray(scene_mesh.vertices, np.float32)), o3d.core.Tensor(np.asarray(scene_mesh.faces, np.uint32)))
+    boxes = GroundTruthObjects.from_annotations(dataset["annotations"]).boxes
+    observable = [_in_line_of_sight(scene, box, viewpoints, max_depth) for box in boxes]
+    return {**dataset, "annotations": [annotation for annotation, seen in zip(dataset["annotations"], observable) if seen]}
+
+
+def _in_line_of_sight(scene: o3d.t.geometry.RaycastingScene, box: np.ndarray, viewpoints: np.ndarray, max_depth: float) -> bool:
+    """Whether a ray from a viewpoint within max_depth of the (2, 3) box to one of its _BOX_SAMPLE_FRACTIONS points first
+    hits scene inside the box, or nothing."""
+    near = viewpoints[np.linalg.norm(viewpoints - box.mean(axis=0), axis=1) < max_depth]
+    targets = box[0] + _BOX_SAMPLE_FRACTIONS * (box[1] - box[0])
+    origins, ends = np.repeat(near, len(targets), axis=0), np.tile(targets, (len(near), 1))
+    directions = (ends - origins) / np.linalg.norm(ends - origins, axis=1, keepdims=True)
+    t_hit = scene.cast_rays(o3d.core.Tensor(np.hstack([origins, directions]).astype(np.float32)))["t_hit"].numpy()
+    missed = ~np.isfinite(t_hit)
+    hits = origins + directions * np.where(missed, 0, t_hit)[:, None]
+    on_box = np.all((hits >= box[0] - _HIT_TOLERANCE_M) & (hits <= box[1] + _HIT_TOLERANCE_M), axis=1)
+    return bool((missed | on_box).any())
+
+
 def ground_truth_dataset(
-    scene: str, meshes: List[Tuple[int, int, trimesh.Trimesh]], agent: HybridFrontierAgent, pathfinder: habitat_sim.PathFinder, classes: list,
+    scene: str, meshes: List[Tuple[int, int, trimesh.Trimesh]], grid: MapGrid, pathfinder: habitat_sim.PathFinder, classes: list,
 ) -> dict:
     """_scene_dataset of the (object id, class, world mesh) meshes, boxed by their mesh bounds, their footprints their mesh
-    silhouettes on agent's EstimatedMap grid, whose "navigable" mask is the ground-truth navmesh's (_ground_truth_navigable)."""
-    shape = agent.estimated_map.explored.shape
-    footprints = np.array([mesh_footprint_on_grid(mesh, shape, partial(_map_pixels, agent)) for _, _, mesh in meshes], dtype=bool).reshape(-1, *shape)
-    image = _grid_image(scene, agent.estimated_map.meters_per_pixel, {"navigable": _ground_truth_navigable(agent, pathfinder)})
+    silhouettes on grid, whose "navigable" mask is the ground-truth navmesh's (_ground_truth_navigable)."""
+    shape = grid.explored.shape
+    footprints = np.array([mesh_footprint_on_grid(mesh, shape, grid.pixels) for _, _, mesh in meshes], dtype=bool).reshape(-1, *shape)
+    image = _grid_image(scene, grid.meters_per_pixel, {"navigable": _ground_truth_navigable(grid, pathfinder)})
     return _scene_dataset(image, GroundTruthObjects.from_meshes(meshes), footprints, classes)
 
 
-def predictions_dataset(scene: str, resolved: ResolvedObjects, agent: HybridFrontierAgent, classes: list) -> dict:
+def predictions_dataset(scene: str, resolved: ResolvedObjects, grid: MapGrid, classes: list) -> dict:
     """_scene_dataset of resolved's objects (ResolvedDetections), their footprints their points' (_resolved_footprints), on
-    agent's EstimatedMap grid with its "navigable" (explored and free) and "explored" masks."""
-    estimated_map = agent.estimated_map
+    grid with its "navigable" (explored and free) and "explored" masks."""
     detections = ResolvedDetections.from_resolved(resolved)
-    masks = {"navigable": estimated_map.explored & ~estimated_map.obstacles.astype(bool), "explored": estimated_map.explored}
-    image = _grid_image(scene, estimated_map.meters_per_pixel, masks)
-    return _scene_dataset(image, detections, _resolved_footprints(resolved, agent, detections.object_ids), classes)
+    masks = {"navigable": grid.explored & ~grid.obstacles.astype(bool), "explored": grid.explored}
+    image = _grid_image(scene, grid.meters_per_pixel, masks)
+    return _scene_dataset(image, detections, _resolved_footprints(resolved, grid, detections.object_ids), classes)
 
 
 def semantic_topdown(dataset: dict, style: SegmentationStyle) -> Image.Image:
@@ -498,11 +541,6 @@ def matched_ground_truth(resolved: ResolvedObjects, ground_truth: GroundTruthObj
     """{object id: index in ground_truth of the object it class-agnostically matches (3D box IoU >= iou_threshold)} of every matching resolved object."""
     scene = SceneMatches.of(ground_truth, ResolvedDetections.from_resolved(resolved), iou_threshold)
     return {int(object_id): int(match) for object_id, match in zip(scene.detections.object_ids, scene.matches) if match >= 0}
-
-
-def matched_ground_truth_classes(resolved: ResolvedObjects, ground_truth: GroundTruthObjects, iou_threshold: float = 0.25) -> Dict[int, int]:
-    """{object id: class of the ground truth it class-agnostically matches (3D box IoU >= iou_threshold)} of every matching resolved object."""
-    return {object_id: int(ground_truth.class_ids[match]) for object_id, match in matched_ground_truth(resolved, ground_truth, iou_threshold).items()}
 
 
 def _scenes_matches(ground_truth: COCO, predictions: COCO, iou_threshold: float) -> Dict[str, SceneMatches]:

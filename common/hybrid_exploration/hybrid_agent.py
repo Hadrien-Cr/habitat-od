@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Union
 
-import cv2
 import habitat_sim
 import numpy as np
 
@@ -9,10 +8,11 @@ from common.agents.abstract_agent import StopReason
 from common.agents.base_exploration_agent import BaseExplorationAgent
 from common.hybrid_exploration.discrete_planner import DiscretePlanner
 from common.hybrid_exploration.exploration_map import EstimatedMap, MapConfig
+from common.hybrid_exploration.frontier_exp_agent import DiscretePlannerConfig
 from common.hybrid_exploration.object_tracker import ObjectTracker
 from common.hybrid_exploration.object_viewpoints import Candidate, ObjectBelief, footprint, sector_positions
-from common.hybrid_exploration.plotting import draw_goal_map, draw_in_view, draw_objects
-from common.utils.concept_graph import ProcessedFrame
+from common.hybrid_exploration.plotting import draw_goal_map, draw_objects
+from common.utils.concept_graph import ConceptGraphConfig, ProcessedFrame
 from common.utils.projection_utils import DepthCamera
 
 _VISITED_COLOR = (0, 0, 255)  # BGR -- red, matching BaseExplorationAgent's trajectory color
@@ -23,7 +23,7 @@ _TRAJECTORY_COLOR = (255, 255, 0)  # BGR -- yellow, the direction arrows between
 class HybridConfig:
     map_config: MapConfig
     turn_angle_deg: float
-    planner_config: "DiscretePlannerConfig"
+    planner_config: DiscretePlannerConfig
     n_sectors: int = 8
     confidence_thresh: float = 0.5
     standoffs_m: Tuple[float, ...] = (3.0, 2.0, 1.0, 0.5)
@@ -32,6 +32,7 @@ class HybridConfig:
     standoff_per_size: float = 1.0
     reach_m: float = 0.5
     max_successive_collisions: int = 3
+    fusion: ConceptGraphConfig = ConceptGraphConfig()
 
 
 class HybridFrontierAgent(BaseExplorationAgent):
@@ -45,7 +46,7 @@ class HybridFrontierAgent(BaseExplorationAgent):
     reach_m) is checked before invoking the planner each step and short-circuits to turning the agent to face the
     object, since DiscretePlanner has no "look at point" concept.
     Its objects are the ObjectBeliefs of its own ObjectTracker, fed every step's lifted detections by update_detections
-    (see habitat_embodied_sl/collect.py for usage).
+    (see habitat_embodied_sl/collect_train.py for usage).
     """
 
     map_config: MapConfig
@@ -73,7 +74,7 @@ class HybridFrontierAgent(BaseExplorationAgent):
         super().__init__(config.map_config, rng, config.turn_angle_deg, planner)
         self.config = config
         self.camera = camera
-        self.tracker = ObjectTracker()
+        self.tracker = ObjectTracker(config.fusion)
         self.objects: Dict[int, ObjectBelief] = {}
         self.seen_sectors: Dict[int, np.ndarray] = {}
         self._goal_map: Optional[np.ndarray] = None
@@ -81,7 +82,7 @@ class HybridFrontierAgent(BaseExplorationAgent):
 
     def reset(self, start_state: habitat_sim.AgentState, floor_height: float, navmesh_bounds: Optional[Tuple[np.ndarray, np.ndarray]] = None) -> None:
         super().reset(start_state, floor_height, navmesh_bounds)
-        self.tracker = ObjectTracker()
+        self.tracker = ObjectTracker(self.config.fusion)
         self.objects = {}
         self.seen_sectors = {}
         self._goal_map = None

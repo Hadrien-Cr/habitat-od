@@ -12,7 +12,8 @@ from detectron2.structures import Boxes, Instances
 from PIL import Image
 
 from common.env_utils.visibility_utils import mesh_visibility_fraction
-from common.utils.image_memory import Frame, ImageMemory
+from common.env_utils.vocab_constants import make_colors
+from common.utils.image_memory import Frame, frames_showing, raytrace_frame_points
 from common.utils.plot_utils import chunked, make_mosaic, plot_segmentation, plot_segmentation_pred, rows_mosaic, save_tile
 from common.utils.projection_utils import DepthCamera, ResolvedObjects, nearest_resized, viewing_angles
 
@@ -34,7 +35,7 @@ class ViewSelection:
 @dataclass(frozen=True)
 class _RaytracedMap:
     fused: ResolvedObjects
-    memory: ImageMemory
+    frames: Dict[int, Frame]
     raytraced: dict
     point_indices: Dict[int, Dict[int, np.ndarray]]
     camera: DepthCamera
@@ -44,6 +45,11 @@ class _RaytracedMap:
 class SegmentationStyle:
     classes: list
     colors: list
+
+    @classmethod
+    def of(cls, classes: list) -> "SegmentationStyle":
+        """classes with make_colors' seed-0 palette, the colors every class-colored output shares."""
+        return cls(list(classes), make_colors(len(classes), seed=0, ctype=0))
 
 
 @dataclass(frozen=True)
@@ -79,13 +85,13 @@ def save_prediction_frame(rgb: np.ndarray, instances: Instances, style: Segmenta
     save_tile(segmentation_tile(rgb, instances, style, label), out_path)
 
 
-def retrieved_views(fused: ResolvedObjects, memory: ImageMemory, raytraced: dict, object_frames: Dict[int, List[int]]) -> List[RetrievedView]:
+def retrieved_views(fused: ResolvedObjects, frames: Dict[int, Frame], raytraced: dict, object_frames: Dict[int, List[int]]) -> List[RetrievedView]:
     """One view per frame object_frames (retrieve_resolved_views) picks for each object, its raytraced mask resized to the frame's
     rgb, labelled with the object's resolved class."""
     object_classes = fused.object_classes()
     return [
         RetrievedView(rgb, nearest_resized(raytraced_mask(raytraced, frame_id, object_id), rgb.shape[:2]), object_classes[object_id], object_id, frame_id)
-        for object_id, frame_ids in object_frames.items() for frame_id in frame_ids for rgb in [memory.get_frame(frame_id).rgb]
+        for object_id, frame_ids in object_frames.items() for frame_id in frame_ids for rgb in [frames[frame_id].rgb]
     ]
 
 
@@ -137,10 +143,10 @@ def largest_objects(fused: ResolvedObjects, num_objects: int) -> List[int]:
     return objects_by_size(fused)[:num_objects]
 
 
-def views_mosaic(memory: ImageMemory, raytraced: dict, style: SegmentationStyle, object_frames: Dict[int, List[int]]) -> Optional[Image.Image]:
+def views_mosaic(frames: Dict[int, Frame], raytraced: dict, style: SegmentationStyle, object_frames: Dict[int, List[int]]) -> Optional[Image.Image]:
     """One mosaic row per object of object_frames, of its frames in order."""
     return rows_mosaic([
-        [_object_frame_tile(memory, raytraced, style, object_id, frame_id) for frame_id in frame_ids]
+        [_object_frame_tile(frames, raytraced, style, object_id, frame_id) for frame_id in frame_ids]
         for object_id, frame_ids in object_frames.items()
     ])
 
@@ -184,12 +190,12 @@ def _view_tile(view: RetrievedView, style: SegmentationStyle, downscale: int) ->
     return box_tile(rgb, mask[None], torch.tensor([view.class_id]), style, view_label(view.object_id, view.frame_id))
 
 
-def _object_frame_tile(memory: ImageMemory, raytraced: dict, style: SegmentationStyle, object_id: int, frame_id: int) -> Tuple[str, np.ndarray]:
-    return _retrieval_tile(memory.get_frame(frame_id), frame_id, object_id, raytraced[frame_id], style)
+def _object_frame_tile(frames: Dict[int, Frame], raytraced: dict, style: SegmentationStyle, object_id: int, frame_id: int) -> Tuple[str, np.ndarray]:
+    return _retrieval_tile(frames[frame_id], frame_id, object_id, raytraced[frame_id], style)
 
 
 def _select_views(raytraced_map: _RaytracedMap, object_id: int, selection: ViewSelection) -> List[int]:
-    frame_ids = raytraced_map.memory.frames_showing(object_id, raytraced_map.raytraced)
+    frame_ids = frames_showing(raytraced_map.raytraced, object_id)
     visibility = np.array([_visibility(raytraced_map, frame_id, object_id) for frame_id in frame_ids])
     weights = visibility ** selection.alpha
     elements = [_covered_elements(raytraced_map, frame_id, object_id) for frame_id in frame_ids]
@@ -197,21 +203,21 @@ def _select_views(raytraced_map: _RaytracedMap, object_id: int, selection: ViewS
 
 
 def raytraced_mask(raytraced: dict, frame_id: int, object_id: int) -> torch.Tensor:
-    """The object's mask among those raytraced (ImageMemory.raytrace_frames) in the frame."""
+    """The object's mask among those raytraced (image_memory.raytrace_frames) in the frame."""
     masks, ids, _ = raytraced[frame_id]
     return masks[ids == object_id][0]
 
 
 def _visibility(raytraced_map: _RaytracedMap, frame_id: int, object_id: int) -> float:
     """mesh_visibility_fraction of the object's raytraced mask, capped at 1 as its box-over-face ratio can exceed it."""
-    dimensions, depth = raytraced_map.fused.object_dimensions(object_id), np.asarray(raytraced_map.memory.get_frame(frame_id).depth)
+    dimensions, depth = raytraced_map.fused.object_dimensions(object_id), np.asarray(raytraced_map.frames[frame_id].depth)
     return min(mesh_visibility_fraction(dimensions, raytraced_mask(raytraced_map.raytraced, frame_id, object_id).numpy(), depth, raytraced_map.camera.hfov), 1.0)
 
 
 def _covered_elements(raytraced_map: _RaytracedMap, frame_id: int, object_id: int) -> Tuple[np.ndarray, np.ndarray]:
     """(point index, viewing angle) of the object's resolved points its raytraced mask hits in the frame."""
     indices = raytraced_map.point_indices[frame_id][object_id]
-    return indices, viewing_angles(raytraced_map.fused.resolved_points[indices], raytraced_map.memory.get_frame(frame_id).pose[:3, 3])
+    return indices, viewing_angles(raytraced_map.fused.resolved_points[indices], raytraced_map.frames[frame_id].pose[:3, 3])
 
 
 def _retrieval_tile(frame: Frame, frame_id: int, object_id: int, frame_raytraced: tuple, style: SegmentationStyle) -> Tuple[str, np.ndarray]:
@@ -233,12 +239,12 @@ def view_label(object_id: int, frame_id: int) -> str:
 
 
 def retrieve_resolved_views(
-    resolved: ResolvedObjects, memory: ImageMemory, camera: DepthCamera, min_mesh_visibility_fraction: float, selection: ViewSelection,
+    resolved: ResolvedObjects, frames: Dict[int, Frame], camera: DepthCamera, min_mesh_visibility_fraction: float, selection: ViewSelection,
 ) -> Tuple[dict, Dict[int, List[int]]]:
-    """(memory's frames raytraced with resolved's objects (ImageMemory.raytrace_frames), {object id: ids of the frames
-    selection picks among those to show it} of every resolved object, largest first)."""
-    raytraced_points = memory.raytrace_frame_points(resolved, camera, min_mesh_visibility_fraction)
+    """(frames raytraced with resolved's objects (image_memory.raytrace_frames), {object id: ids of the frames selection
+    picks among those to show it} of every resolved object, largest first)."""
+    raytraced_points = raytrace_frame_points(resolved, frames, camera, min_mesh_visibility_fraction)
     raytraced = {frame_id: frame_raytraced[:3] for frame_id, frame_raytraced in raytraced_points.items()}
     point_indices = {frame_id: frame_raytraced[3] for frame_id, frame_raytraced in raytraced_points.items()}
-    raytraced_map = _RaytracedMap(resolved, memory, raytraced, point_indices, camera)
+    raytraced_map = _RaytracedMap(resolved, frames, raytraced, point_indices, camera)
     return raytraced, {object_id: _select_views(raytraced_map, object_id, selection) for object_id in objects_by_size(resolved)}

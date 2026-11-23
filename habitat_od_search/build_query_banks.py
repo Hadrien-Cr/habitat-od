@@ -6,7 +6,7 @@ saved are kept, so an interrupted run resumes; targets that fail (e.g. no goal v
 web image found) are listed in QUERY_BANKS_DIR/failures_<run_name>.tsv.
 
 Usage:
-  export HABITAT_DATA=$HOME/habitat_data/data BASE_DIR=$(pwd) PYTHONNOUSERSITE=1
+  export BASE_DIR=$(pwd) PYTHONNOUSERSITE=1  # HABITAT_DATA already exported, see INSTALL.MD
   PYTHONPATH=. python habitat_od_search/build_query_banks.py --config habitat_od_search/logs/configs/<run>.yaml [--banks gt_views web]
 """
 import argparse

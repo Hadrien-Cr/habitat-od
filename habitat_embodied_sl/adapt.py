@@ -1,7 +1,7 @@
 """Unsupervised test-time adaptation baselines for habitat_embodied_sl/main.py's fine-tuning: the source model
 (CustomFT_Detic as main.py builds it, before any training step), its FrozenBatchNorm2d layers adapted without labels by
---method (but source_layers, kept at their source statistics), then scored once on the collection config's test set
-(datasets/<run_name>/test), in scene order, and on each --static-test-dirs set in its own vocabulary.
+--method (but source_layers, kept at their source statistics), then scored once on every DATASETS.TEST split of
+--config-file, in scene order, each in its own vocabulary, the first (procthor8's test set) giving the classes.
 Logged to logs/<--run-name, or the config-file stem and method>.
 
 Methods (hyperparameters in --adapt-config):
@@ -10,8 +10,8 @@ Methods (hyperparameters in --adapt-config):
             source ones, the batch's weighted B / (prior_strength + B).
 
 Usage (defaults: procthor8, config/r50_detic.yaml, config/r50_procthor8_unsup_norm.yaml):
-  PYTHONPATH=. python habitat_embodied_sl/adapt.py --config habitat_embodied_sl/config/procthor8_collection.yaml \
-      --config-file habitat_embodied_sl/config/r50_detic.yaml --method norm --run-name r50_procthor8_unsup_norm
+  PYTHONPATH=. python habitat_embodied_sl/adapt.py --config-file habitat_embodied_sl/config/r50_detic.yaml --method norm \
+      --run-name r50_procthor8_unsup_norm
 """
 from itertools import groupby
 from pathlib import Path
@@ -59,7 +59,7 @@ def scene_order_scores(cfg, model: nn.Module, dataset_name: str, batch_size: int
         MapDataset(records, DatasetMapper(cfg, is_train=False)), batch_sampler=scene_batches(records, batch_size),
         collate_fn=trivial_batch_collator, num_workers=cfg.DATALOADER.NUM_WORKERS,
     )
-    return inference_on_dataset(model, loader, build_evaluator(cfg, dataset_name))
+    return inference_on_dataset(model, loader, build_evaluator(cfg, dataset_name, model))
 
 
 def main(args):

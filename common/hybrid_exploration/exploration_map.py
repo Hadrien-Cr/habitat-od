@@ -12,6 +12,7 @@ from typing import Tuple
 import cv2
 import habitat_sim
 import numpy as np
+import quaternion
 import torch
 
 from common.hybrid_exploration.frontiers import detect_frontier_waypoints, reveal_fog_of_war, without_small_frontiers
@@ -19,7 +20,7 @@ from common.utils.concept_graph import ConceptGraphConfig
 from common.utils.projection_utils import (
     DepthCamera, downsample_points, foreground_points, main_cluster_mask, nearest_resized, object_points, project_batch_masks,
 )
-from common.utils.pose_utils import sensor_pose_matrix
+from common.utils.pose_utils import points_in_frame, sensor_pose_matrix
 
 
 @dataclass(frozen=True)
@@ -80,13 +81,31 @@ def _goal_mask_points(
     depth: np.ndarray, sensor_state: habitat_sim.SixDOFPose, mask: torch.Tensor, camera: DepthCamera, floor_height: float, config: MapConfig,
 ) -> np.ndarray:
     """World points of mask's in-range depth pixels, depth and mask resized to lift_image_size together (the
-    resolution lifting runs at elsewhere, habitat_embodied_sl/collect.py::observe_frame), denoised."""
+    resolution lifting runs at elsewhere, habitat_embodied_sl/collect_train.py::observe_frame), denoised."""
     lift_shape = (config.lift_image_size, config.lift_image_size)
     resized_depth = nearest_resized(np.asarray(depth).squeeze(), lift_shape).numpy()
     resized_mask = nearest_resized(mask[None, None].float(), lift_shape)[0, 0].bool()
     pose = sensor_pose_matrix(sensor_state)
     points = object_points(resized_depth, pose, resized_mask, camera)
     return _denoised_points(points, pose[:3, 3], floor_height, config)
+
+
+def grid_pixels(positions: np.ndarray, origin_world: np.ndarray, meters_per_pixel: float) -> np.ndarray:
+    """(N, 2) (row, col) of (N, 3) positions on the grid whose first cell starts at origin_world."""
+    offsets = (positions[:, [2, 0]] - origin_world[[2, 0]]) / meters_per_pixel
+    return offsets.astype(int)
+
+
+def grid_world_xz(pixels: np.ndarray, origin_world: np.ndarray, meters_per_pixel: float) -> np.ndarray:
+    """(x, z) of (row, col) pixels' own cell centers on the grid whose first cell starts at origin_world."""
+    offsets = (pixels.astype(float) + 0.5) * meters_per_pixel
+    return offsets[:, ::-1] + origin_world[[0, 2]]
+
+
+def grid_world(pixels: np.ndarray, height: float, origin_world: np.ndarray, meters_per_pixel: float) -> np.ndarray:
+    """Points of (row, col) pixels' cell centers, at height, on the grid whose first cell starts at origin_world."""
+    xz = grid_world_xz(pixels, origin_world, meters_per_pixel)
+    return np.stack([xz[:, 0], np.full(len(xz), height), xz[:, 1]], axis=1)
 
 
 class EstimatedMap:
@@ -107,21 +126,18 @@ class EstimatedMap:
 
     def to_pixels(self, positions: np.ndarray) -> np.ndarray:
         """(N, 2) (row, col) of (N, 3) world positions."""
-        offsets = (positions[:, [2, 0]] - self.origin_world[[2, 0]]) / self.meters_per_pixel
-        return offsets.astype(int)
+        return grid_pixels(positions, self.origin_world, self.meters_per_pixel)
 
     def to_pixel(self, position: np.ndarray) -> np.ndarray:
         return self.to_pixels(np.asarray(position)[None])[0]
 
     def to_world_xz(self, pixels: np.ndarray) -> np.ndarray:
         """World (x, z) of (row, col) pixels' own cell centers."""
-        offsets = (pixels.astype(float) + 0.5) * self.meters_per_pixel
-        return offsets[:, ::-1] + self.origin_world[[0, 2]]
+        return grid_world_xz(pixels, self.origin_world, self.meters_per_pixel)
 
     def to_world(self, pixels: np.ndarray, height: float) -> np.ndarray:
         """World points of (row, col) pixels, at height."""
-        xz = self.to_world_xz(pixels)
-        return np.stack([xz[:, 0], np.full(len(xz), height), xz[:, 1]], axis=1)
+        return grid_world(pixels, height, self.origin_world, self.meters_per_pixel)
 
     def free(self) -> np.ndarray:
         return 1 - self.obstacles
@@ -257,3 +273,28 @@ class EstimatedMap:
             in_bounds = (pixels[:, 0] >= 0) & (pixels[:, 0] < grid.shape[0]) & (pixels[:, 1] >= 0) & (pixels[:, 1] < grid.shape[1])
             grid[pixels[in_bounds, 0], pixels[in_bounds, 1]] = 1
         return grid
+
+
+@dataclass(frozen=True)
+class MapGrid:
+    """An agent's EstimatedMap grid at the end of a run with the reference pose (ref_state) the grid's frame is relative to:
+    what top-down footprints need of the agent, so they can be drawn without it."""
+
+    explored: np.ndarray
+    obstacles: np.ndarray
+    origin_world: np.ndarray
+    meters_per_pixel: float
+    ref_position: np.ndarray
+    ref_rotation: quaternion.quaternion
+
+    @classmethod
+    def of(cls, estimated_map: EstimatedMap, ref_state: Tuple[np.ndarray, quaternion.quaternion]) -> "MapGrid":
+        return cls(estimated_map.explored.copy(), estimated_map.obstacles.copy(), estimated_map.origin_world, estimated_map.meters_per_pixel, *ref_state)
+
+    def pixels(self, points: np.ndarray) -> np.ndarray:
+        """(N, 2) (row, col) of (N, 3) world points."""
+        return grid_pixels(points_in_frame(points, self.ref_position, self.ref_rotation), self.origin_world, self.meters_per_pixel)
+
+    def world_points(self, pixels: np.ndarray) -> np.ndarray:
+        """(N, 3) world points of (row, col) pixels' cell centers, at the reference height."""
+        return quaternion.rotate_vectors(self.ref_rotation, grid_world(pixels, 0.0, self.origin_world, self.meters_per_pixel)) + self.ref_position

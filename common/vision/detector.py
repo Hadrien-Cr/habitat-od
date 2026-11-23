@@ -17,6 +17,8 @@ from detectron2.engine import DefaultPredictor  # type: ignore
 from detectron2.modeling.postprocessing import detector_postprocess  # type: ignore
 from detectron2.modeling.roi_heads.fast_rcnn import fast_rcnn_inference  # type: ignore
 from detectron2.structures import Boxes, ImageList, Instances  # type: ignore
+from omegaconf import DictConfig
+from tqdm import tqdm
 
 from common.utils.sam import SamMasker, mask_box
 from common.vision.detic import Vocabulary, detic_cfg
@@ -121,7 +123,7 @@ class Detector:
             for frame_id, (rgb, mask) in object_views.items():
                 frame_views[frame_id].append((object_id, rgb, mask_box(mask)))
         view_embeddings = defaultdict(dict)
-        for frame_id, object_boxes in frame_views.items():
+        for frame_id, object_boxes in tqdm(frame_views.items(), desc="classifying views", ncols=80):
             embeddings = self.box_embeddings(object_boxes[0][1], np.array([box for _, _, box in object_boxes]))
             for (object_id, _, _), embedding in zip(object_boxes, embeddings):
                 view_embeddings[object_id][frame_id] = embedding
@@ -192,3 +194,13 @@ class Detector:
         if self.masker is not None and len(result) > 0:
             result.pred_masks = self.masker.masks(rgb, result.pred_boxes.tensor)
         return result
+
+
+def build_detector(cfg: DictConfig, sam_checkpoint: Optional[str]) -> Detector:
+    """The raw run config cfg's detector, classifying among its recorded classes, its masks SAM's from sam_checkpoint, or
+    Detic's own when None."""
+    detector = cfg.detector
+    return Detector(
+        detector.config_file, detector.checkpoint, Vocabulary(f"{cfg.object_params.vocab_name}_kept", tuple(cfg.classes)), sam_checkpoint,
+        score_thresh=detector.score_thresh, nms_thresh=detector.nms_thresh, mask_thresh=detector.mask_thresh, input_size=cfg.input_image_size,
+    )

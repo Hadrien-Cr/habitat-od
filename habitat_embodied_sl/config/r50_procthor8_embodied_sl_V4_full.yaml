@@ -1,0 +1,4 @@
+# r50_procthor8_embodied_sl.yaml on the V4_full train variant
+_BASE_: "r50_procthor8_embodied_sl.yaml"
+DATASETS:
+  TRAIN: ("procthor8_V4_full_train",)

@@ -17,7 +17,7 @@ from common.agents.abstract_agent import Agent, StopReason
 from common.hybrid_exploration.discrete_planner import DiscreteNavigationAction, DiscretePlanner
 from common.hybrid_exploration.exploration_map import EstimatedMap, MapConfig
 from common.hybrid_exploration.plotting import draw_in_view
-from common.utils.pose_utils import get_yaw, normalize_angle, quaternion_from_rpy
+from common.utils.pose_utils import get_yaw, normalize_angle, points_in_frame, quaternion_from_rpy
 from common.utils.projection_utils import DepthCamera
 
 _ACTION_NAMES = {
@@ -125,8 +125,7 @@ class BaseExplorationAgent(Agent):
 
     def ref_frame_points(self, points: np.ndarray) -> np.ndarray:
         """(N, 3) world points in the reference frame."""
-        position, rotation = self.ref_state
-        return quaternion.rotate_vectors(rotation.inverse(), np.asarray(points) - position)
+        return points_in_frame(points, *self.ref_state)
 
     def ref_frame_state(self, agent_state: habitat_sim.AgentState) -> habitat_sim.AgentState:
         """agent_state, sensor poses included, relative to ref_state -- the only pose act() may use."""

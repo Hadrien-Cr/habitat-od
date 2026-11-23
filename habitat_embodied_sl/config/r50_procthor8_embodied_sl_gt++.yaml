@@ -1,4 +1,0 @@
-# r50_procthor8_embodied_sl.yaml on the gt++ train variant
-_BASE_: "r50_procthor8_embodied_sl.yaml"
-DATASETS:
-  TRAIN: ("gt++",)

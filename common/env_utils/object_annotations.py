@@ -16,7 +16,7 @@ import habitat.sims.habitat_simulator.sim_utilities as sutils # type: ignore
 from common.env_utils.vocab_constants import (
     CLASS_LABELS_HSSD400, CLASS_LABELS_PROCTHOR100, HSSD400_TO_VOCAB, PROCTHOR_NATIVE_TO_CLASS, PROCTHOR_NATIVE_VOCAB, PROCTHOR_VARIANT_SUFFIXES, VOCABULARIES,
 )
-from common.env_utils.visibility_utils import compute_obj_dimensions, compute_obj_render_dimensions, compute_dimensions_from_obb, box_size_measures, SIZE_MEASURES
+from common.env_utils.visibility_utils import compute_obj_render_dimensions, compute_dimensions_from_obb, box_size_measures, SIZE_MEASURES
 from common.utils.grid_utils import HabitatObjOccupancyGrid
 
 HABITAT_DATA = os.environ.get("HABITAT_DATA")
@@ -270,7 +270,7 @@ def _procthor_base_class(name: str) -> str:
 def _procthor_class_ids(mapping_path: str) -> dict[int, int]:
     """{native semantic id habitat_sim applies to ProcTHOR-hab objects at load time: its CLASS_LABELS_PROCTHOR100 index}, from
     configs/object_semantic_id_mapping.json, variants folded into their base class; "Undefined" and classes outside
-    CLASS_LABELS_PROCTHOR100 (never placed by ProcTHOR's own generator - see vocab_constants.py) left out."""
+    CLASS_LABELS_PROCTHOR100 (never placed by ProcTHOR's own generator, or doorframe - see vocab_constants.py) left out."""
     name_to_id: dict[str, int] = json.load(open(mapping_path))
     unlisted = [name for name in name_to_id if name != "Undefined" and _procthor_base_class(name) not in PROCTHOR_NATIVE_TO_CLASS]
     assert not unlisted, f"ProcTHOR-hab classes missing from PROCTHOR_NATIVE_TO_CLASS: {unlisted}"

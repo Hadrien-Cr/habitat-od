@@ -261,19 +261,18 @@ def instance_logits(instances: Instances) -> torch.Tensor:
 
 @dataclass(eq=False)
 class ResolvedObjects:
-    """Objects produced by a map's resolve(): per-point (class, object_id), per-object logits and a lookup tree."""
+    """Objects produced by a map's resolve(): per-point (class, object_id), per-object logits and a lookup tree, raytraced
+    within raytrace_radius of their points."""
 
+    raytrace_radius: float
     resolved_points: np.ndarray = field(init=False, default_factory=lambda: np.empty((0, 3)))
     resolved_infos: np.ndarray = field(init=False, default_factory=lambda: np.empty((0, 2), dtype=int))
     resolved_logits: Dict = field(init=False, default_factory=dict)
     kdtree: Optional[KDTree] = field(init=False, default=None)
 
-    def raytrace_radius(self) -> float:
-        raise NotImplementedError
-
     def object_logits(self, object_id: int) -> torch.Tensor:
         """(1, num_classes) logits of one resolved object."""
-        raise NotImplementedError
+        return self.resolved_logits[object_id].unsqueeze(0)
 
     def classified(self, class_probs: Dict[int, torch.Tensor]) -> "ResolvedObjects":
         """self restricted to the objects of class_probs, each taking its most probable class."""
@@ -296,15 +295,6 @@ class ResolvedObjects:
         self.kdtree = KDTree(self.resolved_points) if len(self.resolved_points) else None
         return self
 
-    def depth_raytracing(
-        self, depth, pose, hfov, min_depth, max_depth, *, min_mesh_visibility_fraction: float = 0.2
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Masks, ids, classes and logits of the resolved objects seen in depth from pose, dropping those below min_mesh_visibility_fraction."""
-        masks, ids, classes = self.visible_objects(depth, pose, hfov, min_depth, max_depth, min_mesh_visibility_fraction=min_mesh_visibility_fraction)
-        if len(ids) == 0:
-            return masks, ids, classes, torch.Tensor()
-        return masks, ids, classes, torch.cat([self.object_logits(int(object_id)).cpu() for object_id in ids])
-
     def visible_objects(
         self, depth, pose, hfov, min_depth, max_depth, *, min_mesh_visibility_fraction: float = 0.2
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -319,7 +309,7 @@ class ResolvedObjects:
             log.warning("no resolved points to raytrace")
             return torch.Tensor(), torch.Tensor(), torch.Tensor(), {}
         projected_points = project_batch_masks(depth, pose, hfov=hfov, min_depth=min_depth, max_depth=max_depth).numpy()
-        nearest_points = self.kdtree.query(projected_points, distance_upper_bound=self.raytrace_radius(), k=1, workers=_KDTREE_WORKERS)[1]
+        nearest_points = self.kdtree.query(projected_points, distance_upper_bound=self.raytrace_radius, k=1, workers=_KDTREE_WORKERS)[1]
         resolved_masks, resolved_ids, resolved_classes = self._object_masks(nearest_points, depth.shape)
         kept = [
             idx for idx, (mask, object_id) in enumerate(zip(resolved_masks, resolved_ids))

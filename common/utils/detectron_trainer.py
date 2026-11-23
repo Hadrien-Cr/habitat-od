@@ -8,7 +8,7 @@ import json
 from collections import defaultdict
 from itertools import chain, zip_longest
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 import torch
@@ -17,18 +17,20 @@ from detectron2.data import detection_utils  # type: ignore
 from detectron2.data.datasets import register_coco_instances  # type: ignore
 from detectron2.engine import DefaultTrainer, HookBase  # type: ignore
 from detectron2.evaluation import COCOEvaluator  # type: ignore
+from detectron2.modeling.roi_heads import CascadeROIHeads  # type: ignore
 from detectron2.evaluation.testing import flatten_results_dict  # type: ignore
 from detectron2.structures import Boxes, BoxMode, Instances  # type: ignore
+from detectron2.utils import comm  # type: ignore
 from detectron2.utils.events import EventStorage, get_event_storage  # type: ignore
 from PIL import Image
 from pycocotools.cocoeval import COCOeval
 from tabulate import tabulate
+from torch.nn.parallel import DistributedDataParallel
 from torchvision.ops import batched_nms, nms
 
 from common.env_utils.vocab_constants import make_colors
-from common.env_utils.dataset_registry import register_dataset
-from common.utils.eval_utils import compute_confusion_matrix, mean_precision
-from common.utils.plot_utils import MOSAIC_JPEG_QUALITY, make_mosaic, plot_boxes_overlay, plot_class_counts
+from common.utils.eval_utils import compute_confusion_matrix, mean_precision, save_classification_confusion
+from common.utils.plot_utils import MOSAIC_JPEG_QUALITY, make_mosaic, plot_boxes_overlay
 
 COCO_ROOT = Path(__file__).resolve().parents[2] / "coco_testbench" / "datasets" / "coco"
 IMAGE_LOG_SAMPLES = 4
@@ -36,6 +38,7 @@ IMAGE_LOG_HEIGHT = 512
 DISPLAY_SCORE_THRESH = 0.3  # predictions kept in logged images and confusion matrices; AP uses SCORE_THRESH_TEST
 DISPLAY_NMS_IOU = 0.5
 AGNOSTIC_NMS_IOU = 0.5  # class-agnostic scoring keeps one detection, the top-scored, of boxes overlapping more
+CLASSIFICATION_TOP_K = 5
 
 
 def agnostic_ap50_recall50(coco_eval: COCOeval) -> dict:
@@ -53,6 +56,22 @@ def agnostic_ap50_recall50(coco_eval: COCOeval) -> dict:
         agnostic.evaluate()
         agnostic.accumulate()
     return {"AP50 agnostic": mean_precision(agnostic.eval["precision"][0, :, 0, 0, 0]), "recall50 agnostic": float(agnostic.eval["recall"][0, 0, 0, 0] * 100)}
+
+
+@torch.no_grad()
+def ground_truth_box_probs(roi_heads, features: Dict[str, torch.Tensor], image_size: tuple, boxes: torch.Tensor) -> torch.Tensor:
+    """(N, C) class probabilities roi_heads give the (N, 4) xyxy boxes of one image_size image of backbone features,
+    averaged over the cascade stages as Detic's _forward_box does."""
+    box_features = [features[name] for name in roi_heads.box_in_features]
+    proposals = [Instances(image_size, proposal_boxes=Boxes(boxes.to(box_features[0].device)))]
+    if not isinstance(roi_heads, CascadeROIHeads):
+        pooled = roi_heads.box_pooler(box_features, [proposals[0].proposal_boxes])
+        return roi_heads.box_predictor.predict_probs(roi_heads.box_predictor(roi_heads.box_head(pooled)), proposals)[0][:, :-1]
+    stage_probs = [
+        roi_heads.box_predictor[stage].predict_probs(roi_heads._run_stage(box_features, proposals, stage), proposals)[0]
+        for stage in range(roi_heads.num_cascade_stages)
+    ]
+    return torch.stack(stage_probs).mean(dim=0)[:, :-1]
 
 
 def displayed_predictions(predictions: Instances) -> Instances:
@@ -89,19 +108,77 @@ class ClassAP50Evaluator(COCOEvaluator):
     """COCOEvaluator reporting and logging each class's AP50 (IoU 0.5) as AP50-<class>, instead of its AP averaged over
     IoU 0.5 to 0.95, whose stricter thresholds mostly measure box tightness (frozen when fine-tuning CustomFT_Detic), and
     the class-agnostic "AP50 agnostic" and "recall50 agnostic" (agnostic_ap50_recall50, named as eval_utils' 3D metrics),
-    without the NaNs of classes or sizes the dataset has no box of. Each evaluation also saves, over DISPLAY_SCORE_THRESH,
-    its confusion matrix <output_dir>/confusion_matrix_iter<iteration>.png and inference_samples_iter<iteration>.jpg, whose
-    tiles also go to TensorBoard during training (_save_inference_samples)."""
+    without the NaNs of classes or sizes the dataset has no box of. It also reports classification alone: the share of
+    ground-truth boxes, given to model's ROI heads as proposals on the backbone features its inference just computed
+    (ground_truth_box_probs, so batch-statistics normalization sees the same batch), whose class is the top-scored
+    ("cls_top1acc") or among the CLASSIFICATION_TOP_K top-scored ("cls_top5acc"). Each evaluation also saves, over
+    DISPLAY_SCORE_THRESH, its confusion matrix <output_dir>/confusion_matrix_iter<iteration>.png and
+    inference_samples_iter<iteration>.jpg, whose tiles also go to TensorBoard during training (_save_inference_samples),
+    and each ground-truth box's classification to coco_gt_box_classifications.json, with their confusion matrix, free of
+    localization and score thresholds, cls_confusion_matrix_iter<iteration>.png."""
+
+    def __init__(self, dataset_name: str, model, **kwargs):
+        self._model = model.module if isinstance(model, DistributedDataParallel) else model
+        super().__init__(dataset_name, **kwargs)
+
+    def reset(self):
+        super().reset()
+        self._classifications, self._features = [], {}
+        self._hook = self._model.backbone.register_forward_hook(lambda module, inputs, features: self._features.update(features))
+
+    def process(self, inputs, outputs):
+        super().process(inputs, outputs)
+        for index, sample in enumerate(inputs):
+            self._classifications += self._ground_truth_classifications(sample, index)
+
+    def _ground_truth_classifications(self, sample: dict, index: int) -> List[dict]:
+        """One record per ground-truth box of sample: its image and annotation ids, its category id, the rank of its class
+        among the model's class probabilities of the box (0 for the top-scored) and the top CLASSIFICATION_TOP_K
+        (category id, probability)."""
+        annotations = [annotation for annotation in self._coco_api.imgToAnns[sample["image_id"]] if not annotation.get("iscrowd", 0)]
+        if not annotations:
+            return []
+        scale = torch.tensor([sample["image"].shape[2] / sample["width"], sample["image"].shape[1] / sample["height"]] * 2)
+        boxes = BoxMode.convert(torch.tensor([annotation["bbox"] for annotation in annotations], dtype=torch.float), BoxMode.XYWH_ABS, BoxMode.XYXY_ABS) * scale
+        to_contiguous = self._metadata.thing_dataset_id_to_contiguous_id
+        to_dataset = {contiguous: dataset_id for dataset_id, contiguous in to_contiguous.items()}
+        features = {name: feature[index:index + 1] for name, feature in self._features.items()}
+        probs = ground_truth_box_probs(self._model.roi_heads, features, tuple(sample["image"].shape[1:]), boxes).cpu()
+        ranks = (probs > probs[range(len(annotations)), [to_contiguous[annotation["category_id"]] for annotation in annotations]][:, None]).sum(dim=1)
+        top_probs, top_classes = probs.topk(min(CLASSIFICATION_TOP_K, probs.shape[1]), dim=1)
+        return [
+            {"image_id": sample["image_id"], "annotation_id": annotation["id"], "category_id": annotation["category_id"], "rank": int(rank),
+             f"top{CLASSIFICATION_TOP_K}": [[to_dataset[int(class_id)], round(float(prob), 4)] for class_id, prob in zip(classes, class_probs)]}
+            for annotation, rank, classes, class_probs in zip(annotations, ranks, top_classes, top_probs)
+        ]
 
     def evaluate(self, img_ids=None):
+        self._hook.remove()
+        self._features = {}
+        classifications = list(chain(*comm.gather(self._classifications)))
         results = super().evaluate(img_ids)
-        if results and self._output_dir:
+        if not results:
+            return results
+        ranks = torch.tensor([record["rank"] for record in classifications])
+        results["bbox"].update({"cls_top1acc": float((ranks == 0).float().mean() * 100), "cls_top5acc": float((ranks < CLASSIFICATION_TOP_K).float().mean() * 100)})
+        self._logger.info(f"Ground-truth box classification: top-1 {results['bbox']['cls_top1acc']:.3f}, top-{CLASSIFICATION_TOP_K} {results['bbox']['cls_top5acc']:.3f}")
+        if self._output_dir:
             storage = _event_storage()
             out_dir, iteration = Path(self._output_dir), storage.iter if storage else 0
             predictions_json = out_dir / "coco_instances_results.json"
             compute_confusion_matrix(predictions_json, Path(self._metadata.json_file), out_dir / f"confusion_matrix_iter{iteration:05d}.png", score_threshold=DISPLAY_SCORE_THRESH)
             self._save_inference_samples(predictions_json, out_dir / f"inference_samples_iter{iteration:05d}.jpg", storage)
+            self._save_classifications(classifications, out_dir / "coco_gt_box_classifications.json", out_dir / f"cls_confusion_matrix_iter{iteration:05d}.png")
         return results
+
+    def _save_classifications(self, classifications: List[dict], json_path: Path, confusion_path: Path) -> None:
+        """classifications to json_path, and the confusion matrix of their top-scored classes against their ground truth's
+        (save_classification_confusion) to confusion_path."""
+        json_path.write_text(json.dumps(classifications))
+        to_contiguous = self._metadata.thing_dataset_id_to_contiguous_id
+        true_classes = np.array([to_contiguous[record["category_id"]] for record in classifications], dtype=int)
+        predicted_classes = np.array([to_contiguous[record[f"top{CLASSIFICATION_TOP_K}"][0][0]] for record in classifications], dtype=int)
+        save_classification_confusion(true_classes, predicted_classes, self._metadata.thing_classes, confusion_path)
 
     def _save_inference_samples(self, predictions_json: Path, out_path: Path, storage: Optional[EventStorage]) -> None:
         """Mosaic of IMAGE_LOG_SAMPLES of the dataset's frames, evenly spaced, each its sample_overlay of predictions_json's
@@ -137,10 +214,11 @@ class ClassAP50Evaluator(COCOEvaluator):
         return {f"AP50-{name}": ap50 for name, ap50 in class_ap50s.items()}
 
 
-def build_evaluator(cfg, dataset_name):
+def build_evaluator(cfg, dataset_name, model):
     """output_dir is namespaced per dataset_name so scoring several datasets in one process
-    doesn't have every COCOEvaluator overwrite the same coco_instances_results.json. bbox-only."""
-    return ClassAP50Evaluator(dataset_name, tasks=("bbox",), output_dir=str(Path(cfg.OUTPUT_DIR) / "eval" / dataset_name))
+    doesn't have every COCOEvaluator overwrite the same coco_instances_results.json. bbox-only; model is the one tested,
+    whose ROI heads also classify the ground-truth boxes."""
+    return ClassAP50Evaluator(dataset_name, model, tasks=("bbox",), output_dir=str(Path(cfg.OUTPUT_DIR) / "eval" / dataset_name))
 
 
 class PeriodicImageWriter(HookBase):
@@ -194,35 +272,14 @@ class InitialEvalHook(HookBase):
         self.trainer.storage.put_scalars(**flatten_results_dict(results), smoothing_hint=False)
 
 
-class ClassCountsWriter(HookBase):
-    """Logs to TensorBoard and saves as cfg.OUTPUT_DIR/class_counts.png, once before training, a bar chart of each
-    split's annotation count per class and scene, from its annotations' (scene, class id) pairs."""
-
-    def __init__(self, split_annotations: dict, classes: list):
-        self.split_annotations = split_annotations
-        self.classes = classes
-
-    def before_train(self):
-        counts = {split: self._scene_counts(annotations) for split, annotations in self.split_annotations.items()}
-        chart = plot_class_counts(counts, self.classes)
-        Image.fromarray(chart).save(Path(self.trainer.cfg.OUTPUT_DIR) / "class_counts.png")
-        get_event_storage().put_image("class_counts", chart.transpose(2, 0, 1))
-
-    def _scene_counts(self, annotations: list) -> dict:
-        """{scene: count per class} of (scene, class id) pairs, scenes in name order."""
-        return {
-            scene: np.bincount([class_id for annotation_scene, class_id in annotations if annotation_scene == scene], minlength=len(self.classes))
-            for scene in sorted({scene for scene, _ in annotations})
-        }
-
-
 class Trainer(DefaultTrainer):
-    """DefaultTrainer with build_evaluator wired in, for pretrain.py/habitat_embodied_sl/main.py's own training-time
+    """DefaultTrainer testing with build_evaluator, for pretrain.py/habitat_embodied_sl/main.py's own training-time
     EvalHook, whose evaluator also logs each test set's sample predictions to TensorBoard."""
 
     @classmethod
-    def build_evaluator(cls, cfg, dataset_name):
-        return build_evaluator(cfg, dataset_name)
+    def test(cls, cfg, model):
+        """DefaultTrainer.test with each of cfg.DATASETS.TEST's build_evaluator given the tested model."""
+        return super().test(cfg, model, [build_evaluator(cfg, dataset_name, model) for dataset_name in cfg.DATASETS.TEST])
 
 
 def register_coco(split: str) -> str:
@@ -243,15 +300,6 @@ def register_coco(split: str) -> str:
     DatasetCatalog.get(name)
     meta = MetadataCatalog.get(name)
     meta.thing_colors = make_colors(len(meta.thing_classes), seed=0, ctype=0)
-    return name
-
-
-def register_single_dataset(split_dir: Path) -> str:
-    """register_dataset of split_dir, with a color per class for drawing its predictions."""
-    name = register_dataset(split_dir)
-    meta = MetadataCatalog.get(name)
-    if not meta.get("thing_colors"):
-        meta.thing_colors = make_colors(len(meta.thing_classes), seed=0, ctype=0)
     return name
 
 

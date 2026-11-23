@@ -72,7 +72,8 @@ def batches_mosaic(batches: Iterable[List[dict]], style: SegmentationStyle) -> O
 
 def _record_tile(record: dict, style: SegmentationStyle) -> tuple:
     instances = record["instances"]
-    instances.remove("gt_masks")
+    if instances.has("gt_masks"):  # absent on a frame without annotations
+        instances.remove("gt_masks")
     frame = Path(record["file_name"]).stem
     label = f"{record['object_key']} @ {frame}" if "object_key" in record else frame
     return segmentation_tile(np.ascontiguousarray(record["image"].permute(1, 2, 0).numpy()), instances, style, label)
