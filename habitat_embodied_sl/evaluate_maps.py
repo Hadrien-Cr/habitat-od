@@ -1,6 +1,6 @@
 """Scores the resolved maps of every scene habitat_embodied_sl/build_dataset.py wrote into a dataset, datasets/<run_name>/, each
 <scene>/predictions.json against its <scene>/ground_truth.json, every scene pooled (eval_utils.py's evaluate_scene_jsons:
-3D box AP, class-agnostic matching, confusion matrix), into datasets/<run_name>/map_eval/.
+3D box AP, TIDE error breakdown, class-agnostic matching, confusion matrix), into datasets/<run_name>/map_eval/.
 
 Usage:
   export BASE_DIR=$(pwd) PYTHONNOUSERSITE=1  # HABITAT_DATA already exported, see INSTALL.MD

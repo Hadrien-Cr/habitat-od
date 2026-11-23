@@ -1,8 +1,12 @@
+import contextlib
+import copy
+import io
 import itertools
 import json
+import sys
 from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Set, Tuple
 
 import habitat_sim
 import matplotlib.pyplot as plt
@@ -17,7 +21,7 @@ from tabulate import tabulate
 from common.hybrid_exploration.ground_truth_map import GroundTruthMapTracker
 from common.hybrid_exploration.exploration_map import MapGrid
 from common.utils.coco_utils import decoded_mask, encoded_masks, json_rle, write_json
-from common.utils.plot_utils import PNG_COMPRESS_LEVEL, plot_semantic_2d_map
+from common.utils.plot_utils import PNG_COMPRESS_LEVEL, plot_semantic_2d_map, plot_tide_errors
 from common.utils.projection_utils import TOPDOWN_MAP_SCALE, ResolvedObjects, filled_footprint, mesh_footprint_on_grid, save_labeled_ply
 from common.utils.retrieval import SegmentationStyle
 
@@ -36,6 +40,8 @@ PREDICTIONS_JSON = "predictions.json"
 _VOLUME_RANGES = [[0.0, np.inf], [0.0, _SMALL_MAX_VOLUME_M3], [_SMALL_MAX_VOLUME_M3, _MEDIUM_MAX_VOLUME_M3], [_MEDIUM_MAX_VOLUME_M3, np.inf]]
 _VOLUME_RANGE_SIZES = ("", "s", "m", "l")
 _TOP_K = 5
+_TIDE_BACKGROUND_IOU = 0.1
+_TIDE_ORACLE_FIELDS = {"Cls": ("category_id",), "Loc": ("bbox", "box3d", "area")}
 _MAX_HEATMAP_CLASSES = 60  # more is unreadable and can exceed matplotlib's 2^16-pixel figure limit (NYU's 890 classes)
 
 
@@ -130,6 +136,13 @@ def save_classification_confusion(true_classes: np.ndarray, predicted_classes: n
     _save_confusion_heatmap(matrix, classes, out_path)
 
 
+def one_class_per_proposal(detections: List[dict]) -> List[dict]:
+    """Copies of COCO detections with each image's box kept once, under its top-scored class: per-class NMS emits a box of
+    class-agnostic regression once per class over the score threshold."""
+    top_scored = {(detection["image_id"], tuple(detection["bbox"])): detection for detection in sorted(detections, key=lambda detection: detection["score"])}
+    return [dict(detection) for detection in top_scored.values()]
+
+
 def compute_confusion_matrix(
     predictions_json: Path,
     gt_json: Path,
@@ -148,7 +161,8 @@ def compute_confusion_matrix(
 
     Matching is class-agnostic (IoU-only, greedy by descending score) so misclassifications
     land off-diagonal instead of being silently treated as a missed detection plus an
-    unrelated false positive.
+    unrelated false positive. Predictions are kept one_class_per_proposal, so a box's lower-scored classes don't
+    fill the background row.
 
     `skip_unseen_classes` drops categories with zero GT annotations from both axes (e.g. a
     per-scene val set that only covers a handful of the full vocab -- see
@@ -158,7 +172,7 @@ def compute_confusion_matrix(
     with open(gt_json) as f:
         gt = json.load(f)
     with open(predictions_json) as f:
-        predictions = json.load(f)
+        predictions = one_class_per_proposal(json.load(f))
 
     categories = sorted(gt["categories"], key=lambda c: c["name"])
 
@@ -450,10 +464,22 @@ def _precision(coco_eval: COCOeval) -> np.ndarray:
     """coco_eval's precision at _IOU_THRESHOLDS and by _VOLUME_RANGES, every detection of a scene kept."""
     coco_eval.params.iouThrs = _IOU_THRESHOLDS
     coco_eval.params.areaRng = _VOLUME_RANGES
-    coco_eval.params.maxDets = [max([1, *map(len, coco_eval.cocoDt.imgToAnns.values())])]
+    coco_eval.params.maxDets = _every_detection(coco_eval.cocoDt)
     coco_eval.evaluate()
     coco_eval.accumulate()
     return coco_eval.eval["precision"]
+
+
+def _every_detection(predictions: COCO) -> List[int]:
+    """COCOeval's maxDets keeping every detection of predictions' scenes."""
+    return [max([1, *map(len, predictions.imgToAnns.values())])]
+
+
+def _scene_tide_daps(ground_truth: COCO, predictions: COCO, iou_threshold: float) -> Dict[str, float]:
+    """tide_daps of predictions' 3D boxes (each object's top-1 class), TIDE's foreground iou_threshold, every volume and detection."""
+    tide = _SceneCOCOeval(ground_truth, predictions, iouType="bbox")
+    tide.params.iouThrs, tide.params.areaRng, tide.params.maxDets = np.array([iou_threshold]), [[0.0, np.inf]], _every_detection(predictions)
+    return tide_daps(tide)
 
 
 def mean_precision(precision: np.ndarray) -> float:
@@ -507,14 +533,144 @@ def _top_k_dataset(predictions: dict, k: int) -> dict:
 
 def _ap_metrics(ground_truth: COCO, predictions: COCO, classes: list) -> Dict[str, float]:
     """LVIS-style _summary of the 3D box AP of predictions (each object's top-1 class), and AP25, overall and by volume, of
-    each object's _TOP_K classes and class-agnostic; prints the per-class AP of ground_truth's classes."""
+    each object's _TOP_K classes; prints the per-class AP of ground_truth's classes."""
     precision = _precision(_SceneCOCOeval(ground_truth, predictions, iouType="bbox"))
     class_ids = np.unique([annotation["category_id"] for annotation in ground_truth.dataset["annotations"]])
     print(f"Per-category 3D box AP:\n{_per_class_table(precision, classes, class_ids)}")
     top_k = _SceneCOCOeval(ground_truth, _coco(_top_k_dataset(predictions.dataset, _TOP_K)), iouType="bbox")
-    agnostic = _SceneCOCOeval(ground_truth, predictions, iouType="bbox")
-    agnostic.params.useCats = 0
-    return {**_summary(precision), **_ap25_by_volume(_precision(top_k), f" top{_TOP_K}"), **_ap25_by_volume(_precision(agnostic), " agnostic")}
+    return {**_summary(precision), **_ap25_by_volume(_precision(top_k), f" top{_TOP_K}")}
+
+
+@dataclass(frozen=True)
+class TideErrors:
+    """TIDE's error of each false-positive detection id, with the ground truth id a Cls or Loc error targets (-1 for none),
+    and the ground truth ids true positives match and no detection matches."""
+
+    detections: Dict[int, Tuple[str, int]]
+    matched: Set[int]
+    unmatched: Set[int]
+
+    def missed(self) -> Set[int]:
+        """Unmatched ground truth no Cls or Loc error targets."""
+        return self.unmatched - {target for _, target in self.detections.values()}
+
+
+def single_threshold_ap(coco_eval: COCOeval) -> float:
+    """mean_precision of coco_eval, set to one IoU threshold, area range and detection cap, once evaluated."""
+    coco_eval.evaluate()
+    coco_eval.accumulate()
+    return mean_precision(coco_eval.eval["precision"][..., 0, -1])
+
+
+def _detection_matches(coco_eval: COCOeval) -> Dict[int, int]:
+    """{detection id: id of the ground truth it matches, 0 for none} of every unignored detection coco_eval evaluated."""
+    return {
+        int(detection_id): int(match)
+        for image in filter(None, coco_eval.evalImgs)
+        for detection_id, match, ignored in zip(image["dtIds"], image["dtMatches"][0], image["dtIgnore"][0]) if not ignored
+    }
+
+
+def _image_objects(coco_eval: COCOeval, image_id: int) -> Tuple[List[dict], List[dict]]:
+    """(ground truth, detections) of image_id, every category's, in the order computeIoU, classes ignored and detections uncapped, pairs them."""
+    ground_truth = [annotation for cat_id in coco_eval.params.catIds for annotation in coco_eval._gts[image_id, cat_id]]
+    detections = [annotation for cat_id in coco_eval.params.catIds for annotation in coco_eval._dts[image_id, cat_id]]
+    return ground_truth, sorted(detections, key=lambda detection: -detection["score"])
+
+
+def _detection_error(ious: np.ndarray, same_class: np.ndarray, iou_threshold: float) -> Tuple[str, int]:
+    """TIDE's error of a false-positive detection of ious with each ground truth (same_class as it or not), checked in
+    TIDE's order, and the index of the ground truth a Cls or Loc error targets (-1 for none)."""
+    same_class_ious, other_class_ious = np.where(same_class, ious, 0.0), np.where(same_class, 0.0, ious)
+    if _TIDE_BACKGROUND_IOU <= same_class_ious.max(initial=0.0) < iou_threshold:
+        return "Loc", int(same_class_ious.argmax())
+    if other_class_ious.max(initial=0.0) >= iou_threshold:
+        return "Cls", int(other_class_ious.argmax())
+    if same_class_ious.max(initial=0.0) >= iou_threshold:
+        return "Dupe", -1
+    if ious.max(initial=0.0) < _TIDE_BACKGROUND_IOU:
+        return "Bkg", -1
+    return "Both", -1
+
+
+def _image_errors(agnostic: COCOeval, image_id: int, matches: Dict[int, int]) -> Dict[int, Tuple[str, int]]:
+    """_detection_error of each of image_id's detections matches maps to no ground truth, as {id: (error, target id)},
+    by agnostic's IoU of every category's detections with every category's unignored ground truth."""
+    ground_truth, detections = _image_objects(agnostic, image_id)
+    ious = np.reshape(agnostic.computeIoU(image_id, None), (len(detections), len(ground_truth)))
+    ious = np.where([annotation["ignore"] for annotation in ground_truth], 0.0, ious)
+    ground_truth_ids = [annotation["id"] for annotation in ground_truth] + [-1]
+    ground_truth_classes = np.array([annotation["category_id"] for annotation in ground_truth])
+    errors = {
+        detection["id"]: _detection_error(detection_ious, ground_truth_classes == detection["category_id"], agnostic.params.iouThrs[0])
+        for detection, detection_ious in zip(detections, ious) if matches.get(detection["id"]) == 0
+    }
+    return {detection_id: (error, ground_truth_ids[target]) for detection_id, (error, target) in errors.items()}
+
+
+def tide_errors(coco_eval: COCOeval) -> TideErrors:
+    """TideErrors of coco_eval's evaluated class-aware matching (TIDE's foreground threshold its single IoU threshold)."""
+    matches = _detection_matches(coco_eval)
+    agnostic = copy.copy(coco_eval)
+    agnostic.params = copy.copy(coco_eval.params)
+    agnostic.params.useCats, agnostic.params.maxDets = 0, [sys.maxsize]  # COCOeval caps detections per class, not per image
+    detections = {}
+    for image_id in coco_eval.params.imgIds:
+        detections.update(_image_errors(agnostic, image_id, matches))
+    matched = set(matches.values()) - {0}
+    ground_truth = coco_eval.cocoGt.loadAnns(coco_eval.cocoGt.getAnnIds(imgIds=coco_eval.params.imgIds, catIds=coco_eval.params.catIds))
+    return TideErrors(detections, matched, {annotation["id"] for annotation in ground_truth if not annotation["ignore"]} - matched)
+
+
+def _retargeted(detections: List[dict], ground_truth: COCO, errors: TideErrors, kind: str) -> List[dict]:
+    """detections with each `kind` (Cls or Loc) error given its target's _TIDE_ORACLE_FIELDS, by descending score, or
+    dropped when its target is already matched or taken by a higher-scored one (TIDE's duplicate suppression)."""
+    taken, fixed = set(errors.matched), []
+    for detection in sorted(detections, key=lambda detection: -detection["score"]):
+        error, target = errors.detections.get(detection["id"], ("", -1))
+        if error != kind:
+            fixed.append(detection)
+        elif target not in taken:
+            taken.add(target)
+            oracle = ground_truth.anns[target]
+            fixed.append(dict(detection, **{key: oracle[key] for key in _TIDE_ORACLE_FIELDS[kind] if key in oracle}))
+    return fixed
+
+
+def _without(annotations: List[dict], ids: Set[int]) -> List[dict]:
+    return [annotation for annotation in annotations if annotation["id"] not in ids]
+
+
+def _oracle_datasets(coco_eval: COCOeval, errors: TideErrors) -> Dict[str, Tuple[List[dict], List[dict]]]:
+    """{error type, FP or FN: (ground truth, detection) annotations with every error of it fixed}."""
+    ground_truth, detections = coco_eval.cocoGt.dataset["annotations"], coco_eval.cocoDt.dataset["annotations"]
+    of_kind = {kind: {id_ for id_, (error, _) in errors.detections.items() if error == kind} for kind in ("Both", "Dupe", "Bkg")}
+    return {
+        **{kind: (ground_truth, _retargeted(detections, coco_eval.cocoGt, errors, kind)) for kind in ("Cls", "Loc")},
+        **{kind: (ground_truth, _without(detections, ids)) for kind, ids in of_kind.items()},
+        "Miss": (_without(ground_truth, errors.missed()), detections),
+        "FP": (ground_truth, _without(detections, set(errors.detections))),
+        "FN": (_without(ground_truth, errors.unmatched), detections),
+    }
+
+
+def _oracle_ap(coco_eval: COCOeval, ground_truth: List[dict], detections: List[dict]) -> float:
+    """single_threshold_ap, under coco_eval's class and params, of ground_truth's and detections' annotations."""
+    oracle = type(coco_eval)(
+        _coco(dict(coco_eval.cocoGt.dataset, annotations=ground_truth)), _coco(dict(coco_eval.cocoDt.dataset, annotations=detections)), coco_eval.params.iouType,
+    )
+    oracle.params = copy.deepcopy(coco_eval.params)
+    return single_threshold_ap(oracle)
+
+
+def tide_daps(coco_eval: COCOeval) -> Dict[str, float]:
+    """TIDE's dAP (arXiv 2008.08115) of each error type (Cls, Loc, Both, Dupe, Bkg, Miss) and of every false positive (FP)
+    and negative (FN): the AP gained once an oracle fixes them, coco_eval set to one IoU threshold (TIDE's foreground),
+    area range and detection cap. Negative dAPs, interpolation noise, are clamped to 0 as TIDE does."""
+    with contextlib.redirect_stdout(io.StringIO()):
+        base_ap = single_threshold_ap(coco_eval)
+        oracles = _oracle_datasets(coco_eval, tide_errors(coco_eval))
+        return {name: max(_oracle_ap(coco_eval, *oracle) - base_ap, 0.0) for name, oracle in oracles.items()}
 
 
 @dataclass(frozen=True)
@@ -551,31 +707,6 @@ def _scenes_matches(ground_truth: COCO, predictions: COCO, iou_threshold: float)
             ResolvedDetections.from_annotations(predictions.imgToAnns[image["id"]]), iou_threshold,
         )
         for image in ground_truth.dataset["images"]
-    }
-
-
-def _matched_percent(matched: np.ndarray) -> float:
-    return float(100 * matched.mean()) if len(matched) else float("nan")
-
-
-def _percent_by_volume(name: str, flags: np.ndarray, volumes: np.ndarray) -> Dict[str, float]:
-    """"<name>[s|m|l] agnostic": _matched_percent of flags, overall and within each of _VOLUME_RANGES of their volumes."""
-    return {
-        f"{name}{size} agnostic": _matched_percent(flags[(volumes >= low) & (volumes < high)])
-        for size, (low, high) in zip(_VOLUME_RANGE_SIZES, _VOLUME_RANGES)
-    }
-
-
-def _agnostic_recall_precision(scenes: Dict[str, SceneMatches], iou_threshold: float) -> Dict[str, float]:
-    """Percent of ground truth class-agnostically matched (by its volume) and of resolved objects matching one (by theirs),
-    overall and by volume, every scene pooled, named after the matching's iou_threshold (recall25 at 0.25)."""
-    iou_percent = round(iou_threshold * 100)
-    matched = np.concatenate([scene.ground_truth_matched() for scene in scenes.values()])
-    matching = np.concatenate([scene.matches >= 0 for scene in scenes.values()])
-    print(f"{matched.sum()}/{len(matched)} ground truth matched, {matching.sum()}/{len(matching)} resolved objects matching")
-    return {
-        **_percent_by_volume(f"recall{iou_percent}", matched, np.concatenate([_box_volumes(scene.ground_truth.boxes) for scene in scenes.values()])),
-        **_percent_by_volume(f"precision{iou_percent}", matching, np.concatenate([_box_volumes(scene.detections.boxes) for scene in scenes.values()])),
     }
 
 
@@ -627,17 +758,19 @@ def _print_scene_matches(scene_name: str, scene: SceneMatches, classes: list, io
 
 
 def evaluate_scene_jsons(scene_dirs: List[Path], out_dir: Path, iou_threshold: float = 0.25) -> None:
-    """3D box AP, class-agnostic AP25, and class-agnostic recall, precision and confusion_matrix.png of the matching at 3D box
-    IoU >= iou_threshold, of every scene_dirs' predictions.json against its ground_truth.json, pooled; printed, and written
-    as one dict to out_dir/metrics.json."""
+    """3D box AP, TIDE's dAP at 3D box IoU >= iou_threshold (also drawn to out_dir/tide.png), and confusion_matrix.png of
+    the class-agnostic matching at it, of every scene_dirs' predictions.json against its ground_truth.json, pooled; printed,
+    and written as one dict to out_dir/metrics.json."""
     ground_truth = _coco(_merged_dataset([scene_dir / GROUND_TRUTH_JSON for scene_dir in scene_dirs]))
     predictions = _coco(_merged_dataset([scene_dir / PREDICTIONS_JSON for scene_dir in scene_dirs]))
     classes = [category["name"] for category in ground_truth.dataset["categories"]]
     scenes = _scenes_matches(ground_truth, predictions, iou_threshold)
     for scene_name, scene in scenes.items():
         _print_scene_matches(scene_name, scene, classes, iou_threshold)
-    metrics = {**_ap_metrics(ground_truth, predictions, classes), **_agnostic_recall_precision(scenes, iou_threshold)}
-    print(f"3D box metrics (small < {_SMALL_MAX_VOLUME_M3} m3 <= medium < {_MEDIUM_MAX_VOLUME_M3} m3 <= large; class-agnostic "
-          f"recall and precision at IoU >= {iou_threshold}):\n{tabulate(list(metrics.items()), headers=['metric', 'value'], tablefmt='pipe', floatfmt='.3f')}")
+    daps = _scene_tide_daps(ground_truth, predictions, iou_threshold)
+    metrics = {**_ap_metrics(ground_truth, predictions, classes), **{f"dAP{round(iou_threshold * 100)}/{name}": dap for name, dap in daps.items()}}
+    print(f"3D box metrics (small < {_SMALL_MAX_VOLUME_M3} m3 <= medium < {_MEDIUM_MAX_VOLUME_M3} m3 <= large; TIDE dAP "
+          f"at IoU >= {iou_threshold}):\n{tabulate(list(metrics.items()), headers=['metric', 'value'], tablefmt='pipe', floatfmt='.3f')}")
     _save_confusion_matrix(scenes, classes, out_dir / "confusion_matrix.png")
+    plot_tide_errors(daps, f"TIDE, 3D box IoU >= {iou_threshold}", out_dir / "tide.png")
     write_json(out_dir / "metrics.json", metrics)

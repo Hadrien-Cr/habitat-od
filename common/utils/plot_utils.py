@@ -122,6 +122,27 @@ def plot_class_ap(iterations: list[int], class_aps: dict[str, np.ndarray], out_p
     return out_path
 
 
+def plot_tide_errors(daps: dict[str, float], title: str, out_path: Path) -> Path:
+    """Horizontal bars of TIDE's dAP of each error type, above those of every false positive and negative (FP, FN), on one
+    dAP axis, each bar labeled with its value."""
+    groups = [{name: dap for name, dap in daps.items() if name not in ("FP", "FN")}, {name: daps[name] for name in ("FP", "FN")}]
+    fig, axes = plt.subplots(2, 1, sharex=True, figsize=(5, 3.5), gridspec_kw={"height_ratios": [len(group) for group in groups]})
+    for ax, group in zip(axes, groups):
+        bars = ax.barh(list(group), list(group.values()), color=_SERIES_COLORS[0], height=0.6)
+        ax.bar_label(bars, fmt="%.2f", padding=3, fontsize=7, color="#333333")
+        ax.set_ylim(len(group) - 0.5, -0.5)
+        ax.tick_params(axis="y", labelsize=8)
+        ax.grid(True, axis="x", alpha=0.3)
+        ax.spines[["top", "right"]].set_visible(False)
+    axes[0].set_title(title, fontsize=9)
+    axes[1].set_xlabel("dAP (AP gained once an oracle fixes them)")
+    axes[1].set_xlim(right=max([1.0, *daps.values()]) * 1.15)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    return out_path
+
+
 def plot_box_areas(split_areas: dict[str, np.ndarray], out_path: Path) -> Path:
     """Each split's histogram of box side sqrt(area), with COCO's small/medium/large bounds and shares."""
     fig, ax = plt.subplots(figsize=(6, 3.5))

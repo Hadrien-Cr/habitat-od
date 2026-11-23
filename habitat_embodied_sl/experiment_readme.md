@@ -13,39 +13,72 @@ registered splits (`procthor8_V2_drop_add_object_ds`, `procthor8_V4_full_train`,
 ProcTHOR-Val-0 to -15, 724 frames, 4,467 boxes, 82 of the 94 classes present. Train houses ProcTHOR-Train-5, -6, -9,
 -11, -14, -26, -30, -32, -33, -36, -38, -40, -41, -44, -45, -47: `V1_pseudo` 504 objects, 4,983 views; `V2_drop_add`
 712 objects, 6,925 views; `V3_cls_box_drop_add` 712 objects, 6,859 views; `V4_full` 4,461 frames, 28,057 boxes, 81
-classes. V3's maps (`evaluate_maps.py`, 3D box IoU ≥ 0.25): class-agnostic recall 61.7% (small objects 43.1%),
-precision 90.7%, AP25 30.1, AP25 agnostic 60.1.
+classes. V3's maps (`evaluate_maps.py`, 3D box IoU ≥ 0.25): AP25 30.1; TIDE dAP25/FN 62.0 and FP 2.3, the maps
+missing objects far more than inventing them; Cls 28.9, Miss 19.0, Loc 0.8, Both 0.2, Bkg 0.1, Dupe 0.0.
 
 Run 2026-11-20 (`run.sh`, 1,000 iterations, evaluated at 0, 500 and 1,000), last evaluation, the best for every run but
 `V1_pseudo` (29.0 AP at 500). Test cls is the test set's ground-truth boxes classified alone, given to the ROI heads as
-proposals (`cls_top1acc`/`cls_top5acc`). Train is `procthor8_V4_full_train`, the train frames' full ground truth
-(`V4_full`'s own training data). NYU-47 is NYU Depth V2's 47-class test set (`nyu_depth_v2_test`):
+proposals (each box's rank in `coco_gt_box_classifications.json`). NYU-47 is NYU Depth V2's 47-class test set
+(`nyu_depth_v2_test`).
 
-| run | test AP | test AP50 | test APs | test AP50 agnostic | test recall50 agnostic | test cls top-1 | test cls top-5 | train AP | train AP50 | NYU-47 AP50 | NYU-47 AP50 agnostic |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| `r50_procthor8_source` | 27.6 | 33.6 | 23.9 | 65.6 | 93.9 | 53.2 | 84.3 | 27.3 | 32.4 | **28.2** | 32.9 |
-| `r50_procthor8_unsup_norm` | 27.4 | 33.3 | 24.7 | 66.6 | 94.5 | 54.1 | 85.0 | 27.3 | 32.6 | 27.1 | 32.0 |
-| `r50_procthor8_unsup_mean_teacher` | 28.7 | 35.4 | 24.2 | 61.0 | 94.8 | 51.1 | 85.5 | 28.3 | 34.1 | 27.5 | 28.7 |
-| `r50_procthor8_embodied_sl_V1_pseudo` | 27.9 | 34.7 | 20.5 | 66.0 | 95.1 | 67.2 | 89.7 | 29.5 | 35.9 | 25.3 | 25.8 |
-| `r50_procthor8_embodied_sl_V2_drop_add` | 30.1 | 37.5 | 22.8 | 69.6 | 95.5 | 69.4 | 90.4 | 33.8 | 41.2 | 25.6 | 25.6 |
-| `r50_procthor8_embodied_sl_V3_cls_box_drop_add` | 37.7 | 46.5 | 27.9 | 70.4 | 95.2 | 75.9 | 92.6 | 51.6 | 62.5 | 25.7 | 25.2 |
-| `r50_procthor8_embodied_sl_V4_full` | 39.9 | 50.0 | 30.0 | 71.4 | 95.1 | **82.0** | **95.2** | 58.8 | 72.6 | 24.0 | 23.3 |
-| `r50_procthor8_embodied_sl_V4_full_bgneg` | **46.9** | **57.0** | **37.2** | **87.1** | **95.7** | 81.3 | 95.0 | 65.2 | 78.1 | 27.6 | **36.1** |
+TIDE (arXiv 2008.08115, `eval_utils.tide_daps`), recomputed 2026-11-23 from each run's saved last-evaluation detections:
+dAP50/<error> is the AP50 gained once an oracle fixes every error of a type, lower is better. `Cls` wrong class (IoU ≥ 0.5),
+`Loc` right class (IoU 0.1 to 0.5), `Both` neither, `Dupe` duplicate, `Bkg` background (IoU < 0.1 with everything),
+`Miss` ground truth no detection comes near; `FP`/`FN` every false positive/negative at once. Lowest in bold, `Dupe`
+aside (0.0 to 0.1 everywhere: per-class NMS).
+
+| run | test AP50 | dAP50/Cls | dAP50/Loc | dAP50/Both | dAP50/Bkg | dAP50/Miss | dAP50/FP | dAP50/FN | NYU-47 AP50 | dAP50/Cls | dAP50/Loc | dAP50/Both | dAP50/Bkg | dAP50/Miss | dAP50/FP | dAP50/FN |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `r50_procthor8_source` | 33.6 | 16.4 | 1.6 | 1.2 | 3.9 | 1.2 | 50.7 | 4.5 | **28.2** | **9.5** | 5.7 | **1.8** | 6.2 | 1.9 | 40.9 | **8.4** |
+| `r50_procthor8_unsup_norm` | 33.3 | 15.6 | 1.6 | 1.3 | 3.8 | 1.1 | 52.4 | **3.3** | 27.1 | 9.6 | 5.4 | **1.8** | 5.8 | 2.1 | 40.7 | 8.8 |
+| `r50_procthor8_unsup_mean_teacher` | 35.4 | 18.3 | 2.1 | 1.4 | 4.1 | 0.8 | 46.8 | 4.8 | 27.5 | 10.1 | 6.4 | **1.8** | 6.7 | **1.8** | 39.3 | 8.8 |
+| `r50_procthor8_embodied_sl_V1_pseudo` | 34.7 | 15.8 | 2.7 | 1.3 | 5.2 | **0.4** | 44.9 | 5.3 | 25.3 | 11.1 | 6.1 | 1.9 | 6.1 | 1.9 | 39.4 | 9.2 |
+| `r50_procthor8_embodied_sl_V2_drop_add` | 37.5 | 16.8 | 2.5 | 1.7 | 4.4 | 0.5 | 44.1 | 4.8 | 25.6 | 10.5 | 6.2 | 2.0 | 6.0 | **1.8** | 40.1 | 9.1 |
+| `r50_procthor8_embodied_sl_V3_cls_box_drop_add` | 46.5 | 9.8 | 2.4 | 1.4 | 4.8 | 0.5 | 40.7 | 4.7 | 25.7 | 10.4 | 6.1 | 2.1 | 5.7 | 1.9 | 39.8 | 9.2 |
+| `r50_procthor8_embodied_sl_V4_full` | 50.0 | **7.0** | 2.9 | 1.6 | 6.6 | 0.5 | 38.9 | 4.2 | 24.0 | 10.3 | 5.9 | 2.1 | 5.8 | 1.9 | **39.1** | 9.0 |
+| `r50_procthor8_embodied_sl_V4_full_bgneg` | **57.0** | 12.2 | **1.4** | **0.9** | **1.8** | 0.7 | **35.0** | 3.5 | 27.6 | 10.4 | **5.2** | 1.9 | **5.2** | 2.6 | 39.4 | 9.9 |
+
+The same with one class per proposal (OCPP, `eval_utils.one_class_per_proposal`): Detic's box regression is
+class-agnostic, so per-class NMS at score 0.02 emits each box once per class (source's 200,702 test detections are
+35,653 boxes); OCPP keeps each box once, under its top-scored class, as an agent acting on one label per object would.
+
+| run | test AP50_OCPP | dAP50_OCPP/Cls | dAP50_OCPP/Loc | dAP50_OCPP/Both | dAP50_OCPP/Bkg | dAP50_OCPP/Miss | dAP50_OCPP/FP | dAP50_OCPP/FN | NYU-47 AP50_OCPP | dAP50_OCPP/Cls | dAP50_OCPP/Loc | dAP50_OCPP/Both | dAP50_OCPP/Bkg | dAP50_OCPP/Miss | dAP50_OCPP/FP | dAP50_OCPP/FN |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `r50_procthor8_source` | 25.7 | 51.2 | 2.4 | 0.7 | **1.5** | 1.4 | 12.7 | 36.7 | **25.4** | 22.8 | 5.7 | 1.5 | 4.9 | 2.1 | 24.0 | 18.2 |
+| `r50_procthor8_unsup_norm` | 25.8 | 48.9 | 2.2 | 0.9 | 1.6 | 1.2 | 14.0 | 34.5 | 24.1 | 22.9 | 5.5 | **1.4** | 4.7 | 2.3 | 23.6 | 18.6 |
+| `r50_procthor8_unsup_mean_teacher` | 24.0 | 54.6 | 3.0 | **0.6** | 1.7 | **0.4** | 14.5 | 33.9 | 24.7 | 22.2 | 6.1 | 1.5 | 4.9 | **1.9** | 24.1 | 16.5 |
+| `r50_procthor8_embodied_sl_V1_pseudo` | 28.7 | 44.7 | 3.6 | 0.7 | 2.3 | 0.9 | 14.5 | 30.1 | 22.8 | 22.6 | 6.0 | 1.5 | 4.8 | 2.1 | 25.0 | **16.3** |
+| `r50_procthor8_embodied_sl_V2_drop_add` | 31.0 | 41.2 | 3.4 | 1.0 | 2.6 | 0.6 | 17.2 | 28.8 | 22.9 | 21.7 | 6.2 | 1.6 | 4.7 | 2.0 | 25.0 | 17.2 |
+| `r50_procthor8_embodied_sl_V3_cls_box_drop_add` | 42.9 | 24.8 | 3.3 | 1.1 | 4.6 | 0.9 | 17.4 | 24.0 | 22.9 | 21.8 | 6.1 | 1.7 | 4.6 | 2.2 | 24.8 | 17.9 |
+| `r50_procthor8_embodied_sl_V4_full` | 46.9 | **22.2** | 3.5 | 1.3 | 5.6 | 1.1 | 18.9 | **18.9** | 22.0 | **20.8** | 5.9 | 1.8 | 4.6 | 2.2 | 25.2 | 16.6 |
+| `r50_procthor8_embodied_sl_V4_full_bgneg` | **52.8** | 29.3 | **1.7** | 0.9 | 1.7 | 2.0 | **10.9** | 26.2 | 24.2 | 24.5 | **5.1** | 1.6 | **4.2** | 3.0 | **22.4** | 21.3 |
 
 - **V, one step at a time:** the objects (`V1` → `V2`, a perfect mapper) +2.2 AP; their labels (`V2` → `V3`, a
-  perfect labeler) +7.6, the largest step; full annotation over object views (`V3` → `V4_full`) +2.2; background
-  negatives (`V4_full` → `V4_full_bgneg`) +7.0, and class-agnostic AP50 71.4 → 87.1: positive-only training never
-  learns what is not an object. The pseudo-labels as classified (`V1`) gain +0.3 AP over source (+1.4 at 500
+  perfect labeler) +7.6, the largest step, dAP50/Cls 16.8 → 9.8 with every other error type within 0.4: the pseudo-labels'
+  wrong classes are what V2 loses; full annotation over object views (`V3` → `V4_full`) +2.2; background
+  negatives (`V4_full` → `V4_full_bgneg`) +7.0, dAP50/Bkg 6.6 → 1.8, the lowest of every run: positive-only training
+  never learns what is not an object, every other embodied SL variant above source in Bkg (4.4 to 6.6, `V4_full` the
+  highest). The pseudo-labels as classified (`V1`) gain +0.3 AP over source (+1.4 at 500
   iterations, then falling) and lose 3.4 APs, no better than the unsupervised baselines.
+- **One class per proposal:** the lower-scored class copies of each box are worth 3.1 (`V4_full`) to 11.4
+  (Mean-Teacher) AP50: a box whose top class is wrong is still a true positive under its right one. Without them,
+  embodied SL's lead over source grows (`V1` +1.1 → +3.0 AP50, `V3` +12.9 → +17.2, `V4_full_bgneg` +23.4 → +27.1) and
+  Mean-Teacher falls below source (+1.8 → −1.7): its AP gain is in the copies, its top-1 label worse (top-1 51.1).
 - **Classification alone:** every embodied SL variant classifies ground-truth boxes better, top-1 53.2 → 67.2 (`V1`),
-  69.4, 75.9 and 82.0 (`V4_full`). `V1`'s +14.0 top-1 barely moves its AP (+0.3), so its detections lose elsewhere,
-  in scores against background. `V4_full_bgneg` classifies no better than `V4_full` (81.3): its +7.0 AP is objectness.
-  Mean-Teacher lowers top-1 (51.1).
-- **The unsupervised baselines do nothing:** NORM −0.2 AP; Mean-Teacher +1.1 AP but class-agnostic AP50 65.6 → 61.0.
+  69.4, 75.9 and 82.0 (`V4_full`). `V1`'s +14.0 top-1 barely moves its AP (+0.3) nor its dAP50/Cls (16.4 → 15.8),
+  while its Bkg rises 3.9 → 5.2 and Loc 1.6 → 2.7: a box whose top class is wrong still scores under its right one,
+  so top-1 shows only one class per proposal (+3.0 AP50_OCPP over source, dAP50_OCPP/Cls 51.2 → 44.7). dAP50/Cls only
+  falls with true labels, `V3` 9.8 and `V4_full` 7.0. `V4_full_bgneg` classifies no better than `V4_full` (81.3): its
+  +7.0 AP is objectness (Bkg 6.6 → 1.8), and with background gone, more of its remaining loss is classification (Cls
+  7.0 → 12.2). Mean-Teacher lowers top-1 (51.1).
+- **The unsupervised baselines do nothing:** NORM −0.2 AP; Mean-Teacher +1.1 AP but the most lost to classification of
+  every run, dAP50/Cls 16.4 → 18.3.
 - **Per class:** 77 of the 82 test classes have V3 training objects. Their AP50 goes from 34.2 (source) to 35.8 (`V1`),
   48.3 (`V3`), 51.7 (`V4_full`) and 58.8 (`V4_full_bgneg`); the 5 without any go from 25.6 to 17.8, 18.8, 24.3 and 29.3.
-- **NYU-47:** every fine-tune but `V4_full_bgneg` forgets (class-agnostic AP50 32.9 → 23.3 to 25.8; NORM 32.0,
-  Mean-Teacher 28.7). `V4_full_bgneg` is the only run above source in class-agnostic AP50 (36.1), 0.6 below it in AP50.
+- **NYU-47:** every embodied SL fine-tune but `V4_full_bgneg` forgets, AP50 28.2 → 24.0 to 25.7 (NORM 27.1,
+  Mean-Teacher 27.5), as classification: dAP50/Cls 9.5 → 10.3 to 11.1, FN 8.4 → 9.0 to 9.2, while Loc and Bkg stay
+  within 0.5 of source. `V4_full_bgneg` is 0.6 below source in AP50, with the lowest Loc and Bkg (5.2 each) but the
+  highest Miss (2.6) and FN (9.9).
   Split into classes in and out of `CLASS_LABELS_PROCTHOR100` in Questions below: the trained classes forget most.
 - **Reading AP:** box regression is not trained and proposals come from the frozen teacher, so AP75 and above measure
   the source's localization; AP50 and per-class AP50 (`class_ap.png`, `class_table.csv`) measure what is trained. A
@@ -55,21 +88,10 @@ proposals (`cls_top1acc`/`cls_top5acc`). Train is `procthor8_V4_full_train`, the
 
 Per-class numbers from each run's `class_table.csv`, AP50 at the last evaluation against iteration 0.
 
-- **Why does AP not improve when cls improves?** `V1`'s top-1 goes 53.2 → 67.2 and its AP 27.6 → 27.9;
-  `V4_full_bgneg` is the reverse, top-1 −0.7 and AP +7.0. Top-1 is measured on ground-truth boxes alone, so it does not
-  see how the head scores the teacher's background proposals against objects. It also averages over boxes (doorway,
-  chair and window are 28% of the test boxes), while AP averages over classes. To check: top-1 per class, and whether
-  each run's highest-scored false positives are background or a wrong class.
-- **Why do more than 10 classes lose 10+ AP in `V1`?** 15 lose ≥ 10 and 15 gain ≥ 10 (losers: `V2` 11, `V3` 5,
-  `V4_full` 8, `V4_full_bgneg` 2, Mean-Teacher 6). 6 of the 15 have no `V1` training object (lettuce −40.2, pen,
-  coffee machine, safe, clothes dryer, credit card) and 4 have one or two (plunger, paper towel roll, pencil, baseball
-  bat): are untrained classes crowded out by trained ones? The other 5 are trained: desk lamp (7 objects, 126 test
-  boxes, −19.5), faucet (10, 28, −18.0), apple (10, 6, −15.6), pillow (6, 150, −14.5), dresser (18, 101, −11.6).
-  `V3` has 2 apples where `V1` has 10, so most of `V1`'s apples are other objects. Are they losing to wrong
-  pseudo-labels? To check: each `V1` view's pseudo class against its object's ground-truth class.
+- **Why do more than 10 classes lose 10+ AP in `V1`?** 
 - **Why do some classes still lose with a perfect labeler V4?**
 - **Why does every fine-tune forget NYU-47, and why does `V4_full_bgneg` not?** 
-- **Why does Mean-Teacher gain AP (+1.1) but lose class-agnostic AP50 (65.6 → 61.0)?**
+- **What explains the gap between V2 and V3 ?** 
 
 ## Next experiments
 

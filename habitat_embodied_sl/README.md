@@ -188,13 +188,19 @@ recorded fusion one (`ConceptGraphConfig`, in `scene.json`).
   - (4.6.1) **3D box AP:** COCO AP by 3D box IoU, both boxes first grown to at least 5 cm per axis
     (`_MIN_MATCHED_EXTENT_M`), at IoU 0.25 to 0.95 in 0.05 steps. It reports AP (IoU 0.5:0.95), AP25 and AP50, AP25 per
     volume (small < 0.01 m³ ≤ medium < 0.25 m³ ≤ large), AP25 of each object submitted once per class among its 5 highest `class_scores`, scored by that class's (`AP25 top5`,
-    also per volume; `AP25` is top-1), AP25 with classes ignored (`AP25 agnostic`, also per volume), and per-class AP25,
-    AP50 and AP.
-  - (4.6.2) **Class-agnostic matching:** each scene's objects, by descending score, greedily take the unmatched ground truth
-    of highest 3D box IoU, if ≥ 0.25. It reports the share of ground truth matched (`recall25 agnostic`) and of objects
-    matching one (`precision25 agnostic`), each also per volume (the ground truth's, the object's), with a per-scene table of every object's match and of the unmatched ground truth,
-    and a confusion matrix (`confusion_matrix.png`; unmatched objects and ground truth fall in "background").
-  - (4.6.3) All of 4.6.1's and 4.6.2's metrics but the per-class AP go to one flat dict, `metrics.json`.
+    also per volume; `AP25` is top-1), and per-class AP25, AP50 and AP.
+  - (4.6.2) **TIDE error breakdown** (arXiv 2008.08115, `tide_daps`) at 3D box IoU ≥ 0.25 (foreground) of each
+    object's top-1 class. Each object COCO matching leaves unmatched gets one error, checked in order: `Loc` (its class,
+    IoU in [0.1, 0.25)), `Cls` (another class, IoU ≥ 0.25), `Dupe` (its class, IoU ≥ 0.25 with already matched ground
+    truth), `Bkg` (IoU < 0.1 with every ground truth), else `Both`; unmatched ground truth no `Cls`/`Loc` error targets
+    is `Miss`. Each type's `dAP25/<error>` is the AP25 gained once an oracle fixes all its errors (`Cls`: relabeled,
+    `Loc`: given its target's box, either dropped if a higher-scored object or a match already takes that target;
+    `Both`/`Dupe`/`Bkg`: dropped; `Miss`: that ground truth dropped), negative gains clamped to 0, and `dAP25/FP` and
+    `dAP25/FN` that of dropping every unmatched object or ground truth, drawn to `tide.png`.
+  - (4.6.3) **Class-agnostic matching:** each scene's objects, by descending score, greedily take the unmatched ground truth
+    of highest 3D box IoU, if ≥ 0.25. It prints a per-scene table of every object's match and of the unmatched ground
+    truth, and draws a confusion matrix (`confusion_matrix.png`; unmatched objects and ground truth fall in "background").
+  - (4.6.4) All of 4.6.1's and 4.6.2's metrics but the per-class AP go to one flat dict, `metrics.json`.
 
 ### 5. Retrieval and train sets
 
@@ -280,7 +286,7 @@ scene name order, into its json, mosaic and class counts; rerun it after rewriti
 | `<scene>/exploration_snapshot.png`, `<scene>/decision_frame.png`, `<scene>/images/planner/` | a train scene's last exploration snapshot (1.5), copied from its raw record; a test scene's frontier exploration map and trajectory (6.1), and its planner's dump folder |
 | `<scene>/predictions.json`, `<scene>/ground_truth.json`, `<scene>/estimated_topdown.png`, `<scene>/ground_truth_topdown.png` | each train scene's classified objects and its annotated objects as single-scene COCO datasets on the agent's map grid (4.5), and their top-down maps by class |
 | `<scene>/semantic_point_cloud.ply`, `<scene>/semantic_wireframes.glb`, `<scene>/ground_truth_wireframes.glb`, `<scene>/ground_truth_mesh.glb` | each train scene's classified objects' points and box wireframes, its observable ground truth's box wireframes, colored by class, and its mesh (4.5) |
-| `map_eval/metrics.json`, `map_eval/confusion_matrix.png` | `evaluate_maps.py`'s scores of every train scene's map, pooled (4.6) |
+| `map_eval/metrics.json`, `map_eval/tide.png`, `map_eval/confusion_matrix.png` | `evaluate_maps.py`'s scores of every train scene's map, pooled (4.6) |
 | `semantic_topdown_maps/<scene>.png` | each train scene's resolved objects the variant keeps, by their class in the variant, on the agent's top-down map; objects `recover_add_fn` adds have no points to draw |
 | `retrieval_mosaics/<scene>.jpg` | each train scene's objects in the variant, one row of its retrieved views per object, tiles at half resolution (`_TILE_DOWNSCALE`); objects recovery relabelled (5.3.2) or added (5.3.3) are bordered red. Split into `<scene>_<part>.jpg` of at most 32 objects each (`MAX_MOSAIC_ROWS`) unless `--no-split` |
 | `retrieval_mosaics/<scene>_first_views.jpg` | the same objects, one row of each object's first retrieved view (its highest-gain one, 5.1) at full resolution, bordered red as above |

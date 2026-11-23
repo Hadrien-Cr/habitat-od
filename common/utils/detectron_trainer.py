@@ -23,39 +23,39 @@ from detectron2.structures import Boxes, BoxMode, Instances  # type: ignore
 from detectron2.utils import comm  # type: ignore
 from detectron2.utils.events import EventStorage, get_event_storage  # type: ignore
 from PIL import Image
+from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 from tabulate import tabulate
 from torch.nn.parallel import DistributedDataParallel
-from torchvision.ops import batched_nms, nms
+from torchvision.ops import nms
 
 from common.env_utils.vocab_constants import make_colors
-from common.utils.eval_utils import compute_confusion_matrix, mean_precision, save_classification_confusion
-from common.utils.plot_utils import MOSAIC_JPEG_QUALITY, make_mosaic, plot_boxes_overlay
+from common.utils.eval_utils import (
+    compute_confusion_matrix, mean_precision, one_class_per_proposal, save_classification_confusion, single_threshold_ap, tide_daps,
+)
+from common.utils.plot_utils import MOSAIC_JPEG_QUALITY, make_mosaic, plot_boxes_overlay, plot_tide_errors
 
 COCO_ROOT = Path(__file__).resolve().parents[2] / "coco_testbench" / "datasets" / "coco"
 IMAGE_LOG_SAMPLES = 4
 IMAGE_LOG_HEIGHT = 512
 DISPLAY_SCORE_THRESH = 0.3  # predictions kept in logged images and confusion matrices; AP uses SCORE_THRESH_TEST
 DISPLAY_NMS_IOU = 0.5
-AGNOSTIC_NMS_IOU = 0.5  # class-agnostic scoring keeps one detection, the top-scored, of boxes overlapping more
 CLASSIFICATION_TOP_K = 5
 
 
-def agnostic_ap50_recall50(coco_eval: COCOeval) -> dict:
-    """Class-agnostic (pycocotools' useCats=0) AP50 and recall at IoU 0.5, up to 100 detections an image, of coco_eval's
-    detections, of each image's boxes overlapping more than AGNOSTIC_NMS_IOU only the top-scored."""
-    detections = coco_eval.cocoDt.dataset["annotations"]
-    boxes = BoxMode.convert(torch.tensor([detection["bbox"] for detection in detections], dtype=torch.float), BoxMode.XYWH_ABS, BoxMode.XYXY_ABS)
-    scores = torch.tensor([detection["score"] for detection in detections], dtype=torch.float)
-    kept = batched_nms(boxes, scores, torch.tensor([detection["image_id"] for detection in detections]), AGNOSTIC_NMS_IOU).tolist()
-    kept_detections = [{key: detections[index][key] for key in ("image_id", "category_id", "bbox", "score")} for index in kept]
+def _ap50_eval(coco_gt: COCO, coco_dt: COCO, img_ids: list) -> COCOeval:
+    """COCOeval of coco_dt at IoU 0.5 alone, every area, up to 100 detections an image."""
+    ap50_eval = COCOeval(coco_gt, coco_dt, "bbox")
+    ap50_eval.params.imgIds, ap50_eval.params.iouThrs = img_ids, np.array([0.5])
+    ap50_eval.params.areaRng, ap50_eval.params.areaRngLbl, ap50_eval.params.maxDets = [[0, 1e10]], ["all"], [100]
+    return ap50_eval
+
+
+def ocpp_ap50_eval(coco_eval: COCOeval) -> COCOeval:
+    """_ap50_eval of coco_eval's detections kept one class per proposal (OCPP, eval_utils.one_class_per_proposal)."""
     with contextlib.redirect_stdout(io.StringIO()):
-        agnostic = COCOeval(coco_eval.cocoGt, coco_eval.cocoGt.loadRes(kept_detections), "bbox")
-        agnostic.params.useCats, agnostic.params.imgIds, agnostic.params.iouThrs = 0, coco_eval.params.imgIds, np.array([0.5])
-        agnostic.params.areaRng, agnostic.params.areaRngLbl, agnostic.params.maxDets = [[0, 1e10]], ["all"], [100]
-        agnostic.evaluate()
-        agnostic.accumulate()
-    return {"AP50 agnostic": mean_precision(agnostic.eval["precision"][0, :, 0, 0, 0]), "recall50 agnostic": float(agnostic.eval["recall"][0, 0, 0, 0] * 100)}
+        detections = coco_eval.cocoGt.loadRes(one_class_per_proposal(coco_eval.cocoDt.dataset["annotations"]))
+    return _ap50_eval(coco_eval.cocoGt, detections, coco_eval.params.imgIds)
 
 
 @torch.no_grad()
@@ -107,15 +107,15 @@ def _event_storage() -> Optional[EventStorage]:
 class ClassAP50Evaluator(COCOEvaluator):
     """COCOEvaluator reporting and logging each class's AP50 (IoU 0.5) as AP50-<class>, instead of its AP averaged over
     IoU 0.5 to 0.95, whose stricter thresholds mostly measure box tightness (frozen when fine-tuning CustomFT_Detic), and
-    the class-agnostic "AP50 agnostic" and "recall50 agnostic" (agnostic_ap50_recall50, named as eval_utils' 3D metrics),
-    without the NaNs of classes or sizes the dataset has no box of. It also reports classification alone: the share of
-    ground-truth boxes, given to model's ROI heads as proposals on the backbone features its inference just computed
-    (ground_truth_box_probs, so batch-statistics normalization sees the same batch), whose class is the top-scored
-    ("cls_top1acc") or among the CLASSIFICATION_TOP_K top-scored ("cls_top5acc"). Each evaluation also saves, over
-    DISPLAY_SCORE_THRESH, its confusion matrix <output_dir>/confusion_matrix_iter<iteration>.png and
-    inference_samples_iter<iteration>.jpg, whose tiles also go to TensorBoard during training (_save_inference_samples),
-    and each ground-truth box's classification to coco_gt_box_classifications.json, with their confusion matrix, free of
-    localization and score thresholds, cls_confusion_matrix_iter<iteration>.png."""
+    "AP50_OCPP", the AP50 of its detections kept one class per proposal (ocpp_ap50_eval), with TIDE's error breakdown of
+    each as its own task, "dAP50/<error>" and "dAP50_OCPP/<error>" (_ap50_tide), without the NaNs of classes or sizes the
+    dataset has no box of. Each evaluation also saves, over DISPLAY_SCORE_THRESH, its confusion matrix
+    <output_dir>/confusion_matrix_iter<iteration>.png and inference_samples_iter<iteration>.jpg, whose tiles also go to
+    TensorBoard during training (_save_inference_samples), and each task's dAPs, tide_<task>_iter<iteration>.png. It
+    also classifies the ground-truth boxes alone, given to model's ROI heads as proposals on the backbone features its
+    inference just computed (ground_truth_box_probs, so batch-statistics normalization sees the same batch): each box's
+    classification to coco_gt_box_classifications.json, with their confusion matrix, free of localization and score
+    thresholds, cls_confusion_matrix_iter<iteration>.png."""
 
     def __init__(self, dataset_name: str, model, **kwargs):
         self._model = model.module if isinstance(model, DistributedDataParallel) else model
@@ -123,7 +123,7 @@ class ClassAP50Evaluator(COCOEvaluator):
 
     def reset(self):
         super().reset()
-        self._classifications, self._features = [], {}
+        self._classifications, self._features, self._tide = [], {}, {}
         self._hook = self._model.backbone.register_forward_hook(lambda module, inputs, features: self._features.update(features))
 
     def process(self, inputs, outputs):
@@ -159,9 +159,7 @@ class ClassAP50Evaluator(COCOEvaluator):
         results = super().evaluate(img_ids)
         if not results:
             return results
-        ranks = torch.tensor([record["rank"] for record in classifications])
-        results["bbox"].update({"cls_top1acc": float((ranks == 0).float().mean() * 100), "cls_top5acc": float((ranks < CLASSIFICATION_TOP_K).float().mean() * 100)})
-        self._logger.info(f"Ground-truth box classification: top-1 {results['bbox']['cls_top1acc']:.3f}, top-{CLASSIFICATION_TOP_K} {results['bbox']['cls_top5acc']:.3f}")
+        results.update(self._tide)
         if self._output_dir:
             storage = _event_storage()
             out_dir, iteration = Path(self._output_dir), storage.iter if storage else 0
@@ -169,6 +167,8 @@ class ClassAP50Evaluator(COCOEvaluator):
             compute_confusion_matrix(predictions_json, Path(self._metadata.json_file), out_dir / f"confusion_matrix_iter{iteration:05d}.png", score_threshold=DISPLAY_SCORE_THRESH)
             self._save_inference_samples(predictions_json, out_dir / f"inference_samples_iter{iteration:05d}.jpg", storage)
             self._save_classifications(classifications, out_dir / "coco_gt_box_classifications.json", out_dir / f"cls_confusion_matrix_iter{iteration:05d}.png")
+            for task, daps in self._tide.items():
+                plot_tide_errors(daps, f"{task}, {self._metadata.name}, iteration {iteration}", out_dir / f"tide_{task}_iter{iteration:05d}.png")
         return results
 
     def _save_classifications(self, classifications: List[dict], json_path: Path, confusion_path: Path) -> None:
@@ -200,9 +200,20 @@ class ClassAP50Evaluator(COCOEvaluator):
     def _derive_coco_results(self, coco_eval, iou_type, class_names=None):
         results = super()._derive_coco_results(coco_eval, iou_type)
         if coco_eval is not None and class_names:
-            results = {**results, **agnostic_ap50_recall50(coco_eval), **self._class_ap50s(coco_eval, iou_type, class_names)}
-            self._logger.info(f"Class-agnostic {iou_type}: AP50 {results['AP50 agnostic']:.3f}, recall50 {results['recall50 agnostic']:.3f}")
+            results = {**results, **self._ap50_tide(coco_eval), **self._class_ap50s(coco_eval, iou_type, class_names)}
         return {name: value for name, value in results.items() if not np.isnan(value)}
+
+    def _ap50_tide(self, coco_eval) -> dict:
+        """Sets self._tide to TIDE's dAP50s (eval_utils.tide_daps) of coco_eval's detections, as "dAP50", and kept one class
+        per proposal, as "dAP50_OCPP", logged as a table; returns the latter's {"AP50_OCPP": AP50}."""
+        ocpp = ocpp_ap50_eval(coco_eval)
+        with contextlib.redirect_stdout(io.StringIO()):
+            ocpp_ap50 = single_threshold_ap(ocpp)
+        tasks = {"dAP50": tide_daps(_ap50_eval(coco_eval.cocoGt, coco_eval.cocoDt, coco_eval.params.imgIds)), "dAP50_OCPP": tide_daps(ocpp)}
+        self._tide = {task: {name: dap for name, dap in daps.items() if not np.isnan(dap)} for task, daps in tasks.items()}
+        rows = [(name, *(daps.get(name) for daps in self._tide.values())) for name in tasks["dAP50"]]
+        self._logger.info(f"TIDE bbox:\n{tabulate(rows, headers=['error', *self._tide], tablefmt='pipe', floatfmt='.3f')}")
+        return {"AP50_OCPP": ocpp_ap50}
 
     def _class_ap50s(self, coco_eval, iou_type: str, class_names: list) -> dict:
         """{AP50-<class>: its AP50} of every class with some box, logged as a table."""
