@@ -1,0 +1,8 @@
+# Evaluation dataset config for habitat_embodied_sl/build_eval.py (see ../README.md): builds the val and test splits of
+# <dataset_root>/<run_name>/ from the records of the raw run raw_run (procthor_val40_collection.yaml's), restricted to the
+# PROCTHOR100 classes, and saves itself as <dataset_root>/<run_name>/config.yaml, which both splits share. Built one
+# build_eval.py call per scene: ProcTHOR-Val-0 to -19 into test, ProcTHOR-Val-20 to -39 into val.
+run_name: procthor100_eval
+raw_run: raw/procthor_val40
+dataset_root: datasets  # relative to the repo root scripts run from
+vocab_name: PROCTHOR100  # the dataset's classes: the raw run's recorded ones this vocabulary has

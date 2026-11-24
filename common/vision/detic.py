@@ -16,6 +16,8 @@ from detectron2.modeling import build_model  # type: ignore
 from torch import nn
 from torchvision.ops import boxes as torchvision_boxes
 
+from common.utils.similarity_utils import visual_similarity_matrix
+
 DETIC_ROOT = Path(__file__).resolve().parents[2] / "third_party" / "Detic"
 METADATA_DIR = Path(__file__).resolve().parents[2] / "datasets" / "metadata"
 sys.path[:0] = [str(DETIC_ROOT), str(DETIC_ROOT / "third_party" / "CenterNet2")]
@@ -125,6 +127,15 @@ def dataset_vocabulary(dataset_name: str) -> Vocabulary:
 def reset_vocabulary(model: nn.Module, vocabulary: Vocabulary) -> None:
     """model's zero-shot classifier, at every cascade stage, reset to vocabulary's CLIP text embeddings."""
     reset_cls_test(model, vocabulary.clip_embeddings(), len(vocabulary.classes))
+
+
+def matched_classes(vocabulary: Vocabulary, words: List[str], threshold: float) -> List[Tuple[int, str, float]]:
+    """(class index, its most similar word, their similarity) of each of vocabulary's classes at least threshold CLIP text
+    cosine-similar to some word (both prompted as `a <name>`), most similar first."""
+    similarity = visual_similarity_matrix(vocabulary.clip_embeddings().T, get_clip_embeddings(words).T)
+    best, word_index = similarity.max(dim=1)
+    kept = torch.argsort(best, descending=True)[: int((best >= threshold).sum())]
+    return [(int(class_id), words[int(word_index[class_id])], float(best[class_id])) for class_id in kept]
 
 
 LVIS = Vocabulary("lvis", tuple(category["name"] for category in sorted(LVIS_CATEGORIES, key=lambda category: category["id"])))

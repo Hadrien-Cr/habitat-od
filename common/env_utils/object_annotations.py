@@ -408,6 +408,11 @@ def resolve_classes(env_name: str, vocab_name: str) -> list[str]:
         raise NotImplementedError(f"Environment {env_name} not supported for object annotations")
 
 
+def vocabulary_classes(classes: list, vocab_name: str) -> list[str]:
+    """classes, in their order, that VOCABULARIES' vocab_name has."""
+    return [name for name in classes if name in VOCABULARIES[vocab_name][0]]
+
+
 def kept_classes_from_args(args: Any) -> list[str]:
     """resolve_classes(args.env_name, args.vocab_name), minus "unknown", filtered to args.filter_classes if given."""
     full_classes = resolve_classes(args.env_name, args.vocab_name)

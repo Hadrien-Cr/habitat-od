@@ -3,6 +3,7 @@ from scratch) and habitat_embodied_sl/main.py (CustomFT_Detic fine-tuning on Obj
 registration, the evaluator-wired Trainer, periodic TensorBoard image logging, and
 final-checkpoint reporting."""
 import contextlib
+import copy
 import io
 import json
 from collections import defaultdict
@@ -31,7 +32,7 @@ from torchvision.ops import nms
 
 from common.env_utils.vocab_constants import make_colors
 from common.utils.eval_utils import (
-    compute_confusion_matrix, mean_precision, one_class_per_proposal, save_classification_confusion, single_threshold_ap, tide_daps,
+    compute_confusion_matrix, mean_precision, one_class_per_proposal, save_classification_confusion, tide_daps,
 )
 from common.utils.plot_utils import MOSAIC_JPEG_QUALITY, make_mosaic, plot_boxes_overlay, plot_tide_errors
 
@@ -41,6 +42,7 @@ IMAGE_LOG_HEIGHT = 512
 DISPLAY_SCORE_THRESH = 0.3  # predictions kept in logged images and confusion matrices; AP uses SCORE_THRESH_TEST
 DISPLAY_NMS_IOU = 0.5
 CLASSIFICATION_TOP_K = 5
+TIDE_TASKS = ("tide", "tide_OCPP")
 
 
 def _ap50_eval(coco_gt: COCO, coco_dt: COCO, img_ids: list) -> COCOeval:
@@ -51,11 +53,26 @@ def _ap50_eval(coco_gt: COCO, coco_dt: COCO, img_ids: list) -> COCOeval:
     return ap50_eval
 
 
-def ocpp_ap50_eval(coco_eval: COCOeval) -> COCOeval:
-    """_ap50_eval of coco_eval's detections kept one class per proposal (OCPP, eval_utils.one_class_per_proposal)."""
+def ocpp_eval(coco_eval: COCOeval) -> COCOeval:
+    """COCOeval of coco_eval's detections kept one class per proposal (OCPP, eval_utils.one_class_per_proposal), under
+    coco_eval's params, evaluated and summarized."""
     with contextlib.redirect_stdout(io.StringIO()):
-        detections = coco_eval.cocoGt.loadRes(one_class_per_proposal(coco_eval.cocoDt.dataset["annotations"]))
-    return _ap50_eval(coco_eval.cocoGt, detections, coco_eval.params.imgIds)
+        ocpp = COCOeval(coco_eval.cocoGt, coco_eval.cocoGt.loadRes(one_class_per_proposal(coco_eval.cocoDt.dataset["annotations"])), "bbox")
+        ocpp.params = copy.deepcopy(coco_eval.params)
+        ocpp.evaluate()
+        ocpp.accumulate()
+        ocpp.summarize()
+    return ocpp
+
+
+def _finite(scores: Dict[str, float]) -> Dict[str, float]:
+    """scores without the NaNs of classes or sizes the dataset has no box of."""
+    return {name: score for name, score in scores.items() if not np.isnan(score)}
+
+
+def _tide(coco_eval: COCOeval) -> Dict[str, float]:
+    """TIDE's dAP50s (eval_utils.tide_daps) of coco_eval's detections."""
+    return _finite(tide_daps(_ap50_eval(coco_eval.cocoGt, coco_eval.cocoDt, coco_eval.params.imgIds)))
 
 
 @torch.no_grad()
@@ -105,13 +122,13 @@ def _event_storage() -> Optional[EventStorage]:
 
 
 class ClassAP50Evaluator(COCOEvaluator):
-    """COCOEvaluator reporting and logging each class's AP50 (IoU 0.5) as AP50-<class>, instead of its AP averaged over
-    IoU 0.5 to 0.95, whose stricter thresholds mostly measure box tightness (frozen when fine-tuning CustomFT_Detic), and
-    "AP50_OCPP", the AP50 of its detections kept one class per proposal (ocpp_ap50_eval), with TIDE's error breakdown of
-    each as its own task, "dAP50/<error>" and "dAP50_OCPP/<error>" (_ap50_tide), without the NaNs of classes or sizes the
-    dataset has no box of. Each evaluation also saves, over DISPLAY_SCORE_THRESH, its confusion matrix
+    """COCOEvaluator reporting its AP summary as task "AP", each class's AP50 (IoU 0.5) as "class_AP" (AP50-<class>,
+    instead of its AP averaged over IoU 0.5 to 0.95, whose stricter thresholds mostly measure box tightness, frozen when
+    fine-tuning CustomFT_Detic) and TIDE's dAP50 error breakdown as "tide", then the same of its detections kept one
+    class per proposal (ocpp_eval) as "AP_OCPP", "class_AP_OCPP" and "tide_OCPP" (_tasks), without the NaNs of classes
+    or sizes the dataset has no box of. Each evaluation also saves, over DISPLAY_SCORE_THRESH, its confusion matrix
     <output_dir>/confusion_matrix_iter<iteration>.png and inference_samples_iter<iteration>.jpg, whose tiles also go to
-    TensorBoard during training (_save_inference_samples), and each task's dAPs, tide_<task>_iter<iteration>.png. It
+    TensorBoard during training (_save_inference_samples), and each TIDE task's dAPs, <task>_iter<iteration>.png. It
     also classifies the ground-truth boxes alone, given to model's ROI heads as proposals on the backbone features its
     inference just computed (ground_truth_box_probs, so batch-statistics normalization sees the same batch): each box's
     classification to coco_gt_box_classifications.json, with their confusion matrix, free of localization and score
@@ -123,7 +140,7 @@ class ClassAP50Evaluator(COCOEvaluator):
 
     def reset(self):
         super().reset()
-        self._classifications, self._features, self._tide = [], {}, {}
+        self._classifications, self._features, self._tasks = [], {}, {}
         self._hook = self._model.backbone.register_forward_hook(lambda module, inputs, features: self._features.update(features))
 
     def process(self, inputs, outputs):
@@ -159,7 +176,7 @@ class ClassAP50Evaluator(COCOEvaluator):
         results = super().evaluate(img_ids)
         if not results:
             return results
-        results.update(self._tide)
+        results = {"AP": results["bbox"], **self._tasks}
         if self._output_dir:
             storage = _event_storage()
             out_dir, iteration = Path(self._output_dir), storage.iter if storage else 0
@@ -167,8 +184,8 @@ class ClassAP50Evaluator(COCOEvaluator):
             compute_confusion_matrix(predictions_json, Path(self._metadata.json_file), out_dir / f"confusion_matrix_iter{iteration:05d}.png", score_threshold=DISPLAY_SCORE_THRESH)
             self._save_inference_samples(predictions_json, out_dir / f"inference_samples_iter{iteration:05d}.jpg", storage)
             self._save_classifications(classifications, out_dir / "coco_gt_box_classifications.json", out_dir / f"cls_confusion_matrix_iter{iteration:05d}.png")
-            for task, daps in self._tide.items():
-                plot_tide_errors(daps, f"{task}, {self._metadata.name}, iteration {iteration}", out_dir / f"tide_{task}_iter{iteration:05d}.png")
+            for task in TIDE_TASKS if self._tasks else ():
+                plot_tide_errors(self._tasks[task], f"{task}, {self._metadata.name}, iteration {iteration}", out_dir / f"{task}_iter{iteration:05d}.png")
         return results
 
     def _save_classifications(self, classifications: List[dict], json_path: Path, confusion_path: Path) -> None:
@@ -198,31 +215,34 @@ class ClassAP50Evaluator(COCOEvaluator):
             storage.put_image(f"images/{self._metadata.name}/{frame}", tile.transpose(2, 0, 1))
 
     def _derive_coco_results(self, coco_eval, iou_type, class_names=None):
-        results = super()._derive_coco_results(coco_eval, iou_type)
+        """COCOEvaluator's AP summary of coco_eval; given class_names, also sets self._tasks to every other task (_tasks)."""
         if coco_eval is not None and class_names:
-            results = {**results, **self._ap50_tide(coco_eval), **self._class_ap50s(coco_eval, iou_type, class_names)}
-        return {name: value for name, value in results.items() if not np.isnan(value)}
+            self._tasks = self._other_tasks(coco_eval, iou_type, class_names)
+        return _finite(super()._derive_coco_results(coco_eval, iou_type))
 
-    def _ap50_tide(self, coco_eval) -> dict:
-        """Sets self._tide to TIDE's dAP50s (eval_utils.tide_daps) of coco_eval's detections, as "dAP50", and kept one class
-        per proposal, as "dAP50_OCPP", logged as a table; returns the latter's {"AP50_OCPP": AP50}."""
-        ocpp = ocpp_ap50_eval(coco_eval)
-        with contextlib.redirect_stdout(io.StringIO()):
-            ocpp_ap50 = single_threshold_ap(ocpp)
-        tasks = {"dAP50": tide_daps(_ap50_eval(coco_eval.cocoGt, coco_eval.cocoDt, coco_eval.params.imgIds)), "dAP50_OCPP": tide_daps(ocpp)}
-        self._tide = {task: {name: dap for name, dap in daps.items() if not np.isnan(dap)} for task, daps in tasks.items()}
-        rows = [(name, *(daps.get(name) for daps in self._tide.values())) for name in tasks["dAP50"]]
-        self._logger.info(f"TIDE bbox:\n{tabulate(rows, headers=['error', *self._tide], tablefmt='pipe', floatfmt='.3f')}")
-        return {"AP50_OCPP": ocpp_ap50}
+    def _other_tasks(self, coco_eval, iou_type: str, class_names: list) -> dict:
+        """coco_eval's "class_AP" (_class_ap50s) and "tide" (_tide), then the AP summary, class_AP and tide of its
+        ocpp_eval as "AP_OCPP", "class_AP_OCPP" and "tide_OCPP"; both tides logged as a table."""
+        ocpp = ocpp_eval(coco_eval)
+        tasks = {
+            "class_AP": self._class_ap50s(coco_eval, iou_type, class_names),
+            "tide": _tide(coco_eval),
+            "AP_OCPP": _finite(super()._derive_coco_results(ocpp, iou_type)),
+            "class_AP_OCPP": self._class_ap50s(ocpp, f"{iou_type} OCPP", class_names),
+            "tide_OCPP": _tide(ocpp),
+        }
+        rows = [(name, *(tasks[task].get(name) for task in TIDE_TASKS)) for name in tasks["tide"]]
+        self._logger.info(f"TIDE bbox dAP50:\n{tabulate(rows, headers=['error', *TIDE_TASKS], tablefmt='pipe', floatfmt='.3f')}")
+        return tasks
 
     def _class_ap50s(self, coco_eval, iou_type: str, class_names: list) -> dict:
-        """{AP50-<class>: its AP50} of every class with some box, logged as a table."""
+        """{AP50-<class>: its AP50} of every class with some box, logged as a table under iou_type."""
         precisions = coco_eval.eval["precision"][0, :, :, 0, -1]
         class_ap50s = {name: mean_precision(precision) for name, precision in zip(class_names, precisions.T)}
         rows = zip_longest(*[iter(chain(*class_ap50s.items()))] * 6)
         table = tabulate(rows, headers=["category", "AP50"] * 3, tablefmt="pipe", floatfmt=".3f", numalign="left")
         self._logger.info(f"Per-category {iou_type} AP50: \n{table}")
-        return {f"AP50-{name}": ap50 for name, ap50 in class_ap50s.items()}
+        return _finite({f"AP50-{name}": ap50 for name, ap50 in class_ap50s.items()})
 
 
 def build_evaluator(cfg, dataset_name, model):

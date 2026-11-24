@@ -7,6 +7,7 @@ run_name: procthor8_${variant}
 raw_run: raw/procthor8
 dataset_root: datasets  # relative to the repo root scripts run from
 variant: V3_cls_box_drop_add  # V1_pseudo, V2_drop_add, V3_cls_box_drop_add (object views) or V4_full (fully annotated frames)
+vocab_name: PROCTHOR100  # the dataset's classes: the raw run's recorded ones this vocabulary has
 
 # Overrides of concept_graph.py's ResolveConfig (resolve, foreground filter), e.g. adjacent_visual_sim_thresh or
 # min_detection_rate, and of retrieval.py's ViewSelection (k: views retrieved per object); both saved in full, every

@@ -1,5 +1,5 @@
-"""Pools a dataset's per-scene shards, which habitat_embodied_sl/build_dataset.py's or collect_test.py's calls write one
-scene each, into its split's json (object_ds/object_ds.json, train/train.json or test/test.json), mosaic and class counts,
+"""Pools a dataset's per-scene shards, which habitat_embodied_sl/build_dataset.py's or build_eval.py's calls write one
+scene each, into each of its splits' json (object_ds/object_ds.json, train/train.json, val/val.json or test/test.json), mosaic and class counts,
 its classes and info those of the dataset's config.yaml. Run once every scene's call is done, and again after rewriting a
 scene.
 

@@ -3,22 +3,27 @@
 Retrieval datasets are built in two stages, each with its own config, one scene per call each, so calls for different
 scenes run in parallel, each on the GPU its caller's `CUDA_VISIBLE_DEVICES` names. Stage 1, `collect_train.py`, needs the
 simulator and records each train scene raw (1.8) under `<raw_root>/<run_name>/<scene>/`, as its collection config
-(`config/procthor8_collection.yaml`: image sizes, ground-truth filters, detector, fusion, budgets) says; a raw run's
-records share that config, saved as `<raw_root>/<run_name>/config.yaml`. Stage 2, `build_dataset.py`, builds the scene's
-shard of each of its variants' datasets, `datasets/<run_name>/`, from that record alone (steps 2 to 5, run once whatever
-the number of variants), as its dataset config (`config/procthor8_build.yaml`: the raw run, the variant or a list of
-them, resolve and retrieval settings) says, saved in full, with its one variant, as `datasets/<run_name>/config.yaml`;
+(`config/procthor_train20_collection.yaml`: image sizes, ground-truth filters, detector, fusion, budgets) says, every
+class kept; a raw run's records share that config, saved as `<raw_root>/<run_name>/config.yaml`. Stage 2,
+`build_dataset.py`, builds the scene's shard of each of its variants' datasets, `datasets/<run_name>/`, from that record
+alone (steps 2 to 5, run once whatever the number of variants), as its dataset config (`config/procthor30_build.yaml`: the
+raw run, its class set `vocab_name`, the variant or a list of them, resolve and retrieval settings) says, saved in full, with its one variant, as `datasets/<run_name>/config.yaml`;
 each variant, and any other setting, is another dataset under its own `run_name`. It
 maps each train scene: `common/hybrid_exploration`'s `HybridFrontierAgent` explores the scene in exhaustive mode, while a
 class-agnostic `Detector` (`common/vision/detector.py`) segments every frame, and its detections are lifted to 3D and
 fused into concept-graphs objects (`common/utils/concept_graph.py`). The build resolves, filters and classifies them and
-retrieves diverse views of each object into its variant's train split. The test scenes skip the raw record:
-`collect_test.py` collects them straight into their own COCO test set of fully annotated frames (step 6),
-`datasets/<run_name>/test/`, as its test config (`config/procthor8_test.yaml`) says, shared by every variant's dataset.
+retrieves diverse views of each object into its variant's train split. The evaluation scenes are recorded raw too
+(step 6): `collect_test.py` records their strided frames and ground truth, every class kept, as its collection config
+(`config/procthor_val40_collection.yaml`) says, and `build_eval.py` builds each into the val or test split, COCO fully
+annotated frames, of the evaluation dataset `datasets/<run_name>/`, as its config (`config/procthor30_eval_build.yaml`:
+the raw run, its class set) says, shared by every variant's dataset.
 Training configs name these splits as registered detectron2 datasets (`common/env_utils/dataset_registry.py`).
 
-The target vocabulary (`object_params.vocab_name`, narrowed by `object_params.filter_classes`) is used only in the
-classification step (4). Every earlier step is class-agnostic.
+The records are class-agnostic: they keep the ground truth of the collection's whole vocabulary (`object_params.vocab_name`,
+narrowed by `object_params.filter_classes`, empty for procthor30's). A build's class set is its config's `vocab_name`, the
+recorded classes that vocabulary has (`vocabulary_classes`): it restricts the record's ground truth to them, re-indexed
+(`restricted_scene`, `restricted_views`), and keeps the classified objects whose class is in it (4.5). Every earlier step is
+class-agnostic, and classification is among every recorded class (4.2).
 
 This outline describes the algorithm independently of the environment (`object_params.env_name`) and its vocabulary. Keep
 environment- and dataset-specific details, such as how a vocabulary's class names are written or where its size tables
@@ -111,15 +116,15 @@ come from, out of it; they belong with the code that builds them (`common/env_ut
 - (1.8) **Raw record** (`common/utils/raw_scene.py`): every step's frame, the floor height its detections were lifted
   above and its detections are written to `<raw_root>/<run_name>/<scene>/` as they come, and once exploration ends the
   fused objects, their config, the camera, the agent's map grid (`MapGrid`: explored and obstacle cells and the reference
-  pose its frame is relative to), the annotated objects, their `ground_truth.json` (4.5) and their per-frame ground truth
-  (1.6), the scene's mesh (what 4.5 tells observable objects with) and, for viewing only, its annotated objects' point
+  pose its frame is relative to), the annotated objects, their `ground_truth.json` (4.6) and their per-frame ground truth
+  (1.6), the scene's mesh (what 4.6 tells observable objects with) and, for viewing only, its annotated objects' point
   cloud, then `scene.json`, which
   marks the record complete. Steps 2 to 5 (`build_dataset.py`'s `build_scene`) run on that record alone, without the
   simulator. The run's first call saves the collection config, its `fusion` completed with every `ConceptGraphConfig`
   default and its kept classes as `classes`, as
   `<raw_root>/<run_name>/config.yaml`, and a call with another config or other classes fails (`save_run_config`), so a
-  run's records share one: another config is another run, under its own `run_name`. The build classifies among those
-  recorded classes and indexes them, so records keep their class ids however `CLASS_LABELS_PROCTHOR100` changes later.
+  run's records share one: another config is another run, under its own `run_name`. Their class ids index those
+  recorded classes, so records keep them however the vocabulary changes later; a build maps them to its class set's.
 
 ### 2. Resolve (`concept_graph.resolve`)
 
@@ -156,14 +161,17 @@ recorded fusion one (`ConceptGraphConfig`, in `scene.json`).
 - (4.1) For every view of an object (each frame it is raytraced visible in), take the region embedding of its raytraced
   mask's box, the mask resized to the rgb by nearest neighbour. Each frame needs one backbone pass.
 - (4.2) Each view's class probabilities are the softmax of Detic's temperature-scaled cosine similarity between that
-  embedding and the CLIP text embeddings of the kept classes, prompted as `a <class>`.
+  embedding and the CLIP text embeddings of every recorded class, prompted as `a <class>`, not only the build's class
+  set's: an object of no class of the set then has its own class to take, so 4.5 drops it.
 - (4.3) **Size mask:** each class has a range for volume, shortest edge and largest edge, read
   from its per-class size table (`class_size_ranges`) and widened to [0.5 · min, max / 0.5] (`_SIZE_MARGIN`). A class is plausible for an object when the axis-aligned extent of
   its points lies in that range; classes with no range are always plausible.
 - (4.4) The object's class scores are the mean probabilities over its views × its foreground score, i.e.
   p(object) · p(class | object), zeroed for implausible classes. Its class is the argmax. Objects with no view, or with
   no plausible class, are dropped.
-- (4.5) **Map files** (`common/utils/eval_utils.py`): the classified objects go to `<scene>/predictions.json`
+- (4.5) **Class set** (`subset_class_scores`): objects whose class is not in the build's class set are dropped, and the
+  others' class scores cut to the set's classes, indexed by them; a build whose set is every recorded class keeps all.
+- (4.6) **Map files** (`common/utils/eval_utils.py`): the classified objects go to `<scene>/predictions.json`
   (`predictions_dataset`) and the scene's annotated objects (5.2) to `<scene>/ground_truth.json` (`ground_truth_dataset`,
   computed by `collect_train.py` before the environment closes, as its `navigable` needs the simulator, and recorded raw (1.8)
   for the build to write). Each file is a single-scene COCO dataset on the agent's own map grid (its
@@ -183,13 +191,13 @@ recorded fusion one (`ConceptGraphConfig`, in `scene.json`).
   `<scene>/semantic_point_cloud.ply` and their boxes, as wireframes, to `<scene>/semantic_wireframes.glb`, the
   observable ground truth's boxes to `<scene>/ground_truth_wireframes.glb`, all colored by class, and the scene's mesh
   to `<scene>/ground_truth_mesh.glb`; the raw record keeps the annotated objects' point cloud (1.8).
-- (4.6) **Map evaluation** (`evaluate_maps.py`, run once every scene is collected; `evaluate_scene_jsons`) reads only those
+- (4.7) **Map evaluation** (`evaluate_maps.py`, run once every scene is collected; `evaluate_scene_jsons`) reads only those
   files, every scene pooled:
-  - (4.6.1) **3D box AP:** COCO AP by 3D box IoU, both boxes first grown to at least 5 cm per axis
+  - (4.7.1) **3D box AP:** COCO AP by 3D box IoU, both boxes first grown to at least 5 cm per axis
     (`_MIN_MATCHED_EXTENT_M`), at IoU 0.25 to 0.95 in 0.05 steps. It reports AP (IoU 0.5:0.95), AP25 and AP50, AP25 per
     volume (small < 0.01 m³ ≤ medium < 0.25 m³ ≤ large), AP25 of each object submitted once per class among its 5 highest `class_scores`, scored by that class's (`AP25 top5`,
     also per volume; `AP25` is top-1), and per-class AP25, AP50 and AP.
-  - (4.6.2) **TIDE error breakdown** (arXiv 2008.08115, `tide_daps`) at 3D box IoU ≥ 0.25 (foreground) of each
+  - (4.7.2) **TIDE error breakdown** (arXiv 2008.08115, `tide_daps`) at 3D box IoU ≥ 0.25 (foreground) of each
     object's top-1 class. Each object COCO matching leaves unmatched gets one error, checked in order: `Loc` (its class,
     IoU in [0.1, 0.25)), `Cls` (another class, IoU ≥ 0.25), `Dupe` (its class, IoU ≥ 0.25 with already matched ground
     truth), `Bkg` (IoU < 0.1 with every ground truth), else `Both`; unmatched ground truth no `Cls`/`Loc` error targets
@@ -197,10 +205,10 @@ recorded fusion one (`ConceptGraphConfig`, in `scene.json`).
     `Loc`: given its target's box, either dropped if a higher-scored object or a match already takes that target;
     `Both`/`Dupe`/`Bkg`: dropped; `Miss`: that ground truth dropped), negative gains clamped to 0, and `dAP25/FP` and
     `dAP25/FN` that of dropping every unmatched object or ground truth, drawn to `tide.png`.
-  - (4.6.3) **Class-agnostic matching:** each scene's objects, by descending score, greedily take the unmatched ground truth
+  - (4.7.3) **Class-agnostic matching:** each scene's objects, by descending score, greedily take the unmatched ground truth
     of highest 3D box IoU, if ≥ 0.25. It prints a per-scene table of every object's match and of the unmatched ground
     truth, and draws a confusion matrix (`confusion_matrix.png`; unmatched objects and ground truth fall in "background").
-  - (4.6.4) All of 4.6.1's and 4.6.2's metrics but the per-class AP go to one flat dict, `metrics.json`.
+  - (4.7.4) All of 4.7.1's and 4.7.2's metrics but the per-class AP go to one flat dict, `metrics.json`.
 
 ### 5. Retrieval and train sets
 
@@ -211,7 +219,7 @@ recorded fusion one (`ConceptGraphConfig`, in `scene.json`).
   proportion to a Gaussian kernel of std σ = π/4 over their angular distance, so nearby angles share credit instead of
   only exact repeats. Each view's raytraced mask is resized to the rgb by nearest neighbour and labelled with the
   object's class.
-- (5.2) **Ground truth:** every placed scene object annotated with a kept class, boxed by its world mesh bounds. Resolved
+- (5.2) **Ground truth:** every placed scene object annotated with a class of the build's class set, boxed by its world mesh bounds. Resolved
   objects are matched to it class-agnostically, greedily by score, at 3D box IoU ≥ 0.25.
 - (5.3) **Recovery** (`common/utils/ground_truth_recovery.py`) of the retrieved views. It needs only the ground truth's 3D
   boxes and its RLE-encoded masks (1.6), no mesh:
@@ -227,7 +235,8 @@ recorded fusion one (`ConceptGraphConfig`, in `scene.json`).
   - (5.3.5) `pseudo_classes`: classifies the unmatched ground truths as 4 classifies resolved objects, from all their
     masks (every frame of 1.6 showing them) and their box's extent in place of the points': mean view probabilities
     (`plausible_class_probs`, shared with 4.4) zeroed for the classes their size does not fit, argmax. One with no plausible
-    class gets no class, so no views. No foreground score, which scales every class alike.
+    class, or whose class is not in the build's class set (4.5), gets no class, so no views. No foreground score, which
+    scales every class alike.
 - (5.4) **Train sets:** each object-view train set derives from the retrieved views on its own (`build_dataset.py`'s
   `SceneRecovery`), named `V<i>_` and the fixes applied to the pseudo-labels (`drop_add`: the objects; `cls_box`: their
   labels):
@@ -241,17 +250,20 @@ recorded fusion one (`ConceptGraphConfig`, in `scene.json`).
   is in, every ground-truth instance of each annotated (`ground_truth_frame`), the same frames whichever variant it is
   built beside; `main.py` trains on them, and every run scores them as its train set.
 
-### 6. Test set (`collect_test.py`, `evaluation_set.py`), per evaluation scene, no raw record
+### 6. Val and test sets (`collect_test.py`, `evaluation_set.py`, `build_eval.py`), per evaluation scene
 
 - (6.1) **Explore:** a vanilla `FrontierAgent`, revealing fog of war out to `frontier_agent.visibility_dist_m` (3.0),
   explores the whole scene: until it stops or `frontier_agent.steps` (1000) run out. Its final map and trajectory are
-  saved as the test set's `<scene>/decision_frame.png`.
+  saved as the record's `decision_frame.png`.
 - (6.2) **Strided frames:** the frame of every `frame_stride`-th step (5, turns included) is kept if it shows some
   ground truth (filtered and remapped as in 1.6). No other selection: a scene contributes in proportion to its
   exploration, and every view the agent sees is as likely to be kept.
-- (6.3) The kept frames go straight to the COCO test set, all their ground-truth instances as annotations, each keeping
-  its simulator object id. One test set is shared by every variant's dataset; changing 6.1 or 6.2 means recollecting it
-  (minutes per scene).
+- (6.3) **Raw record** (`save_test_scene`): the kept frames' rgb and their ground truth (1.6), every class kept, then
+  `scene.json`, under `<raw_root>/<run_name>/<scene>/`. Changing 6.1 or 6.2 means recollecting it (minutes per scene).
+- (6.4) **Build** (`build_eval.py`, no simulator, no GPU): the record's ground truth restricted to the build's class set,
+  re-indexed, and every kept frame still showing some of it goes to the scene's split, `val/` or `test/`, all those
+  instances as annotations, each keeping its simulator object id. One evaluation dataset, its class set the train
+  variants', is shared by every variant's dataset.
 
 Fusion and tracking thresholds live in `ConceptGraphConfig` (overridden by the collection config's `fusion`), resolve and
 foreground ones in `ResolveConfig` (overridden by the dataset config's `resolve`), each saved in full with its run, the lifting and size-mask constants (`_MIN_LIFT_FRACTION`,
@@ -259,19 +271,20 @@ foreground ones in `ResolveConfig` (overridden by the dataset config's `resolve`
 of `common/hybrid_exploration/object_tracker.py`; floor, wall and raytracing
 thresholds (`_MIN_RAYTRACED_FRACTION`) at the top of `common/utils/projection_utils.py`; image sizes, ground-truth filters,
 the detector's, fusion overrides and budgets in the collection config; the variant, resolve and retrieval overrides in
-the dataset config; the test exploration and frame stride in the test config.
+the dataset config, with its class set; the evaluation exploration and frame stride in the evaluation collection config,
+the evaluation class set in its dataset config.
 
 ## Outputs
 
 Each dataset, `datasets/<run_name>/` (`<dataset_root>/<run_name>/`, both from its config, `datasets`), holds one split
 (`common/utils/dataset_writers.py`): an object-view variant's `object_ds/` (`V1_pseudo`, `V2_drop_add`,
-`V3_cls_box_drop_add`), `V4_full`'s `train/` of fully annotated frames, or a test set's `test/`; its frames are in its
+`V3_cls_box_drop_add`), `V4_full`'s `train/` of fully annotated frames, or the evaluation dataset's `val/` and `test/`; its frames are in its
 `images/`, and the split folder holds its json, its mosaic, its class counts and a `scenes/` folder of per-scene shards.
 `common/env_utils/dataset_registry.py` registers each split with detectron2 as `<run_name>_<split>`, e.g.
-`procthor8_V2_drop_add_object_ds`, `procthor8_V4_full_train` or `procthor8_test_test`, the names training configs give
-in `DATASETS.TRAIN` and `DATASETS.TEST`. A `collect_train.py` call whose scene already has a complete raw record skips it,
-unless `--overwrite`; otherwise it first deletes the scene's record, then records it; `collect_train.py` writes nothing under
-`datasets/`. A `build_dataset.py` or `collect_test.py` call first deletes what an earlier one wrote for its scene (its
+`procthor30_V2_drop_add_object_ds`, `procthor30_V4_full_train` or `procthor30_eval_test`, the names training configs give
+in `DATASETS.TRAIN` and `DATASETS.TEST`. A `collect_train.py` or `collect_test.py` call whose scene already has a complete
+raw record skips it, unless `--overwrite`; otherwise it first deletes the scene's record, then records it; neither writes
+anything under `datasets/`. A `build_dataset.py` or `build_eval.py` call first deletes what an earlier one wrote for its scene (its
 `<scene>/` folder, shard, frames, retrieval mosaics and their parts, semantic top-down map), leaving the other scenes'
 alone, then writes its scene's records to `<split>/scenes/<scene>.json`. Calls for different scenes touch different
 files, so they run in parallel without locking. Once every scene is written, `merge.py` pools the dataset's shards, in
@@ -279,20 +292,20 @@ scene name order, into its json, mosaic and class counts; rerun it after rewriti
 
 | file | contents |
 |---|---|
-| `config.yaml` | the dataset's config (a dataset config with the raw run's `classes`, or a test config with its kept `classes`), saved by its first call; a call with another config fails (`save_run_config`) |
-| `images/<scene>_<frame>.jpg` | every frame of the split: the train scenes' frames some view is in, or the test frames |
+| `config.yaml` | the dataset's config, with its class set's `classes`, saved by its first call; a call with another config fails (`save_run_config`) |
+| `images/<scene>_<frame>.jpg` | every frame of the split: the train scenes' frames some view is in, or the val and test frames |
 | `object_ds/object_ds.json` | `info` (`categories`, the dataset's `config`), `frames` (`"<scene>_<frame>"`: height, width) and `retrieved_objects` (`"<scene>/<object>"`: `gt_class`, the variant's label, and `views`, each a frame and an RLE mask at the rgb's size); read by `common/utils/object_views_dataset.py`'s `ObjectViewsDataset` |
-| `train/train.json`, `test/test.json` | COCO instance segmentation of the train frames (every frame some variant's view is in and some ground truth shows) (`V4_full`) or of the test frames (a test set), `info` the dataset's `config`, with the same ground truth (`sense.ground_truth_instances`): `images` (`file_name` relative to `images/`), `annotations` (RLE `segmentation`, `bbox`, `area`, `iscrowd`, plus `object_id`, the simulator object id), `categories` (ids 1..N, the kept classes in order); image and annotation ids start at 1 too. Loads with detectron2's `register_coco_instances(name, {}, "<run_name>/test/test.json", "<run_name>/images")` |
-| `<scene>/exploration_snapshot.png`, `<scene>/decision_frame.png`, `<scene>/images/planner/` | a train scene's last exploration snapshot (1.5), copied from its raw record; a test scene's frontier exploration map and trajectory (6.1), and its planner's dump folder |
-| `<scene>/predictions.json`, `<scene>/ground_truth.json`, `<scene>/estimated_topdown.png`, `<scene>/ground_truth_topdown.png` | each train scene's classified objects and its annotated objects as single-scene COCO datasets on the agent's map grid (4.5), and their top-down maps by class |
-| `<scene>/semantic_point_cloud.ply`, `<scene>/semantic_wireframes.glb`, `<scene>/ground_truth_wireframes.glb`, `<scene>/ground_truth_mesh.glb` | each train scene's classified objects' points and box wireframes, its observable ground truth's box wireframes, colored by class, and its mesh (4.5) |
-| `map_eval/metrics.json`, `map_eval/tide.png`, `map_eval/confusion_matrix.png` | `evaluate_maps.py`'s scores of every train scene's map, pooled (4.6) |
+| `train/train.json`, `val/val.json`, `test/test.json` | COCO instance segmentation of the train frames (every frame some variant's view is in and some ground truth shows) (`V4_full`) or of the val and test frames (the evaluation dataset), `info` the dataset's `config`, with the same ground truth (`sense.ground_truth_instances`): `images` (`file_name` relative to `images/`), `annotations` (RLE `segmentation`, `bbox`, `area`, `iscrowd`, plus `object_id`, the simulator object id), `categories` (ids 1..N, the class set's classes in order); image and annotation ids start at 1 too. Loads with detectron2's `register_coco_instances(name, {}, "<run_name>/test/test.json", "<run_name>/images")` |
+| `<scene>/exploration_snapshot.png` | a train scene's last exploration snapshot (1.5), copied from its raw record |
+| `<scene>/predictions.json`, `<scene>/ground_truth.json`, `<scene>/estimated_topdown.png`, `<scene>/ground_truth_topdown.png` | each train scene's classified objects and its annotated objects as single-scene COCO datasets on the agent's map grid (4.6), and their top-down maps by class |
+| `<scene>/semantic_point_cloud.ply`, `<scene>/semantic_wireframes.glb`, `<scene>/ground_truth_wireframes.glb`, `<scene>/ground_truth_mesh.glb` | each train scene's classified objects' points and box wireframes, its observable ground truth's box wireframes, colored by class, and its mesh (4.6) |
+| `map_eval/metrics.json`, `map_eval/tide.png`, `map_eval/confusion_matrix.png` | `evaluate_maps.py`'s scores of every train scene's map, pooled (4.7) |
 | `semantic_topdown_maps/<scene>.png` | each train scene's resolved objects the variant keeps, by their class in the variant, on the agent's top-down map; objects `recover_add_fn` adds have no points to draw |
 | `retrieval_mosaics/<scene>.jpg` | each train scene's objects in the variant, one row of its retrieved views per object, tiles at half resolution (`_TILE_DOWNSCALE`); objects recovery relabelled (5.3.2) or added (5.3.3) are bordered red. Split into `<scene>_<part>.jpg` of at most 32 objects each (`MAX_MOSAIC_ROWS`) unless `--no-split` |
 | `retrieval_mosaics/<scene>_first_views.jpg` | the same objects, one row of each object's first retrieved view (its highest-gain one, 5.1) at full resolution, bordered red as above |
-| `object_ds/scenes/<scene>.json`, `train/scenes/<scene>.json`, `test/scenes/<scene>.json` | one scene's records of the split, which merging pools into its json: `frames` and `retrieved_objects` for an object-view set; `images` and `annotations` (each pointing at its image by its index in the shard, ids assigned when pooled) for the COCO sets |
-| `object_ds/object_ds_mosaic.jpg`, `train/train_mosaic.jpg`, `test/test_mosaic.jpg` | 32 records of the split, read back from its json and drawn in random order, each its frame with its annotations' boxes and classes |
-| `object_ds/object_ds_class_counts.png`, `train/train_class_counts.png`, `test/test_class_counts.png` | the split's annotation count per class (one per view for a variant), stacked by scene on a log scale, written when the split is merged; the static test sets (`nyu_depth_v2.py`, `sunrgbd.py`) get theirs too |
+| `object_ds/scenes/<scene>.json`, `train/scenes/<scene>.json`, `val/scenes/<scene>.json`, `test/scenes/<scene>.json` | one scene's records of the split, which merging pools into its json: `frames` and `retrieved_objects` for an object-view set; `images` and `annotations` (each pointing at its image by its index in the shard, ids assigned when pooled) for the COCO sets |
+| `object_ds/object_ds_mosaic.jpg`, `train/train_mosaic.jpg`, `val/val_mosaic.jpg`, `test/test_mosaic.jpg` | 32 records of the split, read back from its json and drawn in random order, each its frame with its annotations' boxes and classes |
+| `object_ds/object_ds_class_counts.png`, `train/train_class_counts.png`, `val/val_class_counts.png`, `test/test_class_counts.png` | the split's non-crowd annotation count per class (one per view for a variant), stacked by scene on a log scale, written when the split is merged; the static test sets (`static_datasets/`) get theirs too |
 
 Each train scene's raw record, `<raw_root>/<run_name>/<scene>/` (`raw_root` from the collection config, `raw/` in the repo, gitignored;
 about 0.3 GB per 1,000-step train scene), lossless so a build from it is a build from `collect_train.py`'s own memory:
@@ -306,11 +319,15 @@ about 0.3 GB per 1,000-step train scene), lossless so a build from it is a build
 | `scene.json` | the scene name and its depth camera; written last, it marks the record complete |
 | `ground_truth_objects.npz`, `ground_truth_views.json` | a train scene's annotated objects (class, mesh box, object id), and every recorded frame's ground truth (1.6: frame, object id, class, visibility, RLE mask) |
 | `map_grid.npz` | a train scene's `MapGrid`, the grid `predictions.json`'s footprints and the top-down maps are drawn on |
-| `ground_truth.json` | a train scene's annotated objects on that grid (4.5), its `navigable` the simulator's navmesh; the build writes it to `<scene>/ground_truth.json` |
-| `ground_truth_mesh.glb` | a train scene's mesh (stage and placed objects, `scene_world_mesh`), which the build casts line-of-sight rays against to drop unobservable annotated objects from `ground_truth.json` (4.5) |
+| `ground_truth.json` | a train scene's annotated objects on that grid (4.6), its `navigable` the simulator's navmesh; the build writes it to `<scene>/ground_truth.json` |
+| `ground_truth_mesh.glb` | a train scene's mesh (stage and placed objects, `scene_world_mesh`), which the build casts line-of-sight rays against to drop unobservable annotated objects from `ground_truth.json` (4.6) |
 | `ground_truth_point_cloud.ply` | for viewing only, not read by the build: a train scene's annotated objects' surfaces sampled at 1,600 points/m², colored by class like `semantic_point_cloud.ply` |
 | `exploration_snapshot.png`, `images/planner/` | the scene's last exploration snapshot (1.5), and the planner's dump folder |
 | `predictions_mosaic.jpg`, `ground_truth_mosaic.jpg` | every recorded step's detector predictions and ground truth drawn on its rgb, tile for tile (1.5), split into `<name>_<part>.jpg` of at most 32 rows each |
+
+An evaluation scene's raw record (`collect_test.py`, 6.3), under the same layout, holds only its kept frames' rgb
+(`frames/<frame>.png`, the frame id its step), their `ground_truth_views.json`, its `decision_frame.png` and planner dump
+folder `images/planner/` (6.1), and `scene.json` (the scene name), written last; about 50 MB per scene.
 
 ## Files
 
@@ -318,22 +335,33 @@ about 0.3 GB per 1,000-step train scene), lossless so a build from it is a build
 |---|---|
 | `build_dataset.py` | stage 2: one train scene's build from its raw record (1.8) into each of its variants' datasets, without the simulator: `build_scene` (steps 2 to 5: resolve → foreground → size-masked classify, retrieval and recovery, once) and, for each variant, `write_variant` into its shard of the variant's object views, or of `V4_full`'s frames, with its `predictions.json`, top-downs and mosaics. The layout and the writers are `common/utils/dataset_writers.py`'s |
 | `collect_train.py` | stage 1: one train scene's raw record (1.8): the exploration loop and `SceneMapper`, which records each step and fuses its detections (step 1) |
-| `evaluate_maps.py` | scores every train scene's `predictions.json` against its `ground_truth.json`, pooled, into `map_eval/` (4.6) |
-| `run.sh` | runs, one per GPU of `GPUS` at a time, longest first, the source and NORM baselines (`adapt.py`), Mean-Teacher and embodied SL on each variant (`main.py`), each scored on the procthor8 test and train sets and NYU Depth V2, into `outputs/procthor8_runs/<run>.log` |
-| `merge.py` | pools a dataset's per-scene shards into its split's json, mosaic and class counts (`object_ds/object_ds.json`, `train/train.json` or `test/test.json`), once every scene's `build_dataset.py` or `collect_test.py` call is done |
-| `collect_test.py`, `evaluation_set.py` | one test scene's frontier exploration (6.1), its strided frames (6.2) written straight into the test set's dataset (6.3), no raw record |
+| `evaluate_maps.py` | scores every train scene's `predictions.json` against its `ground_truth.json`, pooled, into `map_eval/` (4.7) |
+| `run.sh` | runs, for each class set of `CLASS_SETS` (default procthor30 procthor100), one per GPU of `GPUS` at a time, longest first, the source and NORM baselines (`adapt.py`), Mean-Teacher and embodied SL on each variant (`main.py`), each on `config/r50_<set>_embodied_sl.yaml` with its train split set on the command line, into `outputs/runs/<run>.log`; with `RUN_STORE` set, each run's logs and checkpoint go to `$RUN_STORE/<run>`, linked back as `logs/<run>` |
+| `merge.py` | pools a dataset's per-scene shards into each split's json, mosaic and class counts (`object_ds/object_ds.json`, `train/train.json`, `val/val.json` or `test/test.json`), once every scene's `build_dataset.py` or `build_eval.py` call is done |
+| `collect_test.py`, `evaluation_set.py` | one evaluation scene's frontier exploration (6.1), its strided frames (6.2) recorded raw (6.3) |
+| `build_eval.py` | one evaluation scene's build from its raw record into its split, `val` or `test`, of the evaluation dataset, restricted to its class set (6.4) |
+| `../scripts/procthor_datasets.sh` | collects the procthor raw runs once and builds every class set of `CLASS_SETS` (default procthor30 procthor100) from them (Running), one worker per GPU of `GPUS` (default 1 2 3), into `outputs/procthor/<job>.log`; its argument, the scenes per split (20), set to 1 for a smoke run |
 | `config/procthor8_collection.yaml` | the collection config (`run_name` `procthor8`, `raw_root`, `seed`, image sizes, `object_params`, `detector`, `fusion` overrides, `collection` budget): the first 16 ProcTHOR-Train houses of 2 to 3 rooms, 1000 steps each, ProcTHOR-Train-5, -6, -9, -11, -14, -26, -30, -32, -33, -36, -38, -40, -41, -44, -45 and -47; collected one scene per call (Running) |
-| `config/procthor8_build.yaml`, `config/procthor8_test.yaml` | the dataset config of `procthor8_collection.yaml`'s raw run (`run_name` `procthor8_${variant}`, `raw_run`, `dataset_root`, `variant`, `resolve` and `retrieval` overrides), one dataset per variant; and the test config (`run_name` `procthor8_test`, `dataset_root`, `seed`, image size, `object_params`, `frontier_agent`, `frame_stride`) of its test set, ProcTHOR-Val-0 to -15 |
+| `config/procthor8_build.yaml`, `config/procthor8_test.yaml` | the dataset config of `procthor8_collection.yaml`'s raw run (`run_name` `procthor8_${variant}`, `raw_run`, `dataset_root`, `vocab_name` `PROCTHOR100`, `variant`, `resolve` and `retrieval` overrides), one dataset per variant; and the evaluation collection config of its test scenes, ProcTHOR-Val-0 to -15, whose `datasets/procthor8_test/` an earlier `collect_test.py` wrote straight into a COCO test set, without a raw record |
+| `config/procthor_train20_collection.yaml`, `config/procthor_val40_collection.yaml` | the collection configs of procthor30's raw runs, every class kept: `procthor_train20` (ProcTHOR-Train-0 to -19, `collect_train.py`) and `procthor_val40` (`run_name`, `raw_root`, `seed`, image size, `object_params`, `frontier_agent`, `frame_stride`: ProcTHOR-Val-0 to -39, `collect_test.py`) |
+| `config/procthor30_build.yaml`, `config/procthor30_eval_build.yaml`, `config/procthor100_build.yaml`, `config/procthor100_eval_build.yaml` | the dataset configs of the class sets `PROCTHOR30` and `PROCTHOR100` (`vocab_name`): `<set>_${variant}` from `procthor_train20`, one dataset per variant, and `<set>_eval` (`run_name`, `raw_run`, `dataset_root`, `vocab_name`) from `procthor_val40`, its `test` split ProcTHOR-Val-0 to -19 and its `val` split -20 to -39 |
+| `config/r50_procthor30_embodied_sl.yaml`, `config/r50_procthor100_embodied_sl.yaml` | `r50_procthor8_embodied_sl.yaml` scored on the class set's datasets: its `DATASETS.TEST` the set's test split (whose classes are the training classes), val split, `V4_full` train frames and NYU Depth V2; `run.sh` sets `DATASETS.TRAIN` |
 | `meta_arch.py` | `CustomFT_Detic`, Detic's `CustomRCNN` registered as a `META_ARCHITECTURE` for fine-tuning its ROI heads on a train variant's `ObjectViewsDataset`, on the proposals of a frozen teacher copy of the checkpoint's backbone and proposal generator; trained by `main.py` |
 | `main.py` | the fine-tuning of `CustomFT_Detic` on the train split its config names in `DATASETS.TRAIN`, scored on its `DATASETS.TEST` (optimizer: Detic's, honoring `SOLVER.OPTIMIZER` and `SOLVER.BACKBONE_MULTIPLIER`; training frames resized and flipped as `INPUT.MIN_SIZE_TRAIN` and `INPUT.RANDOM_FLIP` say), into `logs/<--run-name, or the config-file stem>/`: `results.json` (last and best evaluation), `metrics.png`, `vocabulary_tsne.png`, `class_ap.png` (per-class AP50 at each evaluation, written in its cell), `vocabulary_similarity.png` (the classes' CLIP cosine similarity × 100, written in its cell), `class_table.csv` (per class: training objects and views, test instances, first, best and last AP50), `box_areas.png` (train and test box sizes), confusion matrices |
 | `config/r50_detic.yaml` | `CustomFT_Detic` on Detic's R50 checkpoint (`Detic_LCOCOI21k_CLIP_R5021k_640b32_4x_ft4x_max-size.pth`), whose FrozenBN backbone the adaptation baselines adapt: the source model, base of every `r50_*` config, its `DATASETS.TEST` procthor8's test set (whose classes are the training classes), its `V4_full` train frames and NYU Depth V2 |
-| `config/r50_procthor8_embodied_sl.yaml`, `config/r50_procthor8_embodied_sl_{V1_pseudo,V2_drop_add,V3_cls_box_drop_add,V4_full}.yaml` | the reference fine-tune: AdamW 1e-4, the student backbone at × 0.1, training frames at the test scale (800) and never flipped, seed 0, 1,000 iterations evaluated every 500; one config per variant dataset, naming its split in `DATASETS.TRAIN`. Object views are drawn class-balanced (`balanced_loader`), `V4_full`'s frames uniformly (detectron2's train loader) |
+| `config/r50_procthor8_embodied_sl.yaml`, `config/r50_procthor8_embodied_sl_{V1_pseudo,V2_drop_add,V3_cls_box_drop_add,V4_full}.yaml` | the reference fine-tune: AdamW 1e-4, the student backbone at × 0.1, training frames at the test scale (800) and never flipped, seed 0, 1,000 iterations evaluated every 500, only `model_final.pth` saved; one config per variant dataset, naming its split in `DATASETS.TRAIN`. Object views are drawn class-balanced (`balanced_loader`), `V4_full`'s frames uniformly (detectron2's train loader) |
 | `config/r50_procthor8_embodied_sl_V4_full_bgneg.yaml` | `V4_full` with Detic's own `DeticCascadeROIHeads`, which also train on background proposals, instead of `PositiveOnlyDeticCascadeROIHeads`: a training setting, sound only where every object of a frame is labelled |
 | `mean_teacher.py`, `config/r50_procthor8_unsup_mean_teacher.yaml` | the Mean-Teacher baseline on the reference's settings: `main.py`'s training with its labels replaced by a moving-average teacher's detections (score ≥ 0.5) on the `V3_cls_box_drop_add` variant's frames, the student trained on a photometrically augmented copy, the teacher (momentum 0.999) evaluated and reported, into `logs/<--run-name, or the config-file stem>/` |
-| `DATASETS.TEST` (`main.py`, `adapt.py`, `mean_teacher.py`) | the registered splits a run scores (`common/env_utils/dataset_registry.py`, `<run_name>_<split>`): `adapt.py` once, `main.py` and `mean_teacher.py` the first at every evaluation and every one at the last only (their initial scores are the source model's), each in its own vocabulary: the classifier is reset to the split's class names' CLIP embeddings, then back to the training classes, the first's. Logged as `<split>/bbox/...` in `metrics.json`, and under the first's results in `results.json` |
-| `nyu_depth_v2.py` | NYU Depth V2's labeled subset (or `--frames` of it) as such a test set: one box per (class, instance) pair of a frame, `static_vocabulary.py`'s classes but wall, floor, ceiling and unknown (47 classes, 21,972 boxes of the 1,449 frames) |
-| `sunrgbd.py` | SUN RGB-D's 2D boxes (`SUNRGBDMeta2DBB_v2.mat`), every frame but the NYU Depth V2 ones it includes (or `--frames` of it), as such a test set: each box as its filled rectangle, clipped to the image, `static_vocabulary.py`'s classes but wall, floor, ceiling, otherprop and unknown |
-| `static_vocabulary.py` | a static test set's classes: raw names grouped by canonical spelling (lowercased, `_`/`-` as spaces, a trailing plural `s` dropped), each named by its most frequent spelling, kept with at least 100 objects (`MIN_OCCURRENCES`); the other classes' objects are left unannotated |
+| `DATASETS.TEST` (`main.py`, `adapt.py`, `mean_teacher.py`) | the registered splits a run scores (`common/env_utils/dataset_registry.py`, `<run_name>_<split>`): `adapt.py` once, `main.py` and `mean_teacher.py` the first at every evaluation and every one at the last only (their initial scores are the source model's), each in its own vocabulary: the classifier is reset to the split's class names' CLIP embeddings, then back to the training classes, the first's. Logged as `<split>/<task>/...` in `metrics.json` (tasks `AP`, `class_AP`, `tide`, `AP_OCPP`, `class_AP_OCPP`, `tide_OCPP`), and under the first's results in `results.json` |
+| `static_datasets/nyu_depth_v2.py` | NYU Depth V2's labeled subset (or `--frames` of it) as such a test set: one box per (class, instance) pair of a frame, `vocabulary.py`'s classes but wall, floor, ceiling and unknown (47 classes, 21,972 boxes of the 1,449 frames) |
+| `static_datasets/sunrgbd.py` | SUN RGB-D's 2D boxes (`SUNRGBDMeta2DBB_v2.mat`), every frame but the NYU Depth V2 ones it includes (or `--frames` of it), as such a test set: each box as its filled rectangle, clipped to the image (`common/utils/dataset_writers.py`'s `box_instances`), `vocabulary.py`'s classes but wall, floor, ceiling, otherprop and unknown |
+| `static_datasets/vocabulary.py` | a static test set's classes: raw names grouped by canonical spelling (lowercased, `_`/`-` as spaces, a trailing plural `s` dropped), each named by its most frequent spelling, kept with at least 100 objects (`MIN_OCCURRENCES`); the other classes' objects are left unannotated |
+| `static_datasets/detection_sources.py` | the test sets of broad-vocabulary detection datasets (`lvis_val.py`, `objects365.py`, `egoobjects.py`): their classes at least `--sim-word-thresh` (0.9) CLIP text cosine-similar to some `--vocab` word (`common/vision/detic.py`'s `matched_classes`, both prompted as `a <name>`), up to `--max-images` (seed 0) of the images showing one, then `vocabulary.py`'s classes of their objects; the other classes' objects are left out. A federated source's class unverified on an image (neither annotated exhaustively nor listed absent) gets a whole-image `iscrowd` box per category there, so COCOeval ignores that category's unmatched detections on it, as LVIS's evaluation does |
+| `static_datasets/lvis_val.py` | LVIS v1 val (federated) as such a test set, each object its polygons' mask |
+| `static_datasets/objects365.py` | Objects365 v2 val (exhaustive) as such a test set, each box its filled rectangle, crowd boxes as `iscrowd` |
+| `static_datasets/egoobjects.py` | EgoObjects' eval split (federated, LVIS-format json) as such a test set, each box its filled rectangle |
+| `static_datasets/inspection.py` | the views of a `detection_sources.py` source its notebook (`notebooks/{lvis,objects365,egoobjects}_visualization.ipynb`) draws: example records, its classes `matched_classes` keeps, their object counts against `MIN_OCCURRENCES`, and for a federated source the share of the images showing each matched class where it is annotated exhaustively, not exhaustively, listed absent or unverified |
+| `static_datasets/lvis_class_mosaic.py` | a mosaic of LVIS v1 train images, one row of up to 10 per LVIS class `matched_classes` keeps for `--vocab`, its boxes drawn: what `lvis_val.py`'s `--vocab`/`--sim-word-thresh` would keep |
 | `experiment_readme.md` | the plan of the embodied-SL experiments, their names, status and results |
 | `adapt.py` | the adaptation baselines below: the source model adapted by `--method`, scored once on the test set into `logs/<--run-name, or the config-file stem and method>/` (`results.json`, confusion matrices, `adapt.yaml`); run as `r50_procthor8_source` and `r50_procthor8_unsup_norm` |
 | `config/r50_procthor8_unsup_norm.yaml` | NORM's hyperparameters |
@@ -371,50 +399,63 @@ norm(model, test frames):
 
 ```bash
 export BASE_DIR=$(pwd) PYTHONNOUSERSITE=1  # HABITAT_DATA already exported, see INSTALL.MD
-CUDA_VISIBLE_DEVICES=1 PYTHONPATH=. python habitat_embodied_sl/collect_train.py <scene> habitat_embodied_sl/config/procthor8_collection.yaml
+CUDA_VISIBLE_DEVICES=1 PYTHONPATH=. python habitat_embodied_sl/collect_train.py <scene> habitat_embodied_sl/config/procthor_train20_collection.yaml
 ```
 
 `<scene>` is a train scene; both the renderer and the models run on the GPU `CUDA_VISIBLE_DEVICES` names. Each scene is
 its own call; calls for different scenes can run at once, e.g. one per GPU:
 
 ```bash
-scenes=(ProcTHOR-Train-5 ProcTHOR-Train-6 ProcTHOR-Train-9)
+scenes=(ProcTHOR-Train-0 ProcTHOR-Train-1 ProcTHOR-Train-2)
 for gpu in 1 2 3; do
   CUDA_VISIBLE_DEVICES=$gpu PYTHONPATH=. nohup python habitat_embodied_sl/collect_train.py ${scenes[$gpu - 1]} \
-      habitat_embodied_sl/config/procthor8_collection.yaml > collect_${scenes[$gpu - 1]}.log 2>&1 &
+      habitat_embodied_sl/config/procthor_train20_collection.yaml > collect_${scenes[$gpu - 1]}.log 2>&1 &
 done
 ```
 
 Then build every recorded scene into each variant's dataset from its raw record (1.8), without the simulator, Detic
 classifying on the `CUDA_VISIBLE_DEVICES` GPU; the variant, like any of the dataset config's keys, can be set on the
 command line, and a list of them builds every listed variant's dataset from one resolve, classification and retrieval.
-A scene can be rebuilt alone into the same dataset, one variant or several; a changed step 2 to 5 setting is another
-dataset, with its own `run_name`:
+A scene can be rebuilt alone into the same dataset, one variant or several; a changed step 2 to 5 setting, or another
+class set, is another dataset, with its own `run_name`:
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 PYTHONPATH=. python habitat_embodied_sl/build_dataset.py <scene> habitat_embodied_sl/config/procthor8_build.yaml \
+CUDA_VISIBLE_DEVICES=1 PYTHONPATH=. python habitat_embodied_sl/build_dataset.py <scene> habitat_embodied_sl/config/procthor30_build.yaml \
     variant=[V1_pseudo,V2_drop_add,V3_cls_box_drop_add,V4_full]
 ```
 
-The test scenes (ProcTHOR-Val-0 to -15) go straight into the test set, one call each (6):
+The evaluation scenes (ProcTHOR-Val-0 to -39) are recorded raw, one call each (6.1 to 6.3), then built into the test
+split (ProcTHOR-Val-0 to -19) or the val split (-20 to -39) of the evaluation dataset, without the simulator (6.4):
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 PYTHONPATH=. python habitat_embodied_sl/collect_test.py <scene> habitat_embodied_sl/config/procthor8_test.yaml
+CUDA_VISIBLE_DEVICES=1 PYTHONPATH=. python habitat_embodied_sl/collect_test.py <scene> habitat_embodied_sl/config/procthor_val40_collection.yaml
+PYTHONPATH=. python habitat_embodied_sl/build_eval.py <scene> habitat_embodied_sl/config/procthor30_eval_build.yaml test
 ```
 
-Once every scene of a dataset is written, pool its shards into its split's json, mosaic and class counts, and score the
-train scenes' maps from their `predictions.json` and `ground_truth.json` (4.6, the same in every variant's dataset):
+Once every scene of a dataset is written, pool its shards into each split's json, mosaic and class counts, and score the
+train scenes' maps from their `predictions.json` and `ground_truth.json` (4.7, the same in every variant's dataset):
 
 ```bash
-for dataset in procthor8_V1_pseudo procthor8_V2_drop_add procthor8_V3_cls_box_drop_add procthor8_V4_full procthor8_test; do
+for dataset in procthor30_V1_pseudo procthor30_V2_drop_add procthor30_V3_cls_box_drop_add procthor30_V4_full procthor30_eval; do
   PYTHONPATH=. python habitat_embodied_sl/merge.py datasets/$dataset
 done
-PYTHONPATH=. python habitat_embodied_sl/evaluate_maps.py datasets/procthor8_V3_cls_box_drop_add
+PYTHONPATH=. python habitat_embodied_sl/evaluate_maps.py datasets/procthor30_V3_cls_box_drop_add
 ```
 
-`tests/test_collect.py` runs every stage end to end, collect, build of every variant, test collection, merge and map
-evaluation, on one train scene (ProcTHOR-Train-0) and one test scene (ProcTHOR-Val-7) into `tests/testdump/test_collect/`
-(its three configs as `collection.yaml`, `build.yaml` and `test.yaml`, raw records in `raw/`, datasets in `datasets/`),
+`scripts/procthor_datasets.sh` runs all of the above, collecting once and building every class set of `CLASS_SETS`
+(default procthor30 procthor100), its argument the scenes per split, one worker per GPU of `GPUS` (default 1 2 3);
+recorded scenes are skipped, so a 1-scene smoke run's are reused by the full run. `run.sh` then trains on them:
+
+```bash
+GPUS="1 2 3" bash scripts/procthor_datasets.sh 1  # smoke: ProcTHOR-Train-0, -Val-0 (test), -Val-20 (val)
+mkdir -p outputs && GPUS="1 2 3" nohup bash scripts/procthor_datasets.sh 20 > outputs/procthor.log 2>&1 &
+GPUS="1 2 3" RUN_STORE=<folder> nohup bash habitat_embodied_sl/run.sh > outputs/run.log 2>&1 &
+```
+
+`tests/test_collect.py` runs every stage end to end, collect, build of every variant, test collection and build, merge
+and map evaluation, on one train scene (ProcTHOR-Train-0) and one test scene (ProcTHOR-Val-7) into
+`tests/testdump/test_collect/` (its four configs as `collection.yaml`, `build.yaml`, `test.yaml` and `eval.yaml`, raw
+records in `raw/`, datasets in `datasets/`),
 printing that train scene's map metrics, and checks that rebuilding from the raw record writes the same shard:
 
 ```bash

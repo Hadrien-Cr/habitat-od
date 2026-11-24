@@ -2,13 +2,13 @@
 written as a static COCO test set, <out_dir>/test/test.json and its images in <out_dir>/images/, by
 common/utils/dataset_writers.py's CocoFramesWriter; registered as <out_dir's name>_test (common/env_utils/dataset_registry.py),
 a training config's DATASETS.TEST scores it. Its vocabulary is
-static_vocabulary.py's frequent classes of the written frames' boxes but EXCLUDED_CLASSES, sorted; the other classes'
+vocabulary.py's frequent classes of the written frames' boxes but EXCLUDED_CLASSES, sorted; the other classes'
 boxes are left out. Each box is written as its
-filled rectangle, the mask CocoFramesWriter takes the box from. The NYU Depth V2 frames SUN RGB-D includes are left out
-by default: habitat_embodied_sl/nyu_depth_v2.py writes them as their own test set.
+filled rectangle (box_instances). The NYU Depth V2 frames SUN RGB-D includes are left out
+by default: nyu_depth_v2.py writes them as their own test set.
 
 Usage (every non-NYU frame; --frames for a subset):
-  PYTHONPATH=. python habitat_embodied_sl/sunrgbd.py datasets/sunrgbd
+  PYTHONPATH=. python habitat_embodied_sl/static_datasets/sunrgbd.py datasets/sunrgbd
 """
 import argparse
 import os
@@ -16,12 +16,11 @@ from pathlib import Path
 
 import numpy as np
 import scipy.io as sio
-import torch
 from detectron2.structures import Instances  # type: ignore
 from PIL import Image
 
-from common.utils.dataset_writers import IMAGES_DIR, CocoFramesWriter
-from habitat_embodied_sl.static_vocabulary import MIN_OCCURRENCES, frequent_classes
+from common.utils.dataset_writers import IMAGES_DIR, CocoFramesWriter, box_instances
+from habitat_embodied_sl.static_datasets.vocabulary import MIN_OCCURRENCES, frequent_classes
 
 SUNRGBD_ROOT = Path(os.environ.get("HABITAT_DATA", "")) / "sunrgbd"
 EXCLUDED_CLASSES = ("wall", "floor", "ceiling", "otherprop", "unknown")  # stuff, and the catch-alls
@@ -37,16 +36,8 @@ def frame_instances(boxes: list, image_size: tuple, class_ids: dict) -> Instance
     """Ground truth of a frame's boxes whose raw class name is in class_ids and that overlap the image, as CocoFramesWriter
     writes it."""
     kept = [(index, box) for index, box in enumerate(boxes) if box.classname in class_ids]
-    masks = torch.zeros((len(kept), *image_size), dtype=torch.bool)
-    for mask, (_, box) in zip(masks, kept):
-        x, y, width, height = np.round(np.asarray(box.gtBb2D, dtype=float)).astype(int)
-        mask[max(y, 0):y + height, max(x, 0):x + width] = True
-    overlapping = masks.flatten(1).any(1)
-    ground_truth = Instances(image_size)
-    ground_truth.gt_masks = masks[overlapping]
-    ground_truth.gt_classes = torch.tensor([class_ids[box.classname] for _, box in kept], dtype=torch.long)[overlapping]
-    ground_truth.infos = [{"object_id": index} for (index, _), keep in zip(kept, overlapping.tolist()) if keep]
-    return ground_truth
+    corners = np.array([box.gtBb2D for _, box in kept], dtype=float).reshape(-1, 4)
+    return box_instances(corners, [class_ids[box.classname] for _, box in kept], [{"object_id": index} for index, _ in kept], image_size)
 
 
 def write_test_set(meta: np.ndarray, root: Path, frames: list, out_dir: Path) -> Path:

@@ -165,6 +165,12 @@ def plausible_class_probs(frame_probs: Dict[int, torch.Tensor], dimensions: np.n
     return probs * plausible
 
 
+def subset_class_scores(scores: Dict[int, torch.Tensor], class_ids: Dict[int, int]) -> Dict[int, torch.Tensor]:
+    """scores of the ids whose highest-scoring class class_ids maps (class_id_mapping), cut to those classes in their mapped order."""
+    columns = sorted(class_ids, key=class_ids.get)
+    return {key: key_scores[columns] for key, key_scores in scores.items() if int(key_scores.argmax()) in class_ids}
+
+
 def downsampled_object(obj: ConceptGraphObject, voxel_size: float) -> ConceptGraphObject:
     points, point_num_dets = voxel_merge([(obj.points, obj.point_num_dets)], voxel_size)
     return replace(obj, points=points, point_num_dets=point_num_dets)

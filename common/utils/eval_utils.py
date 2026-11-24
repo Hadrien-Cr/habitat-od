@@ -369,6 +369,15 @@ def _scene_dataset(image: dict, objects: SceneObjects, footprints: np.ndarray, c
     }
 
 
+def restricted_scene_dataset(dataset: dict, class_ids: Dict[int, int], classes: list) -> dict:
+    """A single-scene dataset (_scene_dataset) with only its objects of the classes class_ids maps, their category ids
+    mapped, its categories classes."""
+    return {
+        **dataset, "categories": [{"id": idx, "name": name} for idx, name in enumerate(classes)],
+        "annotations": [dict(annotation, category_id=class_ids[annotation["category_id"]]) for annotation in dataset["annotations"] if annotation["category_id"] in class_ids],
+    }
+
+
 def navigable_viewpoints(dataset: dict, grid: MapGrid, height: float) -> np.ndarray:
     """(N, 3) points at height above the cells of dataset's "navigable" mask (a ground_truth_dataset's, the navmesh's) on
     grid, one every _VIEWPOINT_SPACING_M along each axis."""

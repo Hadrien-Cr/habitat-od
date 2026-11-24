@@ -48,10 +48,31 @@ wget https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth -P $HA
 ```
 
 ```bash
-# Data for reproducing Detic's BoxSup-C2_L_CLIP_SwinB_896b32_4x training (pretrain.py):
-# LVIS v1 annotations, COCO 2017 images and the converted Swin-B ImageNet-22k backbone, under third_party/Detic/{datasets,models}.
+# Data for reproducing Detic's LVIS-only BoxSup-C2_L_CLIP_{SwinB_896b32,R5021k_640b64}_4x trainings (pretrain.py), and for
+# lvis_class_mosaic.py: LVIS v1 train/val annotations (~1.3GB; 100,170 / 19,809 images, 1,203 classes, all taken from COCO 2017,
+# so COCO's images are needed too) and the Swin-B ImageNet-22k and ResNet-50 ImageNet-21k-P backbones converted to detectron2's
+# format, under third_party/Detic/{datasets,models}.
 # --coco-images symlinks an existing COCO copy's train2017/ and val2017/; omit it to download them (~19GB).
+# Detic's other LVIS configs (Detic_LI*, Detic_LCOCOI21k*) also train on ImageNet-21K (~1.3TB, image-net.org login), not set up here.
 common/vision/setup_detic_data.sh --coco-images <path/to/coco/images>
+# Published BoxSup R50 checkpoint, to check a reproduction against its LVIS val mask mAP (31.5, 25.6 on rare classes)
+wget https://dl.fbaipublicfiles.com/detic/BoxSup-C2_L_CLIP_R5021k_640b64_4x.pth -P third_party/Detic/models/
+```
+
+```bash
+# Objects365 v2 val (Detic's cross-dataset eval split objects365_v2_val; Detic needs no train split): annotations (~270MB) and
+# 44 image patches (~17.5GB, each streamed into val/images/v{1,2}/patch<N>/ without keeping the archive) from the public mirror
+# YOLOv5 also uses. Patches 0-15 are v1, 16-43 v2; Detic's README lists patches up to 49, the mirror has none past 43.
+# Detic's fix_o365_names.py then fixes typos in category names into annotations/zhiyuan_objv2_val_fixname.json.
+o365=third_party/Detic/datasets/objects365
+o365_url="https://dorc.ks3-cn-beijing.ksyun.com/data-set/2020Objects365%E6%95%B0%E6%8D%AE%E9%9B%86/val"
+mkdir -p $o365/annotations $o365/val/images/v1 $o365/val/images/v2
+wget -c $o365_url/zhiyuan_objv2_val.json -P $o365/annotations
+for patch in $(seq 0 43); do
+    version=$([ $patch -lt 16 ] && echo v1 || echo v2)
+    curl -sfL $o365_url/images/$version/patch$patch.tar.gz | tar -xzC $o365/val/images/$version
+done
+(cd third_party/Detic && python tools/fix_o365_names.py)
 ```
 
 ```bash
@@ -130,6 +151,19 @@ unzip -q $HABITAT_DATA/replica/nice_slam/Replica.zip 'Replica/office2/*' 'Replic
 ```
 
 ```bash
+# Download EgoObjects v1.0 (egocentric indoor-object detection eval, no simulator): 114K frames (79K train, 5.7K val,
+# 29.5K test) from 9K+ wearable-camera videos, 368 categories, annotations in LVIS's format (github.com/facebookresearch/EgoObjects).
+# Its files are behind a license form: accept it at https://ai.meta.com/datasets/egoobjects-downloads to get each file's
+# link (they expire), and paste them below. Images ~40GB.
+mkdir -p $HABITAT_DATA/egoobjects/data
+wget -c "<EgoObjectsV1_images.zip link>" -O $HABITAT_DATA/egoobjects/EgoObjectsV1_images.zip
+unzip -q $HABITAT_DATA/egoobjects/EgoObjectsV1_images.zip -d $HABITAT_DATA/egoobjects && rm $HABITAT_DATA/egoobjects/EgoObjectsV1_images.zip
+wget -c "<EgoObjectsV1_unified_train.json link>" -O $HABITAT_DATA/egoobjects/data/EgoObjectsV1_unified_train.json
+wget -c "<EgoObjectsV1_unified_eval.json link>" -O $HABITAT_DATA/egoobjects/data/EgoObjectsV1_unified_eval.json
+wget -c "<EgoObjectsV1_unified_metadata.json link>" -O $HABITAT_DATA/egoobjects/data/EgoObjectsV1_unified_metadata.json
+```
+
+```bash
 # Embodied SL datasets and runs (habitat_embodied_sl/README.md). procthor8: record every train scene raw, one collect_train.py
 # call each, build each into every variant's dataset, one build_dataset.py call each listing them, and collect every test scene into
 # the test set, one collect_test.py call each (Running in that README), then pool each dataset's shards. NYU Depth V2's
@@ -137,8 +171,8 @@ unzip -q $HABITAT_DATA/replica/nice_slam/Replica.zip 'Replica/office2/*' 'Replic
 for dataset in procthor8_V1_pseudo procthor8_V2_drop_add procthor8_V3_cls_box_drop_add procthor8_V4_full procthor8_test; do
   PYTHONPATH=. python habitat_embodied_sl/merge.py datasets/$dataset
 done
-PYTHONPATH=. python habitat_embodied_sl/nyu_depth_v2.py datasets/nyu_depth_v2
-PYTHONPATH=. python habitat_embodied_sl/sunrgbd.py datasets/sunrgbd
+PYTHONPATH=. python habitat_embodied_sl/static_datasets/nyu_depth_v2.py datasets/nyu_depth_v2
+PYTHONPATH=. python habitat_embodied_sl/static_datasets/sunrgbd.py datasets/sunrgbd
 # Source, NORM, Mean-Teacher and embodied SL on each train variant, one run per GPU at a time (logs in outputs/procthor8_runs/)
 mkdir -p outputs && GPUS="1 2 3" nohup bash habitat_embodied_sl/run.sh > outputs/run.log 2>&1 &
 ```

@@ -8,8 +8,10 @@ HSSD-rare ObjectNav episodes. Ground truth comes from the simulator's semantic s
 
 `habitat_embodied_sl/collect_train.py` explores train scenes with an exploration agent, mapping Detic detections, and records
 them raw; `habitat_embodied_sl/build_dataset.py` turns each record into one variant's dataset, its object views or fully
-annotated frames (e.g. `datasets/procthor8_V2_drop_add`), without the simulator; `habitat_embodied_sl/collect_test.py`
-collects test scenes straight into a COCO test set (e.g. `datasets/procthor8_test`). Its pipeline steps, thresholds and
+annotated frames (e.g. `datasets/procthor30_V2_drop_add`), without the simulator; `habitat_embodied_sl/collect_test.py`
+records evaluation scenes raw too, which `habitat_embodied_sl/build_eval.py` builds into COCO val and test splits (e.g.
+`datasets/procthor30_eval`). Each build restricts the class-agnostic records to its config's class set (`vocab_name`,
+e.g. `PROCTHOR30`). `scripts/procthor_datasets.sh` runs every step for the procthor30 and procthor100 datasets. Its pipeline steps, thresholds and
 outputs are described in `habitat_embodied_sl/README.md`.
 
 # Training
@@ -29,7 +31,7 @@ evaluator-wired `Trainer`, TensorBoard image logging (ground truth as shaded box
 final-checkpoint reporting are shared by both via `common/utils/detectron_trainer.py`.
 
 - **`evaluate.py`** -- standalone evaluation of a Detic config/checkpoint against a COCO test
-  split written by `habitat_embodied_sl/collect_test.py` (e.g. `datasets/procthor8_test/test`), via Detic's own
+  split written by `habitat_embodied_sl/build_eval.py` (e.g. `datasets/procthor30_eval/test`), via Detic's own
   `train_net.py` `do_test` and `COCOEvaluator`. Resets Detic's zero-shot classifier to the CLIP
   text embeddings of the split's categories.
 

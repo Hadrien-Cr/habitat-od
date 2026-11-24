@@ -1,12 +1,14 @@
 """Stage 2: builds a train scene's shard of each of its variants' datasets, datasets/<run_name>/, from its record in the
-dataset config's raw run (common/utils/raw_scene.py, written by habitat_embodied_sl/collect_train.py), without the simulator,
-classifying among the raw run's recorded classes with its Detic (its config.yaml), so a dataset keeps the class ids its
-records were made with. One call per scene, so calls can run in parallel; habitat_embodied_sl/merge.py then pools the
+dataset config's raw run (common/utils/raw_scene.py, written by habitat_embodied_sl/collect_train.py), without the simulator:
+the dataset's classes are the raw run's recorded ones its vocab_name has (vocabulary_classes), the record's ground truth
+restricted to them and indexed by them (restricted_scene), and its Detic (the raw run's config.yaml) classifies among every
+recorded class, an object whose class is none of them left out (subset_class_scores).
+One call per scene, so calls can run in parallel; habitat_embodied_sl/merge.py then pools the
 scenes' shards. What an earlier build of the scene wrote is deleted first (flush_scene). The config's variant, set in it or
 on the command line (variant=V2_drop_add, like any of its keys), is the dataset's train split; a list of them
 (variant=[V1_pseudo,V4_full]) builds each variant's dataset, each with its own config, from one resolve, classification
 and retrieval of the scene. A dataset's first call saves its config, its resolve and retrieval settings completed with
-every default and the raw run's classes added, as datasets/<run_name>/config.yaml, and a call with another config fails
+every default and its classes added, as datasets/<run_name>/config.yaml, and a call with another config fails
 (save_run_config): another config is another dataset, under its own run_name.
 
 A scene's fused objects are resolved, their foreground objects kept and classified (common/utils/concept_graph.py,
@@ -37,25 +39,25 @@ Usage (Detic classifies on the GPU CUDA_VISIBLE_DEVICES names):
 import argparse
 import copy
 import shutil
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set
 
 import numpy as np
-from detectron2.structures import Instances
+import torch  # noqa: F401  before habitat's modules, or CLIP's torch.jit.load aborts (free(): invalid pointer)
 from omegaconf import DictConfig, OmegaConf
 
-from common.env_utils.object_annotations import PROCTHOR100_SIZES_PATH, class_size_ranges
+from common.env_utils.object_annotations import PROCTHOR100_SIZES_PATH, class_size_ranges, vocabulary_classes
 from common.utils.coco_utils import write_json
-from common.utils.concept_graph import ResolveConfig, classify, keep_foreground, object_size_ranges, resolve
+from common.utils.concept_graph import ResolveConfig, classify, keep_foreground, object_size_ranges, resolve, subset_class_scores
 from common.utils.dataset_writers import FULL_FRAMES, OBJECT_DS_DIR, VARIANTS, collection_root, flush_scene, split_writer
 from common.utils.eval_utils import (
     GROUND_TRUTH_JSON, PREDICTIONS_JSON, GroundTruthObjects, ResolvedDetections, matched_ground_truth, navigable_viewpoints,
-    observable_ground_truth, predictions_dataset, save_box_wireframes, save_topdowns, semantic_topdown,
+    observable_ground_truth, predictions_dataset, restricted_scene_dataset, save_box_wireframes, save_topdowns, semantic_topdown,
 )
 from common.utils.ground_truth_recovery import (
-    GroundTruthAnnotation, GroundTruthView, ground_truth_frame, missed_ground_truth, pseudo_classes, recover_add_fn, recover_drop_fp,
-    recover_gt_classes, recover_gt_masks, recovered_objects, views_by_frame,
+    GroundTruthAnnotation, annotated_frames, class_id_mapping, missed_ground_truth, pseudo_classes, recover_add_fn, recover_drop_fp,
+    recover_gt_classes, recover_gt_masks, recovered_objects, restricted_views,
 )
 from common.utils.image_memory import Frame, object_views, raytrace_frames
 from common.utils.plot_utils import MAX_MOSAIC_ROWS, MOSAIC_JPEG_QUALITY, PNG_COMPRESS_LEVEL, save_mosaic_parts
@@ -77,13 +79,13 @@ def mosaic_max_rows(args: argparse.Namespace) -> Optional[int]:
 
 def resolve_and_classify(raw: RawScene, detector: Detector, cfg: DictConfig, size_ranges: Dict[int, Dict[str, tuple]]) -> ResolvedObjects:
     """raw's fused objects resolved with cfg's resolve parameters, the foreground ones kept and classified among the
-    classes their size fits."""
+    detector's classes their size fits, those whose class is none of cfg's left out and the others' scores cut to cfg's."""
     resolve_config, min_mesh_visibility_fraction = ResolveConfig(**cfg.resolve), raw.min_mesh_visibility_fraction
     resolved, sources = resolve(raw.fused_objects, raw.config.downsample_voxel_size, resolve_config)
     raytraced = raytrace_frames(resolved, raw.frames, raw.camera, min_mesh_visibility_fraction)
     scores = keep_foreground(resolved, sources, raytraced, resolve_config.min_detection_rate)
     classify(resolved, scores, object_views(resolved, raw.frames, raw.camera, min_mesh_visibility_fraction), detector, size_ranges)
-    return resolved
+    return resolved.classified(subset_class_scores(resolved.resolved_logits, class_id_mapping(list(detector.classes), list(cfg.classes))))
 
 
 @dataclass(frozen=True)
@@ -106,12 +108,13 @@ def scene_recovery(resolved: ResolvedObjects, raw: RawScene, cfg: DictConfig) ->
     return SceneRecovery(retrieved_views(resolved, raw.frames, *retrieved), matched_ground_truth(resolved, raw.ground_truth), annotation, raw.frames, selection)
 
 
-def drop_add_views(recovery: SceneRecovery, detector: Detector, size_ranges: Dict[int, Dict[str, tuple]]) -> List[RetrievedView]:
+def drop_add_views(recovery: SceneRecovery, detector: Detector, size_ranges: Dict[int, Dict[str, tuple]], class_ids: Dict[int, int]) -> List[RetrievedView]:
     """V2_drop_add: the matched objects' views as classified, plus missed ground truths' views (their masks) classified as
-    the resolved objects are: the objects fixed, their labels pseudo."""
+    the resolved objects are, those whose class class_ids does not map left out: the objects fixed, their labels pseudo."""
     missed = missed_ground_truth(recovery.annotation, recovery.matches)
     classes = pseudo_classes(recovery.annotation, missed, recovery.frames, detector, size_ranges)
-    return recover_add_fn(recover_drop_fp(recovery.pseudo, recovery.matches), recovery.annotation, classes, recovery.frames, recovery.selection)
+    kept = {index: class_ids[class_id] for index, class_id in classes.items() if class_id in class_ids}
+    return recover_add_fn(recover_drop_fp(recovery.pseudo, recovery.matches), recovery.annotation, kept, recovery.frames, recovery.selection)
 
 
 def cls_box_drop_add_views(recovery: SceneRecovery) -> List[RetrievedView]:
@@ -127,7 +130,8 @@ def cls_box_drop_add_views(recovery: SceneRecovery) -> List[RetrievedView]:
 def scene_variants(resolved: ResolvedObjects, raw: RawScene, cfg: DictConfig, detector: Detector, size_ranges: Dict[int, Dict[str, tuple]]) -> Dict[str, List[RetrievedView]]:
     """{variant: views} of every object-view train variant (VARIANTS) of the scene, each derived from the same retrieved views."""
     recovery = scene_recovery(resolved, raw, cfg)
-    return dict(zip(VARIANTS, (recovery.pseudo, drop_add_views(recovery, detector, size_ranges), cls_box_drop_add_views(recovery))))
+    class_ids = class_id_mapping(list(detector.classes), list(cfg.classes))
+    return dict(zip(VARIANTS, (recovery.pseudo, drop_add_views(recovery, detector, size_ranges, class_ids), cls_box_drop_add_views(recovery))))
 
 
 def save_retrieval_mosaics(views: List[RetrievedView], highlighted: Set[int], style: SegmentationStyle, out_path: Path, max_rows: Optional[int]) -> None:
@@ -147,12 +151,6 @@ def save_semantic_topdown(raw: RawScene, views: List[RetrievedView], resolved_ob
     resolved = copy.deepcopy(resolved_objects).relabeled(object_classes)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     semantic_topdown(predictions_dataset(raw.scene, resolved, raw.grid, style.classes), style).save(out_path, compress_level=PNG_COMPRESS_LEVEL)
-
-
-def annotated_frames(rgbs: Dict[int, np.ndarray], ground_truth_views: List[GroundTruthView]) -> List[Tuple[int, np.ndarray, Instances]]:
-    """(frame id, rgb, ground truth) of every frame of rgbs some ground truth shows, in frame order."""
-    frame_views = views_by_frame(ground_truth_views)
-    return [(frame_id, rgbs[frame_id], ground_truth_frame(frame_views[frame_id], rgbs[frame_id].shape[:2])) for frame_id in sorted(rgbs) if frame_views[frame_id]]
 
 
 def observable_ground_truth_dataset(raw: RawScene) -> dict:
@@ -195,7 +193,7 @@ def write_variant(raw: RawScene, resolved: ResolvedObjects, scene_views: Dict[st
 def build_scene(raw: RawScene, cfgs: List[DictConfig], detector: Detector, max_rows: Optional[int]) -> None:
     """Resolves, classifies and retrieves raw's fused objects once, as cfgs' shared resolve and retrieval settings say,
     into its scene's shard of each of cfgs' variants (write_variant), each with the same map files (save_scene_maps)."""
-    style, scene_dirs = SegmentationStyle.of(detector.classes), [collection_root(cfg) / raw.scene for cfg in cfgs]
+    style, scene_dirs = SegmentationStyle.of(cfgs[0].classes), [collection_root(cfg) / raw.scene for cfg in cfgs]
     size_ranges = object_size_ranges(detector.classes, class_size_ranges(PROCTHOR100_SIZES_PATH))
     resolved = resolve_and_classify(raw, detector, cfgs[0], size_ranges)
     save_scene_maps(raw, resolved, style, scene_dirs[0])
@@ -206,10 +204,19 @@ def build_scene(raw: RawScene, cfgs: List[DictConfig], detector: Detector, max_r
         write_variant(raw, resolved, scene_views, cfg, max_rows)
 
 
+def restricted_scene(raw: RawScene, class_ids: Dict[int, int], classes: list) -> RawScene:
+    """raw with only the ground truth of the classes class_ids maps (class_id_mapping), indexed by classes."""
+    dataset = restricted_scene_dataset(raw.ground_truth_dataset, class_ids, classes)
+    # ground_truth.json annotates the very objects of ground_truth_objects.npz, in the same order
+    objects = GroundTruthObjects.from_annotations(dataset["annotations"])
+    return replace(raw, ground_truth=objects, ground_truth_views=restricted_views(raw.ground_truth_views, class_ids), ground_truth_dataset=dataset)
+
+
 def build_train_scene(raw_dir: Path, raw_cfg: DictConfig, cfgs: List[DictConfig], max_rows: Optional[int]) -> None:
-    """build_scene of the record under raw_dir, classified by its raw run's detector (no SAM: the build only classifies),
-    with its exploration snapshot in each variant's scene folder."""
-    raw = load_raw_scene(raw_dir)
+    """build_scene of the record under raw_dir restricted to cfgs' classes, classified among every recorded class by its raw
+    run's detector (no SAM: the build only classifies), with its exploration snapshot in each variant's scene folder."""
+    classes = list(cfgs[0].classes)
+    raw = restricted_scene(load_raw_scene(raw_dir), class_id_mapping(list(raw_cfg.classes), classes), classes)
     build_scene(raw, cfgs, build_detector(raw_cfg, None), max_rows)
     for cfg in cfgs:
         shutil.copy(raw_dir / EXPLORATION_SNAPSHOT_PNG, collection_root(cfg) / raw.scene)
@@ -234,7 +241,7 @@ def main(args: argparse.Namespace) -> None:
         raise ValueError(f"{raw_dir} holds no complete raw record: collect {args.scene} first")
     raw_cfg = load_run_config(raw_dir.parent)
     cfg.resolve, cfg.retrieval = asdict(ResolveConfig(**cfg.resolve)), asdict(ViewSelection(**cfg.retrieval))
-    cfg.classes = list(raw_cfg.classes)
+    cfg.classes = vocabulary_classes(list(raw_cfg.classes), cfg.vocab_name)
     cfgs = variant_configs(cfg)
     for variant_cfg in cfgs:
         save_run_config(collection_root(variant_cfg), variant_cfg)

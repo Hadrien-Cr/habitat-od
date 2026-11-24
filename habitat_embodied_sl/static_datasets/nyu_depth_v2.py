@@ -1,12 +1,12 @@
 """NYU Depth V2's labeled subset (nyu_depth_v2_labeled.mat: 1,449 RGB-D frames with per-pixel class and instance maps,
 MATLAB v7.3 read with h5py; notebooks/nyu_depth_v2_visualization.ipynb) written as a static COCO test set,
 <out_dir>/test/test.json and its images in <out_dir>/images/, by common/utils/dataset_writers.py's CocoFramesWriter; registered as <out_dir's name>_test
-(common/env_utils/dataset_registry.py), a training config's DATASETS.TEST scores it. Its vocabulary is static_vocabulary.py's frequent classes of the written frames' objects
+(common/env_utils/dataset_registry.py), a training config's DATASETS.TEST scores it. Its vocabulary is vocabulary.py's frequent classes of the written frames' objects
 but EXCLUDED_CLASSES, sorted; the other classes' objects are left unannotated. An object is a (class, instance index)
 pair of a frame's maps: NYU counts instances within each class.
 
 Usage (all 1,449 frames; --frames for a subset):
-  PYTHONPATH=. python habitat_embodied_sl/nyu_depth_v2.py datasets/nyu_depth_v2
+  PYTHONPATH=. python habitat_embodied_sl/static_datasets/nyu_depth_v2.py datasets/nyu_depth_v2
 """
 import argparse
 import os
@@ -18,7 +18,7 @@ import torch
 from detectron2.structures import Instances  # type: ignore
 
 from common.utils.dataset_writers import IMAGES_DIR, CocoFramesWriter
-from habitat_embodied_sl.static_vocabulary import MIN_OCCURRENCES, frequent_classes
+from habitat_embodied_sl.static_datasets.vocabulary import MIN_OCCURRENCES, frequent_classes
 
 NYU_MAT = Path(os.environ.get("HABITAT_DATA", "")) / "nyu_depth_v2" / "nyu_depth_v2_labeled.mat"
 EXCLUDED_CLASSES = ("wall", "floor", "ceiling", "unknown")  # stuff, and the catch-all

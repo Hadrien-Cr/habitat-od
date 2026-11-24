@@ -120,13 +120,13 @@ Per-class numbers from each run's `class_table.csv`, AP50 at the last evaluation
   (1,449 frames, boxes from its instance masks) and SUN RGB-D (2D boxes), each in its own vocabulary: the classifier
   is the class names' CLIP embeddings, reset per dataset, so fine-tuned checkpoints stay open-vocabulary. Stuff and
   catch-all classes dropped (wall, floor, otherprop), and classes with fewer than 100 test objects
-  (`static_vocabulary.py`, plurals and spelling variants merged first): NYU's 890 raw classes (360 with one box) made
+  (`static_datasets/vocabulary.py`, plurals and spelling variants merged first): NYU's 890 raw classes (360 with one box) made
   its mean AP a measure of the tail. AP50 and class-agnostic AP50, split into classes in and out of
   `CLASS_LABELS_PROCTHOR100`: transfer on the classes embodied SL trains on, forgetting on the rest.
-  NYU-47 (`habitat_embodied_sl/nyu_depth_v2.py`): `datasets/nyu_depth_v2/test`, 47 classes, 21,972 boxes since
+  NYU-47 (`habitat_embodied_sl/static_datasets/nyu_depth_v2.py`): `datasets/nyu_depth_v2/test`, 47 classes, 21,972 boxes since
   2026-11-17 (the previous 890-class set, 29,095 boxes, kept as `datasets/nyu_depth_v2_890classes`); scored by every
   2026-11-20 run, split in and out of the vocabulary from its saved detections (Questions above). SUN RGB-D
-  (`habitat_embodied_sl/sunrgbd.py`, its non-NYU frames, to `datasets/sunrgbd/test`): tested on a synthetic fixture
+  (`habitat_embodied_sl/static_datasets/sunrgbd.py`, its non-NYU frames, to `datasets/sunrgbd/test`): tested on a synthetic fixture
   only, the data not downloaded (rgbd.cs.princeton.edu/data/ answered 500 on 2026-11-17).
 - **B, fewer classes:** the reference and source restricted to the classes with ≥ 3 (or ≥ 5) training objects and test
   boxes (`core33`, `core16`), so classes with 1–2 test boxes stop adding noise (needs a `kept_classes` key).
@@ -135,3 +135,34 @@ Per-class numbers from each run's `class_table.csv`, AP50 at the last evaluation
 - **F, Fixing the box location to the gt:** when collecting, a new variant would be to use the gt box over the pseudo box.
   Implemented as part of V's `cls_box` fix (`V3_cls_box_drop_add`, `recover_gt_masks`). Box regression is not trained,
   so it changes which proposals a view labels with its class, not localization.
+- **N, unlabelled proposals:** measured 2026-11-24 on procthor30 and procthor100 `V1` against its iteration 0 (the
+  source), one class per box, score ≥ 0.3. Positive-only training lifts the frozen teacher's proposals it never labels.
+  Background boxes (IoU < 0.1 with every ground truth) per frame go 1.92 → 11.73 (procthor30), 1.79 → 5.81
+  (procthor100) and 11.9 → 32.5 (NYU-47), Loc boxes 1.25 → 6.82 (procthor30), while true positives go 2.26 → 3.30. Of
+  procthor30's final background boxes, 85% scored < 0.3 at iteration 0 (the same proposal, IoU ≥ 0.9) and 17% lie on
+  an object outside its 30 classes (a procthor100 box). The sigmoid BCE already pushes every other class down on a
+  matched box, but that push is ∝ σ ≈ 0.01 against the pull-up's 1 − σ, through shared weights, and no unmatched box
+  has a target. On ProcTHOR the lift is mostly a uniform shift; on NYU-47 the ranking falls (recall at the source's box
+  count 0.36 → 0.30). Fixes, in order:
+
+  | fix | what | status |
+  |---|---|---|
+  | calibration | each run's threshold fit on its train frames, label-free, to the source's boxes per frame at 0.3 (procthor30 0.54, procthor100 0.43): `V1` beats source, precision/recall 0.35/0.52 → 0.42/0.61 (procthor30), 0.32/0.42 → 0.41/0.56 (procthor100); AP unchanged, NYU-47 not fixed | measured; report every run at it |
+  | weight averaging (WiSE-FT) | α · fine-tuned + (1 − α) · source weights, α ∈ {0.25, 0.5, 0.75}, scored on the test set and NYU-47 | no training |
+  | map-complement negatives | per train frame, every resolved object projected (`keep_foreground`'s raytrace, before its filters) and every detection: proposals neither explains are background, those near an unexplained detection ignored (soft sampling), no structure geometry; negative purity against `V4_full`'s ground truth ≥ 0.95 before training | needs a frame-level build variant: object views keep ≤ `retrieval.k` (10) views per object, 1.6 map objects a frame against 6.8 ground truth |
+  | full-frame pseudo labels | the same projected objects with their map classes, trained with Detic's own ROI heads (as `V4_full_bgneg`), a pseudo-labelled `V4_full_bgneg` (SEAL, arXiv 2112.01001) | same build variant |
+  | IoU objectness head | class-agnostic head on the teacher's frozen features regressing each proposal's IoU with the nearest projected object (OLN), multiplied into the score: background and Loc boxes, free of the map's class errors | same build variant |
+  | fewer trained parameters | backbone frozen, or prompt/LoRA tuning only: against NYU-47's ranking loss | config change |
+  | embedding distillation | unmatched proposals' box embeddings kept at the frozen source's (cosine), so every vocabulary keeps its ranking, not only the trained classes | needs a frozen ROI-head copy |
+  | contrastive | multi-positive InfoNCE over one map object's views, zero-IoU proposals as negatives (EDAOD, arXiv 2506.21860) | secondary |
+  | replay | LVIS batches (COCO train2017 images, `lvis_v1_train.json`, both on disk) mixed into training, as Detic co-trains | last resort for NYU-47; the baselines would need it too |
+
+  Dropped: class-presence negatives (classes no map object of the house has among its top-k: top-1 marks 15.1 of 30
+  classes absent per procthor30 house, 35% of them present, 23% of the ground-truth boxes pushed down; top-5 3.4 of 30,
+  9%, 1%; and never the trained classes); ranking across proposals (unsafe on object views, another object of the class
+  likely unlabelled in the frame; made safe, it is map-complement negatives); Mean-Teacher self-training (its EMA
+  teacher inflates with the student, `unsup_mean_teacher` ≈ source); a frozen LVIS background gate, √(`V1` × the
+  source's top score on the same proposal) (AP50_OCPP 45.6 → 44.7 procthor30, 29.5 → 28.9 procthor100, NYU-47
+  +0.2 to +0.4: the source's background is weak there, and `MULT_PROPOSAL_SCORE` already gates by a frozen LVIS
+  proposal score); distilling class probabilities (pins the source's weak background, which calibration already
+  matches at the threshold).

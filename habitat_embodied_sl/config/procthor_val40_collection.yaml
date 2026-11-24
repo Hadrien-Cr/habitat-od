@@ -1,0 +1,22 @@
+# Collection config for habitat_embodied_sl/collect_test.py (see ../README.md): records each evaluation scene under
+# <raw_root>/<run_name>/<scene>/, and itself as <raw_root>/<run_name>/config.yaml, which every scene of the run shares.
+# Collected one collect_test.py call per scene, every class kept so any class set builds from it: ProcTHOR-Val-0 to -39,
+# built by procthor30_eval_build.yaml into its test split (ProcTHOR-Val-0 to -19) and its val split (-20 to -39).
+run_name: procthor_val40
+raw_root: raw  # relative to the repo root scripts run from, like the build's dataset_root
+seed: 0
+input_image_size: 1024  # side of the rendered frames
+
+object_params:
+  env_name: "ProcTHOR-hab"
+  vocab_name: "PROCTHOR100"
+  min_area_fraction: 5e-4
+  filter_low_visibility: True
+  min_mesh_visibility_fraction: 0.2
+  filter_classes: []
+
+frontier_agent:
+  visibility_dist_m: 3.0
+  steps: 1000
+
+frame_stride: 5  # the frames kept: every frame_stride-th step's

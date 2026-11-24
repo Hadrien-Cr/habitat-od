@@ -29,22 +29,22 @@ _TILE_BORDER_THICKNESS = 2
 def load_metrics(metrics_json: Path) -> list[dict]:
     """Parses a detectron2 `EventStorage` JSONWriter log: one JSON object per
     line, only carrying whatever scalars were logged at that iteration (loss
-    terms every step, eval metrics like `bbox/AP` only every `eval_period`)."""
+    terms every step, eval metrics like `AP/AP` only every `eval_period`)."""
     with open(metrics_json) as f:
         return [json.loads(line) for line in f if line.strip()]
 
 
 def plot_metrics(metrics_json: Path, out_path: Path, keys: Optional[list[str]] = None) -> Path:
     """Plots scalars logged during a detectron2 `DefaultTrainer` run (losses,
-    lr, and any periodic `EvalHook` results such as `bbox/AP`) against
+    lr, and any periodic `EvalHook` results such as `AP/AP`) against
     `iteration`, one subplot per metric -- never dual-axis, since loss/mAP/lr
     live on incomparable scales. Defaults to every numeric key in the log
     except `iteration`/`lr`/`time`/`data_time`/`eta_seconds` and per-class
-    `bbox/AP50-<class>` scores; pass `keys` to restrict to a subset (e.g.
-    `["bbox/AP", "bbox/AP50"]`).
+    `class_AP/AP50-<class>` scores; pass `keys` to restrict to a subset (e.g.
+    `["AP/AP", "AP/AP50"]`).
 
     When `cfg.DATASETS.TEST` has more than one dataset (e.g. val + train),
-    detectron2 prefixes eval keys with the dataset name (`"<dataset>/bbox/AP"`);
+    detectron2 prefixes eval keys with the dataset name (`"<dataset>/AP/AP"`);
     those are detected and overlaid as separate lines on the same subplot
     instead of splitting into their own panels.
     """
@@ -57,7 +57,7 @@ def plot_metrics(metrics_json: Path, out_path: Path, keys: Optional[list[str]] =
         # one panel per class would outgrow matplotlib's 2^16 px limit on large static vocabularies
         keys = sorted({k for r in records for k in r if "/AP50-" not in k} - skip)
 
-    # key -> (series_label, metric_name); a key like "<dataset>/bbox/AP" (2+
+    # key -> (series_label, metric_name); a key like "<dataset>/AP/AP" (2+
     # slashes) is an eval metric for a specific dataset in a multi-dataset
     # TEST set -- split off the dataset name so same-metric/different-dataset
     # keys share one panel instead of each getting its own.
@@ -75,7 +75,7 @@ def plot_metrics(metrics_json: Path, out_path: Path, keys: Optional[list[str]] =
         for i, (series, key) in enumerate(series_map.items()):
             xs = [r["iteration"] for r in records if key in r]
             ys = [r[key] for r in records if key in r]
-            # marker is required, not cosmetic: eval metrics (e.g. bbox/AP) are only
+            # marker is required, not cosmetic: eval metrics (e.g. AP/AP) are only
             # logged every eval_period iterations, so a run with few eval points would
             # otherwise render as an invisible line (matplotlib draws nothing for an
             # unmarked single point).
@@ -98,9 +98,9 @@ def plot_metrics(metrics_json: Path, out_path: Path, keys: Optional[list[str]] =
 
 def class_ap_history(metrics_json: Path) -> tuple[list[int], dict[str, np.ndarray]]:
     """(each evaluation's iteration, {class: its AP50 at each evaluation}) of a run's metrics_json."""
-    evaluations = [record for record in load_metrics(metrics_json) if "bbox/AP" in record]
-    class_keys = [key for key in evaluations[0] if key.startswith("bbox/AP50-")]
-    aps = {key[len("bbox/AP50-"):]: np.array([evaluation[key] for evaluation in evaluations]) for key in class_keys}
+    evaluations = [record for record in load_metrics(metrics_json) if "AP/AP" in record]
+    class_keys = [key for key in evaluations[0] if key.startswith("class_AP/AP50-")]
+    aps = {key[len("class_AP/AP50-"):]: np.array([evaluation[key] for evaluation in evaluations]) for key in class_keys}
     return [evaluation["iteration"] for evaluation in evaluations], aps
 
 

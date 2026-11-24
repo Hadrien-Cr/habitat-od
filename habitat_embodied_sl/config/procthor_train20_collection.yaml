@@ -1,0 +1,32 @@
+# Collection config for habitat_embodied_sl/collect_train.py (stage 1, see ../README.md): records each train scene under
+# <raw_root>/<run_name>/<scene>/, and itself as <raw_root>/<run_name>/config.yaml, which every scene of the run shares.
+# Collected one collect_train.py call per scene (../README.md, Running), every class kept so any class set builds from it:
+# ProcTHOR-Train-0 to -19. Built by procthor30_build.yaml; its val and test sets are procthor_val40_collection.yaml's.
+run_name: procthor_train20
+raw_root: raw  # relative to the repo root scripts run from, like the build's dataset_root
+seed: 0
+input_image_size: 1024  # side of the rendered frames, Detic's and SAM's input
+lift_image_size: 512  # side depth and masks are resized to for lifting and raytracing
+
+object_params:
+  env_name: "ProcTHOR-hab"
+  vocab_name: "PROCTHOR100"
+  min_area_fraction: 5e-4
+  filter_low_visibility: True
+  min_mesh_visibility_fraction: 0.2
+  filter_classes: []
+
+detector:
+  config_file: third_party/Detic/configs/Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.yaml
+  checkpoint: third_party/Detic/models/Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.pth
+  sam_checkpoint: ${oc.env:HABITAT_DATA}/sam/sam_vit_b_01ec64.pth
+  score_thresh: 0.4  # minimum proposal objectness of a kept detection
+  nms_thresh: 0.5
+  mask_thresh: 0.5
+
+# concept_graph.py's ConceptGraphConfig overrides (fusion while exploring, the agent's tracker), e.g. min_points_threshold;
+# saved in full, every default filled in, with the run
+fusion: {}
+
+collection:
+  steps_per_scene: 1000

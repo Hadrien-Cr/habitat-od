@@ -7,14 +7,16 @@ navmesh, which a build has no other way to know), the scene's mesh (ground_truth
 objects in line of sight of the navmesh from) and the annotated objects' per-frame ground-truth views, and for viewing
 only, their point cloud (ground_truth_point_cloud.ply), and its exploration's last snapshot
 (exploration_snapshot.png). scene.json, the scene and its depth camera, is written last: a record without it is
-incomplete. The records of a run share <raw_root>/<run_name>/config.yaml, the
+incomplete. A test scene's record (save_test_scene, written by habitat_embodied_sl/collect_test.py and read by
+habitat_embodied_sl/build_eval.py) holds only its kept frames' rgb and their ground-truth views, then its scene.json. The
+records of a run share <raw_root>/<run_name>/config.yaml, the
 collection config they were made with, completed with its full fusion settings and its kept classes, which their ground
 truth's class ids index (save_run_config): a train scene's fusion and visibility settings are read back from it."""
 import json
 import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import numpy as np
 import quaternion
@@ -28,7 +30,7 @@ from common.hybrid_exploration.exploration_map import MapGrid
 from common.utils.coco_utils import encoded_masks, json_rle, rle_from_json, stacked_masks, write_json
 from common.utils.concept_graph import ConceptGraphConfig, ConceptGraphObject
 from common.utils.eval_utils import GROUND_TRUTH_JSON, GroundTruthObjects
-from common.utils.ground_truth_recovery import GroundTruthView
+from common.utils.ground_truth_recovery import GroundTruthView, encoded_views
 from common.utils.image_memory import Frame
 from common.utils.projection_utils import DepthCamera
 
@@ -57,8 +59,8 @@ class RawScene:
 
 
 def save_run_config(run_dir: Path, cfg: DictConfig) -> None:
-    """Saves cfg as run_dir/config.yaml, the config every scene of a raw run (collect_train.py) or of a dataset (build_dataset.py,
-    collect_test.py) shares, or checks that it is the one already saved there."""
+    """Saves cfg as run_dir/config.yaml, the config every scene of a raw run (collect_train.py, collect_test.py) or of a
+    dataset (build_dataset.py, build_eval.py) shares, or checks that it is the one already saved there."""
     path = run_dir / RUN_CONFIG_YAML
     if path.exists():
         if OmegaConf.to_container(OmegaConf.load(path)) != OmegaConf.to_container(cfg):
@@ -68,6 +70,10 @@ def save_run_config(run_dir: Path, cfg: DictConfig) -> None:
     temporary = path.with_suffix(f".{os.getpid()}.tmp")
     OmegaConf.save(cfg, temporary)
     temporary.replace(path)  # atomic, so a parallel call never reads it half-written
+
+
+def raw_scene_dir(cfg: DictConfig, scene: str) -> Path:
+    return Path(cfg.raw_root) / cfg.run_name / scene
 
 
 def load_run_config(run_dir: Path) -> DictConfig:
@@ -120,6 +126,15 @@ def save_raw_scene(raw_dir: Path, raw: RawScene) -> None:
     write_json(raw_dir / RECORD_JSON, {"scene": raw.scene, "camera": asdict(raw.camera)})
 
 
+def save_test_scene(raw_dir: Path, scene: str, frames: List[Tuple[int, np.ndarray, Instances]]) -> None:
+    """Each (frame id, rgb, ground truth) of frames as its frames/<id>.png and its ground truth's views, under raw_dir, then its scene.json."""
+    (raw_dir / FRAMES_DIR).mkdir(parents=True, exist_ok=True)
+    for frame_id, rgb, _ in frames:
+        Image.fromarray(rgb).save(raw_dir / FRAMES_DIR / f"{frame_id}.png")
+    _save_views(raw_dir, [view for frame_id, _, ground_truth in frames for view in encoded_views(frame_id, ground_truth)])
+    write_json(raw_dir / RECORD_JSON, {"scene": scene})
+
+
 def _save_views(raw_dir: Path, views: List[GroundTruthView]) -> None:
     write_json(raw_dir / VIEWS_JSON, [
         {"frame_id": int(view.frame_id), "object_id": int(view.object_id), "class_id": int(view.class_id), "visibility": float(view.visibility), "rle": json_rle(view.rle)}
@@ -146,7 +161,7 @@ def load_raw_scene(raw_dir: Path) -> RawScene:
     return RawScene(
         scene["scene"], DepthCamera(**scene["camera"]), _load_fused_objects(raw_dir / "fused_objects.npz"), ConceptGraphConfig(**run.fusion),
         run.object_params.min_mesh_visibility_fraction,
-        GroundTruthObjects(**np.load(raw_dir / "ground_truth_objects.npz")), _load_views(raw_dir),
+        GroundTruthObjects(**np.load(raw_dir / "ground_truth_objects.npz")), load_views(raw_dir),
         MapGrid(**{**grid, "meters_per_pixel": float(grid["meters_per_pixel"]), "ref_rotation": quaternion.from_float_array(grid["ref_rotation"])}),
         json.loads((raw_dir / GROUND_TRUTH_JSON).read_text()), trimesh.load(raw_dir / SCENE_MESH_GLB, force="mesh"), _load_frames(raw_dir),
     )
@@ -154,18 +169,18 @@ def load_raw_scene(raw_dir: Path) -> RawScene:
 
 def _load_frames(raw_dir: Path) -> Dict[int, Frame]:
     frames = {}
-    for frame_id, rgb in _load_rgbs(raw_dir).items():
+    for frame_id, rgb in load_rgbs(raw_dir).items():
         arrays = np.load(raw_dir / FRAMES_DIR / f"{frame_id}.npz")
         frames[frame_id] = Frame(rgb, arrays["depth"], arrays["pose"])
     return frames
 
 
-def _load_rgbs(raw_dir: Path) -> Dict[int, np.ndarray]:
+def load_rgbs(raw_dir: Path) -> Dict[int, np.ndarray]:
     frame_ids = sorted(int(path.stem) for path in (raw_dir / FRAMES_DIR).glob("*.png"))
     return {frame_id: np.asarray(Image.open(raw_dir / FRAMES_DIR / f"{frame_id}.png")) for frame_id in frame_ids}
 
 
-def _load_views(raw_dir: Path) -> List[GroundTruthView]:
+def load_views(raw_dir: Path) -> List[GroundTruthView]:
     views = json.loads((raw_dir / VIEWS_JSON).read_text())
     return [GroundTruthView(**dict(view, rle=rle_from_json(view["rle"]))) for view in views]
 

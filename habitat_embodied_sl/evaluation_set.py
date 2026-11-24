@@ -1,5 +1,5 @@
-"""Test set frames of an evaluation scene: a FrontierExplorationAgent explores it until it stops or frontier_agent.steps run
-out, and every step's frame comes with its valid ground-truth instances; collect_test.py keeps every frame_stride-th one
+"""Frames of an evaluation scene: a FrontierExplorationAgent explores it until it stops or frontier_agent.steps run
+out, and every step's frame comes with its valid ground-truth instances; collect_test.py records every frame_stride-th one
 showing some, so a scene contributes in proportion to its exploration and every view is as likely to be kept."""
 from pathlib import Path
 from typing import Iterator, Tuple

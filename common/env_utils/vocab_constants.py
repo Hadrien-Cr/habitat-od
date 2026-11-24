@@ -237,6 +237,15 @@ CLASS_LABELS_PROCTHOR100 = [
     "vacuum cleaner", "vase", "washing machine", "watch", "window", "wine bottle",
 ]
 
+# PROCTHOR30: the 30 PROCTHOR100 object classes at least 20 cm long and 10 cm thick most placed in ProcTHOR-Train-0 to -19
+# and ProcTHOR-Val-0 to -39 (common/env_utils/filter.py), a class set the builds restrict the class-agnostic raw records to
+PROCTHOR30_VOCAB = "PROCTHOR30"
+CLASS_LABELS_PROCTHOR30 = [
+    "alarm clock", "arm chair", "basket ball", "bed", "bowl", "box", "candle", "chair", "counter top", "desk lamp",
+    "dining table", "dresser", "floor lamp", "fridge", "garbage can", "house plant", "laptop", "lettuce", "pillow", "plunger",
+    "shelving unit", "sink", "soap bottle", "sofa", "statue", "television", "toilet", "tv stand", "vase", "window",
+]
+
 PROCTHOR_NATIVE_TO_CLASS = {
     "unknown": "unknown", "Apple": "apple", "Tomato": "tomato", "Bread": "bread", "Sink": "sink", "Pot": "pot",
     "Pan": "pan", "Knife": "knife", "Fork": "fork", "Spoon": "spoon", "Bowl": "bowl", "Toaster": "toaster",
@@ -391,6 +400,7 @@ VOCABULARIES: dict[str, tuple[list[str], Optional[dict[str, str]], list[tuple[in
 for vocab_name, labels in HSSD400_VOCAB_REGISTRY:
     VOCABULARIES[vocab_name] = (labels, HSSD400_TO_VOCAB[vocab_name], make_colors(len(labels), seed=0, ctype=0))
 VOCABULARIES[PROCTHOR_NATIVE_VOCAB] = (CLASS_LABELS_PROCTHOR100, None, make_colors(len(CLASS_LABELS_PROCTHOR100), seed=0, ctype=0))
+VOCABULARIES[PROCTHOR30_VOCAB] = (CLASS_LABELS_PROCTHOR30, None, make_colors(len(CLASS_LABELS_PROCTHOR30), seed=0, ctype=0))
 
 for vocab_name, (class_labels, _, colors) in VOCABULARIES.items():
     meta = MetadataCatalog.get(vocab_name)

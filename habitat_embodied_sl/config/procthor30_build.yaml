@@ -1,0 +1,19 @@
+# Dataset config for habitat_embodied_sl/build_dataset.py (stage 2, see ../README.md): builds one variant's dataset,
+# <dataset_root>/<run_name>/, from the records of the raw run raw_run (procthor_train20_collection.yaml's), restricted to
+# the PROCTHOR30 classes and classified among every recorded class with its Detic (its config.yaml), objects of none of
+# them dropped, and saves itself as
+# <dataset_root>/<run_name>/config.yaml, which every scene of the dataset shares. One dataset per variant, set here or on
+# the command line (variant=V2_drop_add, or variant=[V1_pseudo,V4_full] to build each listed variant's dataset from one
+# resolve, classification and retrieval).
+run_name: procthor30_${variant}
+raw_run: raw/procthor_train20
+dataset_root: datasets  # relative to the repo root scripts run from
+variant: V3_cls_box_drop_add  # V1_pseudo, V2_drop_add, V3_cls_box_drop_add (object views) or V4_full (fully annotated frames)
+vocab_name: PROCTHOR30  # the dataset's classes: the raw run's recorded ones this vocabulary has
+
+# Overrides of concept_graph.py's ResolveConfig (resolve, foreground filter), e.g. adjacent_visual_sim_thresh or
+# min_detection_rate, and of retrieval.py's ViewSelection (k: views retrieved per object); both saved in full, every
+# default filled in, with the dataset
+resolve: {}
+retrieval:
+  k: 10

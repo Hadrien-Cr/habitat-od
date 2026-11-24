@@ -4,7 +4,7 @@ ground-truth class, giving matches their ground truth's masks and adding views o
 ground-truth class or classified as the resolved objects are."""
 from collections import defaultdict
 from dataclasses import dataclass, replace
-from typing import Dict, List, Set
+from typing import Dict, List, Set, Tuple
 
 import numpy as np
 import torch
@@ -62,6 +62,22 @@ def ground_truth_frame(views: List[GroundTruthView], image_size: tuple) -> Insta
     ground_truth.gt_classes = torch.tensor([view.class_id for view in views], dtype=torch.long)
     ground_truth.infos = [{"object_id": view.object_id, **dict.fromkeys(FILTER_KEYS, False)} for view in views]
     return ground_truth
+
+
+def annotated_frames(rgbs: Dict[int, np.ndarray], ground_truth_views: List[GroundTruthView]) -> List[Tuple[int, np.ndarray, Instances]]:
+    """(frame id, rgb, ground truth) of every frame of rgbs some ground truth shows, in frame order."""
+    frame_views = views_by_frame(ground_truth_views)
+    return [(frame_id, rgbs[frame_id], ground_truth_frame(frame_views[frame_id], rgbs[frame_id].shape[:2])) for frame_id in sorted(rgbs) if frame_views[frame_id]]
+
+
+def class_id_mapping(from_classes: list, to_classes: list) -> Dict[int, int]:
+    """{index in from_classes: index in to_classes} of every class of to_classes."""
+    return {from_classes.index(name): class_id for class_id, name in enumerate(to_classes)}
+
+
+def restricted_views(views: List[GroundTruthView], class_ids: Dict[int, int]) -> List[GroundTruthView]:
+    """views of the classes class_ids maps (class_id_mapping), their class ids mapped."""
+    return [replace(view, class_id=class_ids[view.class_id]) for view in views if view.class_id in class_ids]
 
 
 def recover_drop_fp(views: List[RetrievedView], matches: Dict[int, int]) -> List[RetrievedView]:

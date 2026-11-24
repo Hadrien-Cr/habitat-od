@@ -1,4 +1,4 @@
-"""Vocabulary of a static test set (nyu_depth_v2.py, sunrgbd.py): its raw class names grouped by canonical spelling
+"""Vocabulary of a static test set (nyu_depth_v2.py, sunrgbd.py, and detection_sources.py's sources' matched classes): its raw class names grouped by canonical spelling
 (lowercased, "_" and "-" read as spaces, a trailing plural "s" dropped), each group named by its most frequent
 spelling and kept with at least MIN_OCCURRENCES objects, so classes with a handful of test objects don't dominate
 the mean AP."""

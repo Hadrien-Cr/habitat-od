@@ -4,13 +4,14 @@ folder in the dataset (datasets/<run_name>/images/), plus <split>/<split>.json a
 and <split>/<split>_class_counts.png, its annotation (or view) count per class stacked by scene.
 Each scene is written on its own (write_scene), its records to its shard <split>/scenes/<scene>.json, so scenes can be
 written by parallel processes; merge, run once they are all done (habitat_embodied_sl/merge.py), pools every shard into
-<split>.json, its "info" the dataset's config. A dataset (build_dataset.py's one variant, collect_test.py's test set)
-holds one split.
+<split>.json, its "info" the dataset's config. A dataset holds one split (build_dataset.py's one variant) or
+several (build_eval.py's val and test splits).
 
 ObjectViewsWriter writes a train split of object views: {"info", "frames": {"<scene>_<frame>": {"height", "width"}},
 "retrieved_objects": {"<scene>/<object>": {"gt_class", "views": [{"frame", "mask" (RLE)}]}}}, read by ObjectViewsDataset.
 CocoFramesWriter writes a COCO instance-segmentation split of fully annotated frames, each annotation also carrying its
-simulator object_id; its image, annotation and category ids start at 1 (category id = class index + 1), as COCOeval
+simulator object_id, and iscrowd where its ground truth's info sets it (a region COCOeval ignores the unmatched detections
+in); its image, annotation and category ids start at 1 (category id = class index + 1), as COCOeval
 treats annotation id 0 as unmatched and detectron2 expects categories in [1, #categories]."""
 import json
 import shutil
@@ -19,6 +20,7 @@ from pathlib import Path
 from typing import List, Tuple, Union
 
 import numpy as np
+import torch
 from detectron2.data import DatasetMapper
 from detectron2.data.datasets import load_coco_json
 from detectron2.structures import Instances
@@ -78,7 +80,7 @@ def _annotations(ground_truth: Instances) -> List[dict]:
     return [
         {
             "category_id": class_id + 1, "segmentation": json_rle(rle), "bbox": mask_util.toBbox(rle).tolist(), "area": float(mask_util.area(rle)),
-            "iscrowd": 0, "object_id": info["object_id"],
+            "iscrowd": info.get("iscrowd", 0), "object_id": info["object_id"],
         }
         for rle, class_id, info in zip(rles, ground_truth.gt_classes.tolist(), ground_truth.infos)
     ]
@@ -95,9 +97,12 @@ def _save_mosaic(records: List[dict], categories: list, split_dir: Path, rng: np
 
 
 def _save_class_counts(records: List[dict], categories: list, split_dir: Path) -> Path:
-    """split_dir/<split>_class_counts.png of records' annotation count per class (one per view for an object-view set),
-    stacked by scene in name order."""
-    pairs = [(frame_scene(record["file_name"]), annotation["category_id"]) for record in records for annotation in record["annotations"]]
+    """split_dir/<split>_class_counts.png of records' non-crowd annotation count per class (one per view for an object-view
+    set), stacked by scene in name order."""
+    pairs = [
+        (frame_scene(record["file_name"]), annotation["category_id"])
+        for record in records for annotation in record["annotations"] if not annotation.get("iscrowd")
+    ]
     scene_counts = {
         scene: np.bincount([class_id for pair_scene, class_id in pairs if pair_scene == scene], minlength=len(categories))
         for scene in sorted({scene for scene, _ in pairs})
@@ -168,6 +173,20 @@ class CocoFramesWriter:
         records = load_coco_json(str(json_path), str(self.images_dir), dataset_name=str(json_path))
         _save_mosaic(records, self.categories, self.split_dir, rng)
         _save_class_counts(records, self.categories, self.split_dir)
+
+
+def box_instances(boxes: np.ndarray, classes: list, infos: list, image_size: tuple) -> Instances:
+    """Ground truth of the (N, 4) XYWH boxes of classes and infos, each its filled rectangle clipped to the image, the mask
+    CocoFramesWriter takes the box from; boxes outside the image are left out."""
+    masks = torch.zeros((len(boxes), *image_size), dtype=torch.bool)
+    for mask, (x, y, width, height) in zip(masks, np.round(boxes).astype(int)):
+        mask[max(y, 0):y + height, max(x, 0):x + width] = True
+    overlapping = masks.flatten(1).any(1)
+    ground_truth = Instances(image_size)
+    ground_truth.gt_masks = masks[overlapping]
+    ground_truth.gt_classes = torch.tensor(classes, dtype=torch.long)[overlapping]
+    ground_truth.infos = [info for info, keep in zip(infos, overlapping.tolist()) if keep]
+    return ground_truth
 
 
 def _pooled_frames(shards: List[dict]) -> Tuple[List[dict], List[dict]]:

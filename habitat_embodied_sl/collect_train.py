@@ -1,6 +1,6 @@
 """Stage 1: records a train scene raw (common/utils/raw_scene.py) under <raw_root>/<run_name>/<scene>/ for
 habitat_embodied_sl/build_dataset.py (stage 2) to build its datasets from, without the simulator (see
-habitat_embodied_sl/config/procthor8_collection.yaml and habitat_embodied_sl/README.md); test scenes are collect_test.py's.
+habitat_embodied_sl/config/procthor_train20_collection.yaml and habitat_embodied_sl/README.md); test scenes are collect_test.py's.
 One scene per call, so one call per scene can run in parallel, each on the GPU its caller's CUDA_VISIBLE_DEVICES names.
 common/hybrid_exploration's HybridFrontierAgent
 explores in exhaustive mode for up to collection.steps_per_scene steps (or until it gets stuck -- no net translation
@@ -22,8 +22,8 @@ records share one, and the build classifies among and indexes those classes.
 Usage (the config's detector: Detic's Swin-B checkpoint from https://github.com/facebookresearch/Detic's model zoo and
 SAM's; Detic classifies against the CLIP text embeddings of the config's vocab_name/filter_classes class names):
   export BASE_DIR=$(pwd) PYTHONNOUSERSITE=1  # HABITAT_DATA already exported, see INSTALL.MD
-  CUDA_VISIBLE_DEVICES=1 PYTHONPATH=. python habitat_embodied_sl/collect_train.py <scene> habitat_embodied_sl/config/procthor8_collection.yaml
-  CUDA_VISIBLE_DEVICES=1 PYTHONPATH=. python habitat_embodied_sl/build_dataset.py <scene> habitat_embodied_sl/config/procthor8_build.yaml variant=V2_drop_add  # stage 2
+  CUDA_VISIBLE_DEVICES=1 PYTHONPATH=. python habitat_embodied_sl/collect_train.py <scene> habitat_embodied_sl/config/procthor_train20_collection.yaml
+  CUDA_VISIBLE_DEVICES=1 PYTHONPATH=. python habitat_embodied_sl/build_dataset.py <scene> habitat_embodied_sl/config/procthor30_build.yaml variant=V2_drop_add  # stage 2
 """
 import argparse
 import shutil
@@ -50,14 +50,10 @@ from common.utils.plot_utils import PNG_COMPRESS_LEVEL
 from common.utils.pose_utils import sensor_pose_matrix
 from common.utils.projection_utils import DepthCamera, nearest_resized
 from common.utils.raw_scene import (
-    EXPLORATION_SNAPSHOT_PNG, RawScene, is_recorded, load_detections, load_raw_scene, save_frame, save_raw_scene, save_run_config,
+    EXPLORATION_SNAPSHOT_PNG, RawScene, is_recorded, load_detections, load_raw_scene, raw_scene_dir, save_frame, save_raw_scene, save_run_config,
 )
 from common.utils.retrieval import SegmentationStyle, segmentation_tile
 from common.vision.detector import Detector, build_detector
-
-
-def raw_scene_dir(cfg: DictConfig, scene: str) -> Path:
-    return Path(cfg.raw_root) / cfg.run_name / scene
 
 
 def observe_frame(obs: dict, env: ExplorationEnv, lift_image_size: int) -> Frame:

@@ -1,8 +1,8 @@
-# Test config for habitat_embodied_sl/collect_test.py (see ../README.md): collects each test scene straight into the test
-# set <dataset_root>/<run_name>/test/, and saves itself as <dataset_root>/<run_name>/config.yaml, which every scene of the
-# set shares. Collected one collect_test.py call per scene: ProcTHOR-Val-0 to -15, procthor8's test set.
+# Collection config for habitat_embodied_sl/collect_test.py (see ../README.md): records each test scene under
+# <raw_root>/<run_name>/<scene>/. Its scenes: ProcTHOR-Val-0 to -15, procthor8's test set, datasets/procthor8_test/,
+# written by an earlier collect_test.py straight into that COCO test set, without a raw record.
 run_name: procthor8_test
-dataset_root: datasets  # relative to the repo root scripts run from
+raw_root: raw  # relative to the repo root scripts run from, like the build's dataset_root
 seed: 0
 input_image_size: 1024  # side of the rendered frames
 

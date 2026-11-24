@@ -8,7 +8,7 @@ SOLVER:
   BACKBONE_MULTIPLIER: 0.1
   MAX_ITER: 1000
   WARMUP_ITERS: 100
-  CHECKPOINT_PERIOD: 1000
+  CHECKPOINT_PERIOD: 1000000  # only model_final.pth: a periodic checkpoint at MAX_ITER would be a 1 GB copy of it
 TEST:
   EVAL_PERIOD: 500
 INPUT:

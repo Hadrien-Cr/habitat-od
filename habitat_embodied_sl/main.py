@@ -1,7 +1,7 @@
 """Fine-tuning entry point for habitat_embodied_sl/meta_arch.py's CustomFT_Detic on the train split its config names in
 DATASETS.TRAIN (common/env_utils/dataset_registry.py's names): one variant's dataset (habitat_embodied_sl/build_dataset.py),
 an object-view split (V1_pseudo, V2_drop_add, V3_cls_box_drop_add) or V4_full's frames with every ground-truth instance --
-scored against DATASETS.TEST, whose first split (collect_test.py's test set) gives the training classes. For a plain COCO architecture trained from scratch/a COCO checkpoint
+scored against DATASETS.TEST, whose first split (build_eval.py's val or test split) gives the training classes. For a plain COCO architecture trained from scratch/a COCO checkpoint
 instead (e.g. BoxSup-C2_L_CLIP_SwinB_896b32_4x), use pretrain.py.
 
 Key methods:
@@ -19,7 +19,7 @@ Key methods:
   ObjectViewsTrainer.build_optimizer    -- Detic's build_custom_optimizer, so SOLVER.OPTIMIZER and
                                             SOLVER.BACKBONE_MULTIPLIER apply (detectron2's own is SGD only).
 ObjectViewsTrainer.test scores the first DATASETS.TEST split at every evaluation, and at the last one every DATASETS.TEST
-split (e.g. procthor8's train frames and habitat_embodied_sl/nyu_depth_v2.py's set), each in its own vocabulary, the classifier
+split (e.g. procthor8's train frames and habitat_embodied_sl/static_datasets/nyu_depth_v2.py's set), each in its own vocabulary, the classifier
 reset to its classes' CLIP embeddings meanwhile: their initial scores are the source model's (adapt.py --method source).
 Dataset registration, the evaluator-wired Trainer base (each evaluation's sample predictions logged to TensorBoard), and
 final-checkpoint reporting are shared with pretrain.py via common/utils/detectron_trainer.py. After training,
@@ -201,8 +201,8 @@ def main(args, trainer_class=ObjectViewsTrainer):
     trainer.train()
 
     metrics_json = Path(cfg.OUTPUT_DIR) / "metrics.json"
-    best = max((record for record in load_metrics(metrics_json) if "bbox/AP" in record), key=lambda record: record["bbox/AP"])
-    best_evaluation = {key: best[key] for key in ("iteration", "bbox/AP", "bbox/AP50", "bbox/AP75", "bbox/APs", "bbox/APm", "bbox/APl")}
+    best = max((record for record in load_metrics(metrics_json) if "AP/AP" in record), key=lambda record: record["AP/AP"])
+    best_evaluation = {key: best[key] for key in ("iteration", "AP/AP", "AP/AP50", "AP/AP75", "AP/APs", "AP/APm", "AP/APl")}
     checkpoint = str(Path(cfg.OUTPUT_DIR) / "model_final.pth")
     report_results(cfg, list(cfg.DATASETS.TEST[:1]), trainer._last_eval_results, checkpoint, best_evaluation)
     print(f"Wrote training/eval curves to {plot_metrics(metrics_json, Path(cfg.OUTPUT_DIR) / 'metrics.png')}")

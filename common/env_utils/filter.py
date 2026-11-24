@@ -1,17 +1,33 @@
+"""The PROCTHOR30 class set (vocab_constants.py): the ProcTHOR-hab object classes large and thick enough, furniture
+included, most placed in a set of scenes (procthor100_scene_classes.csv), by default the 60 of procthor30's train, test and
+val sets, ProcTHOR-Train-0 to -19 and ProcTHOR-Val-0 to -39.
+
+Usage:
+  PYTHONPATH=. python common/env_utils/filter.py
+"""
+import argparse
+
 import pandas as pd
 
-sizes_array = pd.read_csv("common/env_utils/procthor100_sizes.csv")
-occurence_array = pd.read_csv("common/env_utils/procthor100_occurences.csv")
+from common.env_utils.object_annotations import PROCTHOR100_SCENE_CLASSES_PATH, PROCTHOR100_SIZES_PATH
+from common.env_utils.vocab_constants import CLASS_LABELS_PROCTHOR100
 
 
-def dict_name_to_key(array, key: str):
-    print(sizes_array.head())
-    int2name = sizes_array["class"].to_dict()
-    int2key = sizes_array[key].to_dict()
-    return {v: int2key[k] for k, v in int2name.items()}    
+def realistic_classes(scenes: list[str], count: int = 30, min_largest_edge: float = 0.2, min_shortest_edge: float = 0.1) -> list[str]:
+    """The count object classes most placed in scenes whose largest instance is at least min_largest_edge long and
+    min_shortest_edge thick, in CLASS_LABELS_PROCTHOR100's order."""
+    # a doorway is its wall's opening and a faucet part of its sink, not objects of their own
+    sizes = pd.read_csv(PROCTHOR100_SIZES_PATH, index_col="class").drop(index=["doorway", "faucet"])
+    # counter-top clutter (fruit, mugs, cutlery, plates) rarely passes the area filter nor maps apart from the counter
+    candidates = sizes.index[(sizes.max_largest_edge >= min_largest_edge) & (sizes.max_shortest_edge >= min_shortest_edge)]
+    placed = pd.read_csv(PROCTHOR100_SCENE_CLASSES_PATH, index_col="scene").loc[scenes].sum()
+    chosen = set(placed[placed.index.isin(candidates)].nlargest(count).index)
+    return [name for name in CLASS_LABELS_PROCTHOR100 if name in chosen]
 
-d = dict_name_to_key(sizes_array, "max_largest_edge")
-thresh_value = sorted(d.values())[40]
-filter_fn = lambda x: d[x] <= thresh_value
-print([k for k, v in d.items() if filter_fn(k)]) 
-# ['apple', 'basket ball', 'bottle', 'bowl', 'bread', 'butter knife', 'candle', 'cell phone', 'cloth', 'credit card', 'cup', 'dish sponge', 'dumbbell', 'egg', 'fork', 'kettle', 'key chain', 'knife', 'ladle', 'lettuce', 'mug', 'newspaper', 'paper towel roll', 'pen', 'pencil', 'pepper shaker', 'plate', 'potato', 'remote control', 'salt shaker', 'soap bar', 'soap bottle', 'spatula', 'spoon', 'spray bottle', 'tissue box', 'toilet paper', 'tomato', 'vase', 'watch', 'wine bottle']
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--train", type=int, default=20, help="Count ProcTHOR-Train-0 to -<train - 1>.")
+    parser.add_argument("--val", type=int, default=40, help="Count ProcTHOR-Val-0 to -<val - 1>.")
+    args = parser.parse_args()
+    print(realistic_classes([f"ProcTHOR-Train-{index}" for index in range(args.train)] + [f"ProcTHOR-Val-{index}" for index in range(args.val)]))

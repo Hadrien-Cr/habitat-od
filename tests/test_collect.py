@@ -1,14 +1,15 @@
 """
-End-to-end run of habitat_embodied_sl's stages, as Running in habitat_embodied_sl/README.md does them, with procthor8's
-collection, dataset and test configs (config/procthor8_collection.yaml, procthor8_build.yaml, procthor8_test.yaml)
-renamed test_collect and saved under tests/testdump/test_collect/ as collection.yaml, build.yaml and test.yaml, its raw
-records under raw/ there and its datasets under datasets/: collect_train.py records procthor_scene.py's ProcTHOR-Train-0,
-build_dataset.py builds it into one dataset per variant in one call, datasets/test_collect_<variant>/, collect_test.py collects
-ProcTHOR-Val-7 into datasets/test_collect_test/, merge.py pools each dataset's shards and evaluate_maps.py scores the
-train scene's map into datasets/test_collect_V3_cls_box_drop_add/map_eval/ (metrics.json, confusion_matrix.png),
-printed. Each stage's saved config is the config.yaml of the raw run and of each dataset, and every script's output is in
+End-to-end run of habitat_embodied_sl's stages, as Running in habitat_embodied_sl/README.md does them, with procthor30's
+configs (config/procthor_train20_collection.yaml, procthor30_build.yaml, procthor_val40_collection.yaml,
+procthor30_eval_build.yaml) renamed test_collect and saved under tests/testdump/test_collect/ as collection.yaml,
+build.yaml, test.yaml and eval.yaml, its raw records under raw/ there and its datasets under datasets/: collect_train.py
+records procthor_scene.py's ProcTHOR-Train-0, build_dataset.py builds it into one dataset per variant in one call,
+datasets/test_collect_<variant>/, collect_test.py records ProcTHOR-Val-7, build_eval.py builds it into the test split of
+datasets/test_collect_eval/, merge.py pools each dataset's shards and evaluate_maps.py scores the train scene's map into
+datasets/test_collect_V3_cls_box_drop_add/map_eval/ (metrics.json, confusion_matrix.png), printed. Each stage's saved
+config is the config.yaml of the raw runs and of each dataset, and every script's output is in
 tests/testdump/test_collect/run.log.
-The record must be complete, the agent never stuck, every dataset non-empty, and rebuilding the train scene from its
+The records must be complete, the agent never stuck, every dataset non-empty, and rebuilding the train scene from its
 record into one variant alone must write the same shard.
 
 Needs ProcTHOR-hab under HABITAT_DATA/scene_datasets/ai2thor-hab, a GPU, Detic's Swin-B checkpoint under
@@ -35,6 +36,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 _TESTDUMP_DIR = Path(__file__).parent / "testdump" / "test_collect"
 _RUN_NAME = "test_collect"
 _RAW_RUN = _TESTDUMP_DIR / "raw" / _RUN_NAME
+_TEST_RAW_RUN = _TESTDUMP_DIR / "raw" / f"{_RUN_NAME}_test"
 _DATASET_ROOT = _TESTDUMP_DIR / "datasets"
 _TEST_SCENE = "ProcTHOR-Val-7"
 _DETIC_CHECKPOINT = _REPO_ROOT / "third_party" / "Detic" / "models" / "Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.pth"
@@ -63,14 +65,16 @@ def _run(script: str, *args: str) -> str:
     return output
 
 
-def _configs() -> Tuple[str, str, str]:
-    """Paths of procthor8's collection, dataset and test configs renamed _RUN_NAME, their raw records and datasets under
-    the testdump, saved there."""
+def _configs() -> Tuple[str, str, str, str]:
+    """Paths of procthor30's train and test collection, dataset and evaluation dataset configs renamed _RUN_NAME, their
+    raw records and datasets under the testdump, saved there."""
     config_dir = _REPO_ROOT / "habitat_embodied_sl" / "config"
-    configs = {name: OmegaConf.load(config_dir / f"procthor8_{name}.yaml") for name in ("collection", "build", "test")}
+    files = {"collection": "procthor_train20_collection", "build": "procthor30_build", "test": "procthor_val40_collection", "eval": "procthor30_eval_build"}
+    configs = {name: OmegaConf.load(config_dir / f"{file}.yaml") for name, file in files.items()}
     configs["collection"].run_name, configs["collection"].raw_root = _RUN_NAME, str(_RAW_RUN.parent)
     configs["build"].run_name, configs["build"].raw_run, configs["build"].dataset_root = f"{_RUN_NAME}_${{variant}}", str(_RAW_RUN), str(_DATASET_ROOT)
-    configs["test"].run_name, configs["test"].dataset_root = f"{_RUN_NAME}_test", str(_DATASET_ROOT)
+    configs["test"].run_name, configs["test"].raw_root = _TEST_RAW_RUN.name, str(_TEST_RAW_RUN.parent)
+    configs["eval"].run_name, configs["eval"].raw_run, configs["eval"].dataset_root = f"{_RUN_NAME}_eval", str(_TEST_RAW_RUN), str(_DATASET_ROOT)
     for name, cfg in configs.items():
         OmegaConf.save(cfg, _TESTDUMP_DIR / f"{name}.yaml")
     return tuple(str(_TESTDUMP_DIR / f"{name}.yaml") for name in configs)
@@ -83,23 +87,25 @@ def _dataset_dir(variant: str) -> Path:
 def _dataset_sizes() -> dict:
     """{dataset: its number of objects, or of frames} of every merged dataset."""
     sizes = {variant: len(json.loads(split_json_path(_dataset_dir(variant) / OBJECT_DS_DIR).read_text())["retrieved_objects"]) for variant in VARIANTS}
-    frames = {name: len(json.loads(split_json_path(_dataset_dir(name) / split).read_text())["images"]) for name, split in ((FULL_FRAMES, "train"), ("test", "test"))}
+    frames = {name: len(json.loads(split_json_path(_dataset_dir(name) / split).read_text())["images"]) for name, split in ((FULL_FRAMES, "train"), ("eval", "test"))}
     return {**sizes, **frames}
 
 
 def test_collect_and_build():
     shutil.rmtree(_TESTDUMP_DIR, ignore_errors=True)
     _TESTDUMP_DIR.mkdir(parents=True)
-    collection, build, test = _configs()
+    collection, build, test, evaluation = _configs()
     assert "got stuck" not in _run("collect_train.py", SCENE_ID, collection)
     assert is_recorded(_RAW_RUN / SCENE_ID)
     _run("collect_test.py", _TEST_SCENE, test)
+    assert is_recorded(_TEST_RAW_RUN / _TEST_SCENE)
+    _run("build_eval.py", _TEST_SCENE, evaluation, "test")
     _run("build_dataset.py", SCENE_ID, build, f"variant=[{','.join((*VARIANTS, FULL_FRAMES))}]")
     shard = scene_shard_path(_dataset_dir(VARIANTS[-1]) / OBJECT_DS_DIR, SCENE_ID)
     built = shard.read_text()
     _run("build_dataset.py", SCENE_ID, build, f"variant={VARIANTS[-1]}")
     assert shard.read_text() == built, "rebuilding the train scene from its raw record, its variant alone, changed its shard"
-    for name in (*VARIANTS, FULL_FRAMES, "test"):
+    for name in (*VARIANTS, FULL_FRAMES, "eval"):
         _run("merge.py", str(_dataset_dir(name)))
     _run("evaluate_maps.py", str(_dataset_dir(VARIANTS[-1])))
     sizes = _dataset_sizes()

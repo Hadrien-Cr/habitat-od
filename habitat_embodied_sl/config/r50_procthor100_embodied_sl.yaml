@@ -1,0 +1,6 @@
+# r50_procthor8_embodied_sl.yaml's fine-tune scored on procthor100's datasets (scripts/procthor_datasets.sh) instead: its test
+# set first, giving the classes, then its val set, its train frames and NYU Depth V2. run.sh names each run's train
+# variant split in DATASETS.TRAIN on the command line
+_BASE_: "r50_procthor8_embodied_sl.yaml"
+DATASETS:
+  TEST: ("procthor100_eval_test", "procthor100_eval_val", "procthor100_V4_full_train", "nyu_depth_v2_test")
